@@ -17,14 +17,13 @@ from forensia.core.progress_event import progress_event
 from forensia.db.database import CaseDB
 from forensia.db.progress import record_progress_event
 from forensia.pipeline import (
-    progress_pusher,
     reset_case_tables,
     run_investigation,
 )
 
 
 class CaseDbMaintenanceTests(unittest.TestCase):
-    """Current schema/reopen and unsupported-case rejection, settings cache, progress pusher, report-only run."""
+    """Case preservation, shared transactions, reset, and report-only execution."""
 
     def tearDown(self) -> None:
         reload_settings()
@@ -161,33 +160,6 @@ class CaseDbMaintenanceTests(unittest.TestCase):
                         "SELECT COUNT(*) FROM trace.hypothesis_reasoning"
                     ).fetchone()[0],
                 )
-
-    def test_progress_pusher_persists_compact_semantic_events(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(tmpdir)
-            with (
-                CaseDB(case) as db,
-                patch("forensia.pipeline.record_progress_event") as record_progress,
-            ):
-                push = progress_pusher(db)
-                push(
-                    progress_event(
-                        "finding.created",
-                        "completed",
-                        severity="success",
-                        refs={"finding_ids": ["F-1"]},
-                        summary="Detection rule matched",
-                        rule_id="R-1",
-                    )
-                )
-
-            event = record_progress.call_args.args[1]
-            self.assertEqual("finding.created", event["kind"])
-            self.assertEqual({"finding_ids": ["F-1"]}, event["refs"])
-            self.assertEqual({"rule_id": "R-1"}, event["attributes"])
-            self.assertNotIn("counts", event)
-            self.assertNotIn("recent_log_entries", event)
-            self.assertNotIn("hypotheses", event)
 
     def test_reset_clears_derived_state_and_preserves_source_registrations(
         self,

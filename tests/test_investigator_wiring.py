@@ -1197,7 +1197,7 @@ class ReportRefreshFailureTests(unittest.TestCase):
         async def _outage(**kwargs):
             raise LLMServerUnavailableError("server gone")
 
-        async def _instant_recovery_probe(base_url, model, progress_callback=None):
+        async def _instant_recovery_probe(base_url, progress_callback=None):
             if progress_callback:
                 progress_callback(
                     {

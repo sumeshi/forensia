@@ -10,14 +10,12 @@ from forensia.config import get_llm_settings
 from forensia.context.case_profile import observed_event_ids
 from forensia.context.sql_schema import (
     build_investigation_framework,
-    load_app_catalog,
 )
 from forensia.llm.schemas import (
     PARAGRAPH_NARRATE_SCHEMA,
     SECTION_AGENT_CHECK_SCHEMA,
     SECTION_AGENT_PLAN_SCHEMA,
     SECTION_OUTLINE_SCHEMA,
-    question_classify_schema,
     structured_classify_schema,
 )
 
@@ -27,24 +25,14 @@ if TYPE_CHECKING:
 
 from forensia.context.playbook import (
     _dfir_playbook,
-    _format_artifact_inference,
     _load_schema_notes,
 )
 from forensia.context.prompt_context import (
-    _build_event_id_guidance,
-    _build_evidence_group_index,
-    _build_report_requirement_index,
     _build_schema_guidance,
-    _collect_source_verdicts,
-    _format_evidence_coverage,
     _format_evidence_row,
     _instrument_retrieval,
     _lang_instruction,
-    _rows_to_markdown_table,
-    _summarize_context_sections,
     _time_range_guidance,
-    collect_event_ids,
-    slim_report_brief_for_section,
     truncate_context_sections,
 )
 from forensia.report.sections.evidence_projection import (
@@ -60,25 +48,6 @@ from forensia.report.sections.evidence_projection import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _section_verification_block(verification_notes: list[str] | None) -> str:
-    return f"verification_notes_from_prior_subsections: {verification_notes or []}\n\n"
-
-
-def _section_evidence_block(raw_evidence_rows: list[dict] | None) -> str:
-    if not raw_evidence_rows:
-        return ""
-    return (
-        "You are also given normalized evidence summaries derived from row-level evidence. "
-        "Treat them as reference only; do not paste raw tables or raw field dumps into the narrative body. "
-        "Use them to write a short, normalized one-line summary of each relevant observation. "
-        "If the section needs an appendix-style evidence note, place it in a dedicated Raw Evidence subsection with concise summaries only, never with NULL/None-heavy raw rows. "
-    )
-
-
-def _section_coverage_block(report_brief: dict) -> str:
-    return _format_evidence_coverage(report_brief)
 
 
 def _publication_guidance(section_key: str, publication_state: Any) -> str:
@@ -121,175 +90,6 @@ def _format_outline(outline: list[dict]) -> str:
         lines.append(f"  - **{heading}:** {summary}")
     lines.append("</PRIOR_BLOCKS_IN_THIS_SECTION>")
     return "\n".join(lines)
-
-
-def _section_context_block(
-    context_sections: dict[str, str], current_section_outline: list[dict]
-) -> str:
-    trimmed_context = _summarize_context_sections(context_sections)
-    lines = [f"previous_sections: {trimmed_context}\n"]
-    if current_section_outline:
-        lines.append("<PRIOR_BLOCKS_IN_THIS_SECTION>")
-        for entry in current_section_outline:
-            heading = entry.get("heading", "")
-            summary = entry.get("summary", "")
-            lines.append(f"  - **{heading}:** {summary}")
-        lines.append("</PRIOR_BLOCKS_IN_THIS_SECTION>")
-    return "\n".join(lines)
-
-
-def build_report_section_messages(
-    section_meta: dict[str, Any],
-    evidence_results: list[dict[str, Any]],
-    context_sections: dict[str, str],
-    template_body: str,
-    report_brief: dict[str, Any] | None = None,
-    section_heading: str = "",
-    current_section_outline: list[dict] | None = None,
-    verification_notes: list[str] | None = None,
-    raw_evidence_rows: list[dict[str, Any]] | None = None,
-    time_range: dict[str, str] | None = None,
-    structured_digest: str | None = None,
-    db: CaseDB | None = None,
-    session_id: str | None = None,
-) -> list[dict[str, str]]:
-    """Build messages for report section writing with evidence and template context."""
-
-    placeholder = "[INSUFFICIENT EVIDENCE: reason]"
-    section_key = str(section_meta.get("section") or "")
-    prompt_report_brief = project_report_brief(report_brief, db=db)
-    publication_guidance = _publication_guidance(
-        section_key, prompt_report_brief.get("publication_state")
-    )
-    cov = _section_coverage_block(prompt_report_brief)
-    if cov and str(section_meta.get("section") or "").strip() == "1_overview":
-        cov = f"Use the following evidence coverage summary as the canonical Evidence Scope. Do not invent sources that are not listed.\n{cov}\n"
-    prompt_evidence_results = project_report_results(evidence_results, db=db)
-    prompt_raw_evidence_rows = project_report_evidence_rows(raw_evidence_rows, db=db)
-    evidence = [
-        r for r in prompt_evidence_results if str(r.get("kind") or "rows") != "rows"
-    ] or prompt_evidence_results
-    sv = _collect_source_verdicts(evidence_results)
-    strength = ""
-    if sv and all(v != "confirmed" for v in sv):
-        strength = "source_verdict guidance: Every supplied evidence result is below confirmed. Use cautious language only; avoid 'confirmed', 'executed', 'compromised', 'attack succeeded', or equivalent strong assertions unless additional evidence explicitly supports them.\n"
-    app_cat = (
-        ", ".join(
-            f"{e}={i.get('category', '?')}"
-            for e, i in load_app_catalog().get("mappings", {}).items()
-        )
-        or "see investigation framework"
-    )
-
-    _pb_ids = observed_event_ids(db) if db is not None else None
-    if _pb_ids is not None:
-        collected = collect_event_ids(evidence_results)
-        if collected:
-            _pb_ids.update(collected)
-    exec_rules = ""
-    if structured_digest:
-        exec_rules = (
-            "Write what the evidence shows, not instructions to the reader.\n"
-            "Lead with the 2-3 strongest observations (with dates and counts) from "
-            "STRUCTURED_OBSERVATIONS and confirmed findings. One sentence on open questions.\n"
-            'Do not use phrases like "should be verified", "needs confirmation", "requires verification" more than once.\n'
-        )
-    digest_block = f"\n{structured_digest}\n" if structured_digest else ""
-    system = (
-        f"{_dfir_playbook('report_section', event_ids=_pb_ids)}\n{_time_range_guidance(time_range)}"
-        "<TASK>You are a DFIR report writer. Fill the provided Markdown section template using only supplied evidence.</TASK>\n"
-        "<INPUT_SCHEMA>section_meta, evidence_results, previous_sections, template_body</INPUT_SCHEMA>\n"
-        "<RULES>\nconfidence_matrix: confidence >= 0.8 => 'confirmed'/'observed'; confidence >= 0.5 => 'strongly suggests'; confidence < 0.5 => 'requires further investigation'.\n"
-        "Do not use 'confirmed' for findings or conclusions below 0.8 confidence.\n"
-        "Match wording to confidence: use cautious language for low-confidence items.\n"
-        f"no_invented_facts: Write placeholder for unsupported claims: {placeholder}\n"
-        "no_causation: Correlation is not proof of causation.\n"
-        "confirmed_hypotheses: Reflect in appropriate sections; refuted_hypotheses only in 'Discarded Hypotheses' subsection.\n"
-        "Recommended actions must scale with evidence strength.\n"
-        f"app_categories: {app_cat}\n{_format_artifact_inference()}{_build_event_id_guidance(evidence_results)}{strength}{exec_rules}"
-        f"{publication_guidance}\n</RULES>\n"
-        f"{_section_evidence_block(prompt_raw_evidence_rows)}{cov or ''}"
-        f"{digest_block}"
-        "<EXAMPLE verdict=\"report_section\">\nInput: section_meta={'section': '3_technical'}, evidence_results=[{'sample_rows': [{'evidence_id': 'E1', 'process_name': 'powershell.exe'}]}]\nOutput: \"## Process Execution\\n\\nOne suspicious process was observed: powershell.exe (evidence_id: E1).\"\n</EXAMPLE>\n"
-        f"Output Markdown only (no fences). {_lang_instruction()}"
-    )
-    raw_block = ""
-    if prompt_raw_evidence_rows:
-        raw_block = f"\nnormalized_evidence_rows (summaries only; do not mirror raw tables):\n{_rows_to_markdown_table(prompt_raw_evidence_rows)}\n"
-    requirement_index = _build_report_requirement_index(
-        prompt_report_brief, db=db, session_id=session_id
-    )
-    evidence_group_index = _build_evidence_group_index(
-        evidence_results, db=db, session_id=session_id
-    )
-    user = (
-        f"section_meta: {section_meta}\ncurrent_subsection: {section_heading or '(full section)'}\n"
-        f"report_brief: {slim_report_brief_for_section(prompt_report_brief, str(section_meta.get('section') or ''))}\n"
-        f"publication_constraints: {publication_guidance or 'none'}\n"
-        f"{_section_context_block(context_sections, current_section_outline or [])}"
-        f"{_section_verification_block(verification_notes)}"
-        f"evidence_results: {evidence}\n{raw_block}\n"
-        "Complete only this current template block by replacing placeholders with evidence-based content.\n"
-        f"{template_body}"
-    )
-    if requirement_index:
-        user += "\n" + requirement_index + "\n"
-    if evidence_group_index:
-        user += "\n" + evidence_group_index + "\n"
-    _instrument_retrieval(
-        db,
-        session_id=session_id,
-        scope_kind="report_section",
-        scope_id=section_key,
-        phase="report_section",
-        source_kind="report_section_builder",
-        query_terms=[section_key, str(section_heading or "")],
-        candidate_count=len(system) + len(user),
-        selected_refs=collect_event_ids(evidence_results),
-        selected_chars=len(system) + len(user),
-        budget=0,
-    )
-    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
-
-
-def build_question_classify_messages(
-    question: str,
-    block_heading: str,
-    evidence_rows: list[dict],
-    expected_shape: dict | None,
-    time_range: dict[str, str] | None = None,
-    db: CaseDB | None = None,
-) -> tuple[list[dict[str, str]], dict]:
-    """role: question_classifier.
-    Goal: decide answer status and pick which evidence_rows answer the question.
-    Output: {status, picked_row_indices, rationale}
-    """
-    prompt_evidence_rows = project_report_evidence_rows(evidence_rows, db=db)
-    schema = question_classify_schema(len(prompt_evidence_rows))
-    system = (
-        "<TASK>You are a question_classifier. Decide the answer status and pick which evidence rows answer the question. "
-        "Do NOT write narrative.</TASK>\n"
-        "<OUTPUT_SCHEMA>\n"
-        "{\n"
-        '  "status": "answered | partial | not_found | not_searched | wrong_query",\n'
-        '  "picked_row_indices": [0-based row indices into evidence_rows (e.g. [0, 2, 5]). Each value MUST be an integer between 0 and len(evidence_rows)-1],\n'
-        '  "rationale": "string"\n'
-        "}\n"
-        "</OUTPUT_SCHEMA>\n"
-        "<RULES>\n"
-        "Output picked_row_indices as integer array indices (0-based). Never invent identifiers or use placeholders like 'evidence_rows[0]'.\n"
-        "</RULES>"
-    )
-    user = (
-        f"question: {question}\n"
-        f"block_heading: {block_heading}\n"
-        f"evidence_rows: {json.dumps(prompt_evidence_rows[:20], default=str, ensure_ascii=False)}\n"
-        f"expected_shape: {json.dumps(expected_shape or {}, ensure_ascii=False, default=str)}\n"
-    )
-    return [
-        {"role": "system", "content": system},
-        {"role": "user", "content": user},
-    ], schema
 
 
 def build_structured_classify_messages(
@@ -340,10 +140,7 @@ def _filter_prior_runs_by_heading(
     heading_matches = [
         run
         for run in prior_runs
-        # Older callers already supplied block-filtered rows without carrying
-        # the heading. Keep those compatible while preferring explicit matches.
-        if not run.get("block_heading")
-        or str(run.get("block_heading")) == str(block_heading)
+        if str(run.get("block_heading") or "") == str(block_heading)
     ]
     return heading_matches[-limit:]
 

@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from forensia.config import clear_llm_settings_cache, reload_settings
+from forensia.config import reload_settings, settings
 from forensia.core.case import Case
 from forensia.core.textutil import normalize_localized_dates
 from forensia.db.database import CaseDB
@@ -351,8 +351,7 @@ structured_answer:
         joined with ` / ` and exploded the paragraph past 1000 chars, or keypoint identifiers
         (`overview_top_findings=10`) leaked into the prose.
         """
-        with patch.dict(os.environ, {"FORENSIA_OUTPUT_LANGUAGE": "en"}):
-            clear_llm_settings_cache()
+        with patch.object(settings, "llm_output_language", "en"):
             body = fallback_narrative_body(
                 heading="Executive Summary",
                 status="partial",
@@ -410,7 +409,6 @@ structured_answer:
                 actual_query_count=2,
                 actual_query_row_counts=[13, 3],
             )
-            clear_llm_settings_cache()
 
         self.assertNotIn("overview_top_findings", body)
         self.assertNotIn("overview_hosts", body)
@@ -420,8 +418,7 @@ structured_answer:
     def test_fallback_prefers_key_points_over_meta_phrasing(self) -> None:
         """H-2: when key points are available the fallback states observed
         facts, never review-metadata like 'returned N related rows'."""
-        with patch.dict(os.environ, {"FORENSIA_OUTPUT_LANGUAGE": "en"}):
-            clear_llm_settings_cache()
+        with patch.object(settings, "llm_output_language", "en"):
             body = fallback_narrative_body(
                 heading="Executive Summary",
                 status="answered",
@@ -434,7 +431,6 @@ structured_answer:
                     "The Event Log service was stopped on informant-PC",
                 ],
             )
-            clear_llm_settings_cache()
 
         self.assertIn("CCLEANER64.EXE", body)
         self.assertIn("Event Log service", body)

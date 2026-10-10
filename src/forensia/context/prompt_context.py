@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 from forensia.config import get_llm_settings
 from forensia.context.sql_schema import schema_column_guidance
 from forensia.core.compaction import TRUNCATION_MARKER, mechanical_compact
-from forensia.knowledge.catalog import load_event_id_hints, load_schema_hints
+from forensia.knowledge.catalog import load_schema_hints
 
 if TYPE_CHECKING:
     from forensia.db.database import CaseDB
@@ -22,10 +22,7 @@ logger = logging.getLogger(__name__)
 # Indexed / lazy context primitives (T-21)
 # ---------------------------------------------------------------------------
 #
-# Large shared context is kept bounded by selecting relevant entries before
-# prompt assembly. Report requirements retain a compact index where it helps
-# summarize their scope; schema and event guidance are given directly for the
-# host-selected tables and observed event IDs.
+# Schema guidance is limited to cards for host-selected tables.
 
 
 @dataclass
@@ -113,115 +110,6 @@ def _instrument_retrieval(
         logger.debug("prompt instrumentation skipped", exc_info=True)
 
 
-def _format_event_id_claim(hint: dict[str, Any], event_id: int) -> str:
-    allowed = hint.get("allowed_claims") or []
-    disallowed = hint.get("disallowed_without_extra") or []
-    required = hint.get("required_fields") or []
-    return (
-        f"Event ID {event_id} ({hint.get('title', 'unknown')}): "
-        f"required_fields={required}, allowed_claims={allowed}, "
-        f"disallowed_without_extra={disallowed}. "
-    )
-
-
-def _build_report_requirement_index(
-    report_brief: dict[str, Any] | None,
-    db: CaseDB | None = None,
-    session_id: str | None = None,
-) -> str:
-    """Index report-section requirements derived from the report brief."""
-    if not report_brief:
-        return ""
-    entries: list[ContextIndexEntry] = []
-    sections = report_brief.get("sections")
-    if isinstance(sections, dict):
-        for section_key in sorted(sections):
-            body = str(sections[section_key])[:200]
-            entries.append(
-                ContextIndexEntry(
-                    stable_id=str(section_key),
-                    title=f"report requirement {section_key}",
-                    purpose="section deliverable",
-                    size_chars=len(body),
-                    relevance_hint="report_scope",
-                    continuation=f"load requirement `{section_key}`",
-                )
-            )
-    cov = report_brief.get("evidence_coverage")
-    if isinstance(cov, dict):
-        secs = cov.get("sections")
-        if isinstance(secs, dict):
-            for section_key in sorted(secs):
-                entries.append(
-                    ContextIndexEntry(
-                        stable_id=f"cov:{section_key}",
-                        title=f"evidence coverage {section_key}",
-                        purpose="coverage summary",
-                        size_chars=len(str(secs[section_key])[:200]),
-                        relevance_hint="report_scope",
-                        continuation=f"load coverage `{section_key}`",
-                    )
-                )
-    if not entries:
-        return ""
-    index = render_context_index("REPORT_REQUIREMENT_INDEX", entries)
-    _instrument_retrieval(
-        db,
-        session_id=session_id,
-        scope_kind="report_requirements",
-        scope_id="report_brief",
-        phase="report_section",
-        source_kind="report_brief",
-        query_terms=[e.stable_id for e in entries],
-        candidate_count=len(entries),
-        selected_refs=[],
-        selected_chars=len(index),
-        budget=0,
-    )
-    return index
-
-
-def _build_evidence_group_index(
-    evidence_results: list[dict[str, Any]],
-    db: CaseDB | None = None,
-    session_id: str | None = None,
-) -> str:
-    """Index evidence groups (by kind / event id); full rows stay lazy."""
-    if not evidence_results:
-        return ""
-    groups: dict[str, int] = {}
-    for result in evidence_results:
-        kind = str(result.get("kind") or "rows")
-        groups[kind] = groups.get(kind, 0) + 1
-    entries: list[ContextIndexEntry] = []
-    for kind, count in sorted(groups.items()):
-        entries.append(
-            ContextIndexEntry(
-                stable_id=f"grp:{kind}",
-                title=f"evidence group {kind}",
-                purpose=f"{count} result(s)",
-                size_chars=count,
-                relevance_hint="evidence",
-                continuation=f"load evidence group `{kind}`",
-            )
-        )
-    index = render_context_index("EVIDENCE_GROUP_INDEX", entries)
-    _instrument_retrieval(
-        db,
-        session_id=session_id,
-        scope_kind="evidence_groups",
-        scope_id="evidence_results",
-        phase="report_section",
-        source_kind="evidence_results",
-        query_terms=list(groups.keys()),
-        candidate_count=len(entries),
-        selected_refs=[],
-        selected_chars=len(index),
-        budget=0,
-    )
-    return index
-
-
 def _estimate_message_tokens(text: str) -> int:
     """Rough token estimation: ~4 chars per token for English+JSON."""
     return len(text) // 4
@@ -231,7 +119,6 @@ def _trim_dynamic_content(
     messages: list[dict[str, str]],
     *,
     max_total_tokens: int = 28000,
-    system_weight: float = 0.5,
 ) -> list[dict[str, str]]:
     """Trim dynamic (user) message content if total estimated tokens exceed budget.
 
@@ -532,9 +419,6 @@ def _enforce_system_budget(
     return compacted[:budget_chars]
 
 
-_load_event_id_hints = load_event_id_hints
-
-
 def _lang_instruction() -> str:
     output = str(get_llm_settings()["output_language"])
     return (
@@ -557,88 +441,6 @@ def truncate_context_sections(
             continue
         trimmed[str(section_key)] = mechanical_compact(text, max_chars)
     return trimmed
-
-
-def _slim_brief_items(
-    items: Any, fields: tuple[str, ...], limit: int
-) -> list[dict[str, Any]]:
-    """Keep report_brief lists useful for section synthesis without flooding prompts."""
-    if not isinstance(items, list):
-        return []
-    slim: list[dict[str, Any]] = []
-    for item in items[:limit]:
-        if not isinstance(item, dict):
-            continue
-        projected = {
-            field: item.get(field)
-            for field in fields
-            if item.get(field) not in (None, "", [])
-        }
-        if projected:
-            slim.append(projected)
-    return slim
-
-
-def slim_report_brief_for_section(report_brief: dict, section_key: str) -> dict:
-    """Return case-level report context scoped to the current section."""
-    if not report_brief:
-        return {}
-    if section_key == "1_overview":
-        return report_brief
-    family = str(section_key or "").split("_", 1)[0]
-    brief = {
-        "time_range": report_brief.get("time_range"),
-        "source_timezone": report_brief.get("source_timezone"),
-        "investigation_objective": report_brief.get("investigation_objective"),
-        "case_metrics": report_brief.get("case_metrics"),
-        "publication_state": report_brief.get("publication_state"),
-        "publication_status": report_brief.get("publication_status"),
-        "evidence_confidence": report_brief.get("evidence_confidence"),
-        "claim_scope": report_brief.get("claim_scope"),
-    }
-    finding_fields = (
-        "finding_id",
-        "title",
-        "summary",
-        "severity",
-        "confidence",
-        "evidence_ids",
-    )
-    hypothesis_fields = (
-        "hypothesis_id",
-        "description",
-        "status",
-        "verdict",
-        "summary",
-        "required_entities",
-    )
-    if family in {"2", "3", "5"}:
-        brief["top_findings"] = _slim_brief_items(
-            report_brief.get("top_findings"), finding_fields, 8
-        )
-        brief["confirmed_hypotheses"] = _slim_brief_items(
-            report_brief.get("confirmed_hypotheses"), hypothesis_fields, 6
-        )
-        brief["refuted_hypotheses"] = _slim_brief_items(
-            report_brief.get("refuted_hypotheses"), hypothesis_fields, 4
-        )
-    if family in {"4", "5"}:
-        brief["active_hypotheses"] = _slim_brief_items(
-            report_brief.get("active_hypotheses"), hypothesis_fields, 8
-        )
-    return brief
-
-
-def _summarize_context_sections(context_sections: dict[str, str]) -> dict[str, str]:
-    """Return {section_key: first-line 120-char prefix} instead of full body."""
-    summary: dict[str, str] = {}
-    for key, body in context_sections.items():
-        text = str(body or "").strip()
-        if not text:
-            continue
-        first_line = text.split("\n", 1)[0].strip()[:120]
-        summary[str(key)] = first_line
-    return summary
 
 
 def _format_schema_card(table_hints: dict[str, Any]) -> str:
@@ -709,115 +511,6 @@ def _build_schema_guidance(
         blocks.append(live)
     blocks.append("</SCHEMA_GUIDANCE>")
     return "\n".join(blocks) + "\n"
-
-
-def collect_event_ids(evidence_results: list[dict[str, Any]]) -> list[int]:
-    event_ids: list[int] = []
-    seen: set[int] = set()
-    for result in evidence_results:
-        for row in (
-            (result.get("sample_rows") or [])
-            + (result.get("head_rows") or [])
-            + (result.get("tail_rows") or [])
-        ):
-            if not isinstance(row, dict):
-                continue
-            value = row.get("event_id")
-            try:
-                event_id = int(value)
-            except TypeError, ValueError:
-                continue
-            if event_id in seen:
-                continue
-            seen.add(event_id)
-            event_ids.append(event_id)
-    return event_ids
-
-
-def _build_event_id_guidance(
-    evidence_results: list[dict[str, Any]],
-    db: CaseDB | None = None,
-    session_id: str | None = None,
-) -> str:
-    """Disclose the host-selected event rules for IDs present in evidence."""
-    event_hints = _load_event_id_hints()
-    selected_ids = sorted(set(collect_event_ids(evidence_results)) & set(event_hints))
-    if not selected_ids:
-        return ""
-    selected = [
-        _format_event_id_claim(event_hints[event_id], event_id)
-        for event_id in selected_ids
-    ]
-    _instrument_retrieval(
-        db,
-        session_id=session_id,
-        scope_kind="event_rules",
-        scope_id="report_writer",
-        phase="schema_guidance",
-        source_kind="event_id_hints",
-        query_terms=[f"E{event_id}" for event_id in selected_ids],
-        candidate_count=len(event_hints),
-        selected_refs=[f"E{event_id}" for event_id in selected_ids],
-        selected_chars=sum(map(len, selected)),
-        budget=0,
-        rejected_refs=[
-            f"E{event_id}"
-            for event_id in sorted(event_hints)
-            if event_id not in selected_ids
-        ],
-    )
-    return "\n".join(selected) + "\n"
-
-
-def _collect_source_verdicts(evidence_results: list[dict[str, Any]]) -> list[str]:
-    verdicts: list[str] = []
-    seen: set[str] = set()
-    for result in evidence_results:
-        verdict = str(result.get("source_verdict") or "").strip().lower()
-        if not verdict or verdict in seen:
-            continue
-        seen.add(verdict)
-        verdicts.append(verdict)
-    return verdicts
-
-
-def _format_evidence_coverage(report_brief: dict[str, Any] | None) -> str:
-    """Format evidence coverage summary per section for overview injection."""
-    if not report_brief:
-        return ""
-    coverage = report_brief.get("evidence_coverage")
-    if not isinstance(coverage, dict):
-        return ""
-    sections = coverage.get("sections")
-    if not isinstance(sections, dict) or not sections:
-        return ""
-    lines: list[str] = ["Evidence coverage summary:"]
-    for section_key, items in sections.items():
-        if not isinstance(items, list):
-            continue
-        compact = ", ".join(
-            f"{row.get('source')} (rows={row.get('rows')}, used={row.get('used_in_answer')})"
-            for row in items[:6]
-            if isinstance(row, dict)
-        )
-        if compact:
-            lines.append(f"- {section_key}: {compact}")
-    return "\n".join(lines)
-
-
-def _rows_to_markdown_table(rows: list[dict[str, Any]], max_rows: int = 30) -> str:
-    if not rows:
-        return ""
-    keys = list(rows[0].keys())
-    header = "| " + " | ".join(keys) + " |"
-    separator = "| " + " | ".join("---" for _ in keys) + " |"
-    data_lines = []
-    for row in rows[:max_rows]:
-        cells = [
-            str(row.get(k, "")).replace("|", "\\|").replace("\n", " ") for k in keys
-        ]
-        data_lines.append("| " + " | ".join(cells) + " |")
-    return "\n".join([header, separator, *data_lines])
 
 
 def _format_evidence_row(e: dict[str, Any]) -> str:

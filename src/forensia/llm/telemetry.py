@@ -399,23 +399,6 @@ class LLMTelemetry:
             ),
         )
 
-    def mark_duplicate(self, *, attempt_id: str, duplicate_of: str) -> None:
-        self.db.execute(
-            "UPDATE trace.llm_provider_attempts SET duplicate_of = ? WHERE attempt_id = ?",
-            (duplicate_of, attempt_id),
-        )
-
-    def get_attempt(self, attempt_id: str) -> dict[str, Any] | None:
-        cur = self.db.execute(
-            "SELECT * FROM trace.llm_provider_attempts WHERE attempt_id = ?",
-            (attempt_id,),
-        )
-        row = cur.fetchone()
-        if row is None:
-            return None
-        cols = [col[0] for col in cur.description]
-        return dict(zip(cols, row))
-
     # --- deterministic op -------------------------------------------------
     def record_deterministic_op(
         self,

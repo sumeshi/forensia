@@ -7,7 +7,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 from forensia.core.case import Case
-from forensia.core.evidence import make_evtx_evidence_id
 from forensia.db.database import CaseDB
 from forensia.db.evidence_lookup import lookup_evidence_record
 from forensia.evidence.artifacts import MftArtifactAdapter, PrefetchArtifactAdapter
@@ -149,7 +148,7 @@ class IngestTests(unittest.TestCase):
                     push_progress=lambda *args, **kwargs: None,
                     status=None,
                 )
-                first_id = make_evtx_evidence_id(first_source, "Security", 7)
+                first_id = f"evtx-{first_source}-security-000000000007"
                 self.assertEqual(
                     first_id, lookup_evidence_record(db, first_id)["evidence_id"]
                 )
@@ -163,9 +162,7 @@ class IngestTests(unittest.TestCase):
                 source_path.write_text("replacement capture", encoding="utf-8")
                 replacement_ingest = ingest_all(case, input_dir, db=db)
                 replacement_source = replacement_ingest["new_source_keys"][0]
-                replacement_id = make_evtx_evidence_id(
-                    replacement_source, "Security", 7
-                )
+                replacement_id = f"evtx-{replacement_source}-security-000000000007"
                 _run_normalize_stage(
                     case,
                     db,
@@ -425,9 +422,7 @@ class IngestTests(unittest.TestCase):
                 path.write_text(
                     json.dumps(
                         {
-                            "evidence_id": make_evtx_evidence_id(
-                                source_sha, "Security", record_id
-                            ),
+                            "evidence_id": f"evtx-{source_sha}-security-{record_id:012d}",
                             "source_file": source_sha,
                             "winlog": {
                                 "channel": "Security",
@@ -458,8 +453,8 @@ class IngestTests(unittest.TestCase):
 
             self.assertEqual(
                 [
-                    (1, make_evtx_evidence_id(old_source, "Security", 1), old_source),
-                    (2, make_evtx_evidence_id(new_source, "Security", 2), new_source),
+                    (1, f"evtx-{old_source}-security-000000000001", old_source),
+                    (2, f"evtx-{new_source}-security-000000000002", new_source),
                 ],
                 rows,
             )

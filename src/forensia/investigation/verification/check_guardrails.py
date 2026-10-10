@@ -410,14 +410,12 @@ def verify_verdict_consistency(
     # not event-id claims. Treat a number as a claimed event id only when it is
     # framed by "event ..." wording, or when it is a 4-5 digit number that
     # exists in the declared event-id vocabulary (event_ids.yaml).
-    from forensia.context.prompt_context import _load_event_id_hints
-
     rationale_lower = rationale.lower()
     framed = {
         int(m) for m in re.findall(r"event[^0-9]{0,8}(\d{2,5})\b", rationale_lower)
     }
     bare = {int(m) for m in re.findall(r"\b(\d{4,5})\b", rationale_lower)}
-    known_event_ids = set(_load_event_id_hints().keys())
+    known_event_ids = set(load_event_id_hints().keys())
     if known_event_ids:
         rationale_eids = (framed | bare) & known_event_ids
     else:

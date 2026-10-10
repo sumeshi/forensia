@@ -14,10 +14,8 @@ from forensia.config import (
     reload_settings,
 )
 from forensia.context.prompt_context import (
-    _build_event_id_guidance,
     _build_schema_guidance,
     _trim_dynamic_content,
-    slim_report_brief_for_section,
     truncate_context_sections,
 )
 from forensia.core.case import Case
@@ -486,47 +484,6 @@ class NarratePromptContractTests(unittest.TestCase):
             finally:
                 db.close()
 
-    def test_slim_report_brief_keeps_case_level_context_for_narrative_sections(self):
-        brief = {
-            "time_range": {"start": "2015-03-22", "end": "2015-03-23"},
-            "source_timezone": "UTC",
-            "top_findings": [
-                {
-                    "finding_id": "finding-1",
-                    "title": "Explicit credential logon",
-                    "summary": "4648 activity involving informant.",
-                    "severity": "high",
-                    "confidence": 0.9,
-                    "evidence_ids": [
-                        "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000122"
-                    ],
-                    "large_unused_field": "x" * 200,
-                }
-            ],
-            "confirmed_hypotheses": [
-                {
-                    "hypothesis_id": "H-001",
-                    "description": "Explicit credentials were used.",
-                    "status": "confirmed",
-                    "verdict": "confirmed",
-                }
-            ],
-            "active_hypotheses": [
-                {"hypothesis_id": "H-002", "description": "Missing collection gap."}
-            ],
-        }
-
-        technical = slim_report_brief_for_section(brief, "3_technical")
-        gaps = slim_report_brief_for_section(brief, "4_gaps")
-
-        self.assertEqual(
-            "Explicit credential logon", technical["top_findings"][0]["title"]
-        )
-        self.assertIn("confirmed_hypotheses", technical)
-        self.assertNotIn("large_unused_field", technical["top_findings"][0])
-        self.assertEqual("H-002", gaps["active_hypotheses"][0]["hypothesis_id"])
-        self.assertNotIn("top_findings", gaps)
-
 
 def test_section_knowledge_selection_uses_template_frontmatter_tags(
     tmp_path: Path,
@@ -656,13 +613,6 @@ class IndexedContextTests(unittest.TestCase):
         self.assertIsNotNone(row)
         self.assertEqual("schema_hints", row[0])
         self.assertIn("evtx_events", row[1])
-
-    def test_event_guidance_inlines_selected_rules_without_continuation(self) -> None:
-        guidance = _build_event_id_guidance([{"sample_rows": [{"event_id": 4624}]}])
-        self.assertIn("Event ID 4624", guidance)
-        self.assertIn("allowed_claims", guidance)
-        self.assertNotIn("EVENT_ID_INDEX", guidance)
-        self.assertNotIn("load event rule", guidance)
 
 
 if __name__ == "__main__":

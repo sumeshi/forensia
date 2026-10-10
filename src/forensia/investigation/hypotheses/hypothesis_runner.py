@@ -84,9 +84,9 @@ def _unavailable_missing_event_ids(
     """
     if not available_event_ids or not missing_questions:
         return []
-    from forensia.context.prompt_context import _load_event_id_hints
+    from forensia.knowledge.catalog import load_event_id_hints
 
-    vocabulary = set(_load_event_id_hints().keys())
+    vocabulary = set(load_event_id_hints().keys())
     if not vocabulary:
         return []
     missing_text = " ".join(str(q).lower() for q in missing_questions if q)

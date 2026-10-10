@@ -184,12 +184,6 @@ class Case:
     def database_path(self) -> Path:
         return self.db_dir / "case.duckdb"
 
-    @property
-    def timezone_info(self) -> str:
-        """Return formatted timezone string for display."""
-        tz = self.source_timezone or "UTC"
-        return f"{tz} (DST observed for appropriate regions)"
-
     def clear_runtime_outputs(
         self,
         drop_database: bool = True,

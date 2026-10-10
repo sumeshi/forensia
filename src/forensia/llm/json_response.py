@@ -202,7 +202,6 @@ def parse_llm_json(
     model: str,
     status_callback: Callable[[str], None] | None = None,
     *,
-    telemetry=None,
     logical_call_id: str | None = None,
     ordinal: list[int] | None = None,
 ) -> dict[str, Any]:

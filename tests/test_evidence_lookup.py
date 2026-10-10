@@ -7,7 +7,6 @@ import tempfile
 import unittest
 
 from forensia.core.case import Case
-from forensia.core.evidence import make_evtx_evidence_id
 from forensia.db.database import CaseDB
 from forensia.db.evidence_lookup import (
     fetch_evidence_records,
@@ -90,8 +89,8 @@ class EvidenceLookupTest(unittest.TestCase):
     def test_same_local_evtx_record_from_two_sources_resolves_independently(self):
         source_a = "c" * 64
         source_b = "d" * 64
-        first_id = make_evtx_evidence_id(source_a, "Security", 1)
-        second_id = make_evtx_evidence_id(source_b, "Security", 1)
+        first_id = f"evtx-{source_a}-security-000000000001"
+        second_id = f"evtx-{source_b}-security-000000000001"
         self.db.execute(
             "INSERT INTO evtx_events (evidence_id, source_file, channel, record_id, computer) "
             "VALUES (?, ?, 'Security', 1, ?), (?, ?, 'Security', 1, ?)",
@@ -107,7 +106,7 @@ class EvidenceLookupTest(unittest.TestCase):
 
     def test_conflicting_duplicate_rows_for_one_identity_are_rejected(self):
         source = "c" * 64
-        evidence_id = make_evtx_evidence_id(source, "Security", 2)
+        evidence_id = f"evtx-{source}-security-000000000002"
         self.db.execute(
             "INSERT INTO evtx_events (evidence_id, source_file, record_id, computer) "
             "VALUES (?, ?, 2, 'HOST-A'), (?, ?, 2, 'HOST-B')",

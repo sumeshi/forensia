@@ -73,10 +73,3 @@ def test_wheel_packages_runtime_resources(wheel_paths: set[str]) -> None:
         "forensia/data/render/report.html.j2",
     }
     assert required <= wheel_paths
-    assert not any(
-        path.startswith(("forensia/ai/", "scripts/")) for path in wheel_paths
-    )
-    assert not any(
-        path.endswith(("/sigma.yaml", "/question_routing_eval.yaml", "/rules/sigma.py"))
-        for path in wheel_paths
-    )

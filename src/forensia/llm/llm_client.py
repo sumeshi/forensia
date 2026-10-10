@@ -540,7 +540,6 @@ def chat_completion(
 
 async def outage_wait_until_recovered(
     base_url: str,
-    model: str,
     progress_callback: Callable[[dict], None] | None = None,
 ) -> None:
     """Wait for the provider's model endpoint to respond to a health probe."""

@@ -11,18 +11,6 @@ def _source_identity(source_sha: str) -> str:
     return identity
 
 
-def make_evtx_evidence_id(source_sha: str, channel: str, record_number: int) -> str:
-    return f"evtx-{_source_identity(source_sha)}-{strict_slugify(channel)}-{record_number:012d}"
-
-
-def make_mft_evidence_id(
-    source_sha: str, record_number: int, sequence_number: int
-) -> str:
-    return (
-        f"mft-{_source_identity(source_sha)}-{record_number:012d}-{sequence_number:02d}"
-    )
-
-
 def make_prefetch_evidence_id(
     source_sha: str, executable_name: str, prefetch_hash: str
 ) -> str:

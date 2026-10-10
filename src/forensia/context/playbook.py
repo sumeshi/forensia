@@ -793,29 +793,3 @@ def _dfir_playbook(
 
 
 _load_question_routing_raw = load_question_routing_raw
-
-
-def _format_artifact_inference() -> str:
-    """Generate artifact inference text from YAML schema files."""
-    yamls = _load_dfir_yamls()
-    artifact_inference = yamls.get("artifact_inference", {})
-    if not isinstance(artifact_inference, dict):
-        return "\nKnown artifact-to-application inferences:\n- (no artifact inference data loaded)\n"
-    lines = ["\nKnown artifact-to-application inferences:"]
-    for artifact_type, entries in artifact_inference.items():
-        if not isinstance(entries, list):
-            continue
-        for entry in entries:
-            if not isinstance(entry, dict):
-                continue
-            pattern = entry.get("pattern", "")
-            app = entry.get("app_name", "")
-            if pattern and app:
-                notes = entry.get("notes", "")
-                line = f"- {pattern} → {app}"
-                if notes:
-                    line += f" — {notes}"
-                lines.append(line)
-    if len(lines) == 1:
-        lines.append("- (no artifact inference data loaded)")
-    return "\n".join(lines) + "\n"

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, fields
-from functools import lru_cache
 
 from dotenv import load_dotenv
 
@@ -104,7 +103,6 @@ def reload_settings() -> None:
     refreshed = _build_settings()
     for field in fields(Settings):
         setattr(settings, field.name, getattr(refreshed, field.name))
-    clear_llm_settings_cache()
 
 
 def resolve_llm_config(
@@ -116,7 +114,6 @@ def resolve_llm_config(
     return resolved_endpoint, resolved_model
 
 
-@lru_cache(maxsize=1)
 def get_llm_settings() -> dict:
     return {
         "max_tokens": settings.llm_max_tokens,
@@ -126,10 +123,6 @@ def get_llm_settings() -> dict:
         "reasoning_reserve_tokens": settings.llm_reasoning_reserve_tokens,
         "llm_context_window_tokens": settings.llm_context_window_tokens or None,
     }
-
-
-def clear_llm_settings_cache() -> None:
-    get_llm_settings.cache_clear()
 
 
 def get_system_prompt_budget_chars() -> int:

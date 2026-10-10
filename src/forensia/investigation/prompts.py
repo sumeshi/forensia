@@ -264,12 +264,12 @@ def build_query_intent_messages(
     active_hypotheses: list[Hypothesis],
     time_range: dict[str, str] | None = None,
     schema_context: str = "",
-    extra_context_md: str = "",
+    host_feedback: str = "",
     prior_check_feedback: str = "",
     case_profile: CaseEvidenceProfile | None = None,
     case_policy: Any | None = None,
     findings_snapshot: list[dict[str, Any]] | None = None,
-    work_context_md: str = "",
+    working_state_block: str = "",
     db: Any | None = None,
     session_id: str | None = None,
     spec_payload: Any = None,
@@ -277,7 +277,7 @@ def build_query_intent_messages(
     """Build messages for the query_intent_planner phase.
 
     Decides WHAT data to fetch for this hypothesis, not HOW.
-    ``work_context_md`` is the bounded Case/Trace working-state projection.
+    ``working_state_block`` is the bounded Case/Trace working-state projection.
 
     Disclosure (V2-08): one spec/phase/artifact pathway selects everything
     that appears here — ``schema_tables`` cards (spec capability families'
@@ -393,9 +393,9 @@ def build_query_intent_messages(
         if str(getattr(item, "id", "") or "") != current_id
     ]
     user = (
-        f"{work_context_md}"
+        f"{working_state_block}"
         f"peer_active_hypotheses: {json.dumps(peer_hypotheses, ensure_ascii=False, default=str)}\n"
-        f"extra_context:\n{extra_context_md}\n"
+        f"host_feedback:\n{host_feedback}\n"
         f"prior_check_feedback:\n{prior_check_feedback or '(no prior checks)'}\n"
     )
     if confirmed_findings_block:
@@ -515,7 +515,6 @@ def build_finding_extractor_messages(
     result_rows: list[dict],
     verdict: str,
     rationale: str,
-    time_range: dict[str, str] | None = None,
 ) -> tuple[list[dict[str, str]], dict]:
     """role: finding_extractor.
     Goal: extract finding entries IFF verdict == confirmed.
@@ -551,7 +550,6 @@ def build_gap_identifier_messages(
     observed_keypoints: list[dict],
     uncovered_keypoints: list[dict],
     active_hypotheses_slim: list[dict],
-    time_range: dict[str, str] | None = None,
     status_callback: Callable[[str], None] | None = None,
     case_profile: CaseEvidenceProfile | None = None,
     case_policy: Any | None = None,
@@ -624,7 +622,6 @@ def build_gap_identifier_messages(
 def build_hypothesis_drafter_messages(
     gap_area: dict,
     available_rules: list[dict],
-    time_range: dict[str, str] | None = None,
     status_callback: Callable[[str], None] | None = None,
     case_profile: CaseEvidenceProfile | None = None,
     case_policy: Any | None = None,

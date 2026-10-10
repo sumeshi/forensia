@@ -283,8 +283,8 @@ def _build_hypothesis_history(
     return hypothesis_history
 
 
-def _load_work_context(db: CaseDB | None, hypothesis_id: str) -> str:
-    """Build the current per-attempt Case/Trace context without Markdown memory."""
+def _build_working_state_block(db: CaseDB | None, hypothesis_id: str) -> str:
+    """Build the current bounded Case/Trace prompt block on demand."""
     if db is None or not hypothesis_id:
         return ""
     from forensia.investigation.working_state import (
@@ -413,7 +413,7 @@ def plan_hypothesis_query(
         session_id=state.session_id,
     )
     prior_check_feedback = _load_prior_check_feedback(db, hypothesis)
-    work_context_md = _load_work_context(db, hypothesis.id)
+    working_state_block = _build_working_state_block(db, hypothesis.id)
     disclosure_record = {
         "schema_cards": list(_primary_tables) or ["evtx_events"],
         "playbook_tables": sorted(_disclosure_tables) or None,
@@ -431,12 +431,12 @@ def plan_hypothesis_query(
         active_hypotheses=state.active_hypotheses,
         time_range=time_range or {},
         schema_context=schema_card,
-        extra_context_md=execution_error_block + planner_error_block,
+        host_feedback=execution_error_block + planner_error_block,
         prior_check_feedback=prior_check_feedback,
         case_profile=case_profile,
         case_policy=case_policy,
         findings_snapshot=state.findings_snapshot,
-        work_context_md=work_context_md,
+        working_state_block=working_state_block,
         db=db,
         session_id=state.session_id,
         spec_payload=spec_payload,

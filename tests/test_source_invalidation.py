@@ -7,7 +7,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 from forensia.core.case import Case
-from forensia.core.evidence import make_evtx_evidence_id
 from forensia.db.database import CaseDB
 from forensia.db.evidence_lookup import lookup_evidence_record
 from forensia.evidence.artifacts import NormalizeResult
@@ -316,8 +315,8 @@ class SourceInvalidationTests(unittest.TestCase):
         source_a = "a" * 64
         source_b = "b" * 64
         source_c = "c" * 64
-        old_id = make_evtx_evidence_id(source_a, "Security", 1)
-        new_id = make_evtx_evidence_id(source_c, "Security", 1)
+        old_id = f"evtx-{source_a}-security-000000000001"
+        new_id = f"evtx-{source_c}-security-000000000001"
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(Path(tmpdir) / "case")
             with CaseDB(case) as db:

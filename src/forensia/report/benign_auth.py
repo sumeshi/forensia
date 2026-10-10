@@ -1,20 +1,17 @@
-"""Benign local authentication detection and tagging.
+"""Benign local authentication detection.
 
 This module provides deterministic (no-LLM) detection of benign local
 authentication patterns — loopback auth, machine account self-auth, and
-local UAC/credential dialog processes — and tags findings accordingly.
+local UAC/credential dialog processes.
 """
 
 from __future__ import annotations
 
-import json
 import re
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any
 
-from forensia.db.database import CaseDB
-from forensia.db.query import fetch_records
 from forensia.knowledge.resources import schema_dir
 
 
@@ -25,7 +22,6 @@ class BenignAuthPolicy:
     local_source_values: frozenset[str]
     auth_event_class_terms: tuple[str, ...]
     fallback_auth_event_ids: frozenset[str]
-    finding_tag: str
 
 
 @lru_cache(maxsize=1)
@@ -49,14 +45,10 @@ def _load_benign_auth_policy() -> BenignAuthPolicy:
             raise ValueError(f"{path}: local_auth.{name} must be a list")
         return tuple(str(value).strip().lower() for value in values)
 
-    tag = str(policy.get("finding_tag") or "").strip()
-    if not tag:
-        raise ValueError(f"{path}: local_auth.finding_tag is required")
     return BenignAuthPolicy(
         local_source_values=frozenset(_strings("local_source_values")),
         auth_event_class_terms=_strings("auth_event_class_terms"),
         fallback_auth_event_ids=frozenset(_strings("fallback_auth_event_ids")),
-        finding_tag=tag,
     )
 
 
@@ -153,68 +145,3 @@ def is_benign_local_auth(
     # real IP is a lateral-movement signal; genuine same-host machine self-auth
     # over a real interface is left to other gates rather than blanket-cleared.
     return False
-
-
-def tag_benign_local_auth_findings(db: CaseDB) -> int:
-    """Scan findings table, tag findings where ALL evidence rows are benign.
-
-    For each finding where every evidence row satisfies ``is_benign_local_auth``,
-    append ``benign-context:loopback-local-auth`` to the ``tags`` JSON array.
-    Preserves existing tags, avoids duplicates.
-
-    Returns the count of findings tagged.
-    """
-    tagged = 0
-    rows = fetch_records(
-        db.conn,
-        "SELECT finding_id, rule_id, title, evidence, tags FROM findings"
-        " WHERE evidence IS NOT NULL",
-    )
-    for row in rows:
-        finding_id = str(row["finding_id"])
-        assume_auth = finding_is_auth_scoped(row.get("rule_id"), row.get("title"))
-        evidence_raw = row.get("evidence")
-        if not evidence_raw:
-            continue
-        try:
-            evidence_list = (
-                json.loads(evidence_raw)
-                if isinstance(evidence_raw, str)
-                else evidence_raw
-            )
-        except json.JSONDecodeError, TypeError:
-            continue
-        if not isinstance(evidence_list, list):
-            continue
-        if not evidence_list:
-            continue
-
-        if not all(
-            is_benign_local_auth(entry, assume_auth_event=assume_auth)
-            for entry in evidence_list
-        ):
-            continue
-
-        # All evidence rows are benign — tag the finding
-        current_tags: list[str] = []
-        tags_raw = row.get("tags")
-        if tags_raw:
-            try:
-                current_tags = (
-                    json.loads(tags_raw)
-                    if isinstance(tags_raw, str)
-                    else (list(tags_raw) if isinstance(tags_raw, (list, tuple)) else [])
-                )
-            except json.JSONDecodeError, TypeError:
-                current_tags = []
-
-        tag = _load_benign_auth_policy().finding_tag
-        if tag not in current_tags:
-            current_tags.append(tag)
-            db.conn.execute(
-                "UPDATE findings SET tags = ? WHERE finding_id = ?",
-                [json.dumps(current_tags), finding_id],
-            )
-            tagged += 1
-
-    return tagged

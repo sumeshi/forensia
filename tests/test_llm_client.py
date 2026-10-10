@@ -205,7 +205,7 @@ def test_outage_recovery_uses_health_endpoint_without_inference_request() -> Non
 
     async def run() -> None:
         with patch.object(llm_client, "_get_async_client", return_value=client):
-            await llm_client.outage_wait_until_recovered("http://llama.test", "m")
+            await llm_client.outage_wait_until_recovered("http://llama.test")
 
     asyncio.run(run())
     assert client.get_urls == ["http://llama.test/v1/models"]

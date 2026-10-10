@@ -229,7 +229,7 @@ class TestActionPlanIsClientFacing(unittest.TestCase):
                     finding_id="windows-security-4648-logon-explicit-creds-0001",
                     rule_id="windows-security-4648-logon-explicit-creds",
                     title="Logon attempt with explicit credentials (4648): HOST-A$ -> HOST-A$",
-                    tags=["benign-context:loopback-local-auth"],
+                    tags=["benign-context:loopback-source"],
                     evidence=[{"evidence_id": "evtx-1", "computer": "HOST-A"}],
                 )
                 rows = build_recommendations_table(db)

@@ -19,6 +19,7 @@ from forensia.investigation.planner import (
 )
 from forensia.investigation.progress import query_fingerprint
 from forensia.investigation.verification.check_normalize import parse_new_hypotheses
+from forensia.investigation.working_state import render_working_state
 
 
 def _llm_base_url() -> str:
@@ -224,12 +225,15 @@ class PlannerRetryTests(unittest.TestCase):
 
         self.assertEqual(1, block_first.count("<WORKING_STATE source=case_trace>"))
         self.assertIn("current hypothesis=H-workctx status=active", block_first)
+        self.assertEqual(1, block_first.count("current hypothesis=H-workctx"))
         self.assertIn("current support=evidence=evtx-wctx", block_first)
         self.assertNotIn("root=declared:evtx-wctx", block_first)
         self.assertIn("assessment=EA-wctx", block_first)
         self.assertIn("query=Q-wctx", block_first)
         self.assertIn("open gap=G-workctx", block_first)
         self.assertIn("open task=T-workctx", block_first)
+        self.assertEqual(1, block_first.count("open gap=G-workctx"))
+        self.assertEqual(1, block_first.count("open task=T-workctx"))
         self.assertNotIn("G-other", block_first)
         self.assertNotIn("T-other", block_first)
         self.assertIn("Q-prior", "\n".join(m["content"] for m in first))
@@ -914,6 +918,66 @@ class PlannerRetryTests(unittest.TestCase):
         for call in mock_request.call_args_list:
             for message in call.kwargs["messages"]:
                 self.assertNotIn("ready_to_compose", str(message.get("content")))
+
+
+def test_working_state_only_deduplicates_requirements_with_rendered_rows() -> None:
+    from types import SimpleNamespace
+
+    current = SimpleNamespace(
+        hypothesis_id="H-1",
+        status="active",
+        capabilities=(),
+        unready_capabilities=(),
+        unmet_conditions=(),
+        support_roots=(),
+        contradiction_roots=(),
+        reevaluation_required=(),
+        requirements=(
+            "gap=G-1",
+            "gap=G-missing",
+            "task=T-1",
+            "external task=EXT-1",
+            "blocked: evidence is insufficient",
+        ),
+    )
+    rendered = render_working_state(
+        {
+            "current": current,
+            "work": [
+                {
+                    "hypotheses": [
+                        {"id": "H-1", "status": "active", "description": ""}
+                    ],
+                    "gaps": [
+                        {
+                            "id": "G-1",
+                            "kind": "scope",
+                            "description": "gap",
+                            "reason": "",
+                        }
+                    ],
+                    "tasks": [
+                        {
+                            "id": "T-1",
+                            "kind": "verify",
+                            "retry_condition": "",
+                            "description": "task",
+                            "reason": "",
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+    assert "open gap=G-1" in rendered
+    assert "open task=T-1" in rendered
+    assert "open requirement=gap=G-1" not in rendered
+    assert "open requirement=task=T-1" not in rendered
+    assert "open requirement=gap=G-missing" in rendered
+    assert "open requirement=external task=EXT-1" in rendered
+    assert "open requirement=blocked: evidence is insufficient" in rendered
+    assert "open hypothesis=H-1" not in rendered
 
 
 if __name__ == "__main__":

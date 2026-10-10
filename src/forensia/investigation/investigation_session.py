@@ -217,11 +217,10 @@ async def _call_with_outage_recovery(
             if attempt >= _MAX_OUTAGE_RETRIES_PER_CALL:
                 raise
             if _outage_progress_callback is None:
-                await outage_wait_until_recovered(base_url, model)
+                await outage_wait_until_recovered(base_url)
             else:
                 await outage_wait_until_recovered(
                     base_url,
-                    model,
                     progress_callback=_outage_progress_callback,
                 )
     raise LLMServerUnavailableError("Outage recovery failed")

@@ -147,16 +147,6 @@ def spec_capabilities(spec: Any, *, hypothesis_id: str = "") -> list[str]:
     )
 
 
-def load_spec_capabilities(db: CaseDB, hypothesis_id: str) -> list[str]:
-    """Read the canonical spec of one hypothesis and derive its capabilities."""
-    row = db.execute(
-        "SELECT verification_spec FROM hypotheses WHERE hypothesis_id = ?",
-        [hypothesis_id],
-    ).fetchone()
-    raw_spec = row[0] if row else None
-    return spec_capabilities(raw_spec, hypothesis_id=hypothesis_id)
-
-
 def coverage_readiness(
     db: CaseDB, capabilities: list[str]
 ) -> tuple[list[str], set[str]]:

@@ -14,18 +14,14 @@ def build_working_state(
     hypothesis_id: str | None = None,
     max_work: int = 8,
 ) -> dict[str, Any]:
-    """Project open work and recent Trace references without Markdown or cache."""
+    """Project open work and current evidence refs without Markdown or cache."""
     work: list[dict[str, Any]] = []
     for ref in open_work_refs(db):
         if hypothesis_id and hypothesis_id not in ref.hypothesis_ids:
             continue
         if len(work) >= max_work:
             break
-        item: dict[str, Any] = {
-            "hypothesis_ids": list(ref.hypothesis_ids),
-            "gap_ids": list(ref.gap_ids),
-            "task_ids": list(ref.task_ids),
-        }
+        item: dict[str, Any] = {}
         if ref.hypothesis_ids:
             ids = list(ref.hypothesis_ids)
             rows = db.execute(
@@ -79,7 +75,6 @@ def build_working_state(
         work.append(item)
 
     return {
-        "hypothesis_id": hypothesis_id,
         "current": work_context_snapshot(db, hypothesis_id) if hypothesis_id else None,
         "work": work,
     }
@@ -89,6 +84,10 @@ def render_working_state(state: dict[str, Any]) -> str:
     """Render bounded state units and their stable Case/Trace refs."""
     lines = ["<WORKING_STATE source=case_trace>"]
     current = state.get("current")
+    current_hypothesis_id = current.hypothesis_id if current is not None else None
+    work = state.get("work", [])
+    detailed_gaps = {row["id"] for item in work for row in item.get("gaps", [])}
+    detailed_tasks = {row["id"] for item in work for row in item.get("tasks", [])}
     if current is not None:
         lines.extend(
             [f"current hypothesis={current.hypothesis_id} status={current.status}"]
@@ -102,9 +101,18 @@ def render_working_state(state: dict[str, Any]) -> str:
             f"historical reevaluation required={x}"
             for x in current.reevaluation_required
         )
-        lines.extend(f"open requirement={x}" for x in current.requirements)
-    for item in state.get("work", []):
+        lines.extend(
+            f"open requirement={x}"
+            for x in current.requirements
+            if not (
+                (x.startswith("gap=") and x.removeprefix("gap=") in detailed_gaps)
+                or (x.startswith("task=") and x.removeprefix("task=") in detailed_tasks)
+            )
+        )
+    for item in work:
         for row in item.get("hypotheses", []):
+            if row["id"] == current_hypothesis_id:
+                continue
             lines.append(
                 f"open hypothesis={row['id']} status={row['status']} {row['description']}"
             )
