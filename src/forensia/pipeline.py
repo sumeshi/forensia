@@ -64,8 +64,8 @@ from forensia.knowledge.rules.engine import (
     clear_rule_findings_batch,
     feed_findings_to_timeline,
     generate_findings,
+    iter_rule_row_batches,
     prepare_finding_run,
-    run_rule,
     save_findings,
 )
 from forensia.knowledge.rules.loader import load_rules
@@ -678,7 +678,7 @@ def _run_analyze_stage(
                 "SELECT DISTINCT rule_id FROM findings WHERE rule_id IS NOT NULL"
             ).fetchall()
         }
-        clear_rule_findings_batch(case, db, old_rule_ids | active_rule_ids)
+        clear_rule_findings_batch(db, old_rule_ids | active_rule_ids)
         run_context = prepare_finding_run(case, db)
         observed_logs = db.execute(
             "SELECT DISTINCT channel, event_id, "
@@ -730,14 +730,9 @@ def _run_analyze_stage(
                     result["execution"] = {"status": "not_observed", "matches": None}
                     continue
             result["query"] = rule.query
-            findings = generate_findings(rule, run_rule(db, rule))
-            if findings:
-                push_progress(
-                    f"[analyze] rule: {rule.id} matches={len(findings)}",
-                    stage="analyze",
-                    status="running",
-                    log_level="info",
-                )
+            match_count = 0
+            for batch in iter_rule_row_batches(db, rule):
+                findings = generate_findings(rule, batch, first_ordinal=match_count + 1)
                 save_findings(
                     case,
                     db,
@@ -745,8 +740,16 @@ def _run_analyze_stage(
                     run_context=run_context,
                     feed_timeline=False,
                 )
-            total_findings += len(findings)
-            result["execution"] = {"status": "completed", "matches": len(findings)}
+                match_count += len(findings)
+            if match_count:
+                push_progress(
+                    f"[analyze] rule: {rule.id} matches={match_count}",
+                    stage="analyze",
+                    status="running",
+                    log_level="info",
+                )
+            total_findings += match_count
+            result["execution"] = {"status": "completed", "matches": match_count}
         current_rule_id = None
         feed_findings_to_timeline(db)
         _prune_orphan_reviews(db)

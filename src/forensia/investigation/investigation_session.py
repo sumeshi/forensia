@@ -16,6 +16,7 @@ from uuid import uuid4
 
 from forensia.config import get_llm_settings
 from forensia.context.case_profile import propose_scope_candidates
+from forensia.context.investigation_candidates import build_investigation_candidates
 from forensia.core.case import Case
 from forensia.core.memory import MemoryManager
 from forensia.core.session import Hypothesis, SessionState
@@ -25,7 +26,6 @@ from forensia.db.investigation_state import (
     load_investigation_state,
     mark_investigation_started,
 )
-from forensia.db.query import findings_snapshot
 from forensia.investigation.case_policy import (
     CASE_POLICY_STEP_PHASE,
     CasePolicyInput,
@@ -48,7 +48,6 @@ from forensia.llm.llm_client import (
     LLMServerUnavailableError,
     outage_wait_until_recovered,
 )
-from forensia.report.finding_themes import classify_finding_theme
 from forensia.report.sections.report_input import REPORT_INPUT_PHASE
 from forensia.report.sections.status import build_report_status, overlay_report_status
 from forensia.report.template_export import seed_case_report_templates
@@ -453,56 +452,16 @@ def _initialize_overview(
 
 
 def _finding_snapshot(db: CaseDB, limit: int = 20) -> list[dict[str, Any]]:
-    """Fetch a bounded, theme-diverse finding projection for LLM working Memory."""
-    candidates = findings_snapshot(db, max(limit * 8, limit), include_evidence=True)
-    grouped: dict[str, list[dict[str, Any]]] = {}
-    for finding in candidates:
-        grouped.setdefault(classify_finding_theme(finding), []).append(finding)
-    projected: list[dict[str, Any]] = []
-    depth = 0
-    while len(projected) < limit:
-        added = False
-        for theme, items in grouped.items():
-            if depth >= len(items):
-                continue
-            item = dict(items[depth])
-            item["projection_theme"] = theme
-            item["theme_count"] = len(items)
-            item["theme_finding_ids"] = [
-                str(candidate.get("finding_id") or "") for candidate in items
-            ]
-            projected.append(item)
-            added = True
-            if len(projected) >= limit:
-                break
-        if not added:
-            break
-        depth += 1
-    revision = hashlib.sha256(
-        json.dumps(
-            [
-                {
-                    key: item.get(key)
-                    for key in (
-                        "finding_id",
-                        "title",
-                        "status",
-                        "confidence",
-                        "summary",
-                    )
-                }
-                for item in projected
-            ],
-            sort_keys=True,
-            default=str,
-            separators=(",", ":"),
-        ).encode()
-    ).hexdigest()[:16]
+    """Fetch the shared bounded candidate projection from the complete current match set."""
+    projection = build_investigation_candidates(db, limit)
+    projected = projection["candidates"]
     generated_at = datetime.now(UTC).isoformat()
-    for item in projected:
-        item["projection_revision"] = revision
+    for index, item in enumerate(projected):
+        item["projection_revision"] = item["candidate_fingerprint"]
         item["projection_generated_at"] = generated_at
         item["projection_state"] = "in-progress"
+        if index == 0:
+            item["projection_counts"] = projection["counts"]
     return projected
 
 
@@ -536,8 +495,10 @@ def sync_keypoint_cards(
             f"- title: {finding.get('title')}",
             f"- severity: {finding.get('severity')}",
             f"- confidence: {finding.get('confidence')}",
-            f"- theme: {finding.get('projection_theme') or 'other'}",
-            f"- theme_finding_count: {finding.get('theme_count') or 1}",
+            f"- candidate_ref: {finding.get('candidate_ref') or 'unknown'}",
+            f"- candidate_fingerprint: {finding.get('candidate_fingerprint') or 'unknown'}",
+            f"- matches: {finding.get('match_count') or 0}",
+            f"- distinct_evidence: {finding.get('evidence_count') or 0}",
             f"- projection_revision: {finding.get('projection_revision') or 'unknown'}",
             f"- projection_generated_at: {finding.get('projection_generated_at') or 'unknown'}",
             f"- projection_state: {finding.get('projection_state') or 'unknown'}",
@@ -545,19 +506,24 @@ def sync_keypoint_cards(
             "## Summary",
             str(finding.get("summary") or "").strip() or "-",
         ]
-        theme_finding_ids = [
-            str(item)
-            for item in (finding.get("theme_finding_ids") or [])
-            if str(item).strip()
-        ]
-        if theme_finding_ids:
+        if index == 1:
+            counts = finding.get("projection_counts") or {}
             lines.extend(
                 [
                     "",
-                    "## Theme Finding IDs",
-                    *[f"- {item}" for item in theme_finding_ids],
+                    "## Candidate Population",
+                    f"- matches: {counts.get('match_count', 0)}",
+                    f"- distinct_evidence: {counts.get('distinct_evidence_count', 0)}",
+                    f"- candidates: {counts.get('candidate_count', 0)}",
+                    f"- presented: {counts.get('presented_count', 0)}",
+                    f"- unpresented: {counts.get('unpresented_count', 0)}",
                 ]
             )
+        rule_ids = [
+            str(item) for item in finding.get("rule_ids", []) if str(item).strip()
+        ]
+        lines.extend(["", "## Matched Rule IDs"])
+        lines.extend([f"- {rule_id}" for rule_id in rule_ids] or ["- none"])
         lines.extend(["", "## Evidence IDs"])
         lines.extend([f"- {evidence_id}" for evidence_id in evidence_ids] or ["- none"])
         memory.upsert_keypoint(

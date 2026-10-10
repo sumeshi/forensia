@@ -523,6 +523,62 @@ class PlannerRetryTests(unittest.TestCase):
                 self.assertNotIn("_action_error", response)
                 request.assert_called_once()
 
+    def test_sql_path_schema_and_prompt_show_mutually_exclusive_valid_actions(
+        self,
+    ) -> None:
+        from pydantic import ValidationError
+
+        from forensia.investigation.prompts import build_query_intent_messages
+        from forensia.llm.schemas import QUERY_INTENT_SCHEMA, QueryIntentResponse
+
+        sql_schema = QUERY_INTENT_SCHEMA["$defs"]["SQLQueryAction"]
+        self.assertEqual(list(sql_schema["properties"]), sql_schema["required"])
+        modes = {
+            branch["properties"]["template_id"]["type"]: branch["properties"]
+            for branch in sql_schema["anyOf"]
+        }
+        self.assertEqual(r"^\s*$", modes["string"]["sql"]["pattern"])
+        self.assertEqual("null", modes["null"]["template_id"]["type"])
+        self.assertEqual(r".*\S.*", modes["null"]["sql"]["pattern"])
+
+        def payload(template_id, sql):
+            return {
+                "action": {
+                    "type": "sql.query",
+                    "intent": "inspect matching evidence",
+                    "target_table": "evtx_events",
+                    "template_id": template_id,
+                    "sql": sql,
+                }
+            }
+
+        QueryIntentResponse.model_validate(payload("catalog-template", ""))
+        QueryIntentResponse.model_validate(
+            payload(None, "SELECT evidence_id FROM evtx_events LIMIT 20")
+        )
+        for template_id, sql in (
+            (None, ""),
+            ("catalog-template", "SELECT evidence_id FROM evtx_events LIMIT 20"),
+            (None, "   "),
+        ):
+            with self.subTest(template_id=template_id, sql=sql):
+                with self.assertRaises(ValidationError):
+                    QueryIntentResponse.model_validate(payload(template_id, sql))
+
+        messages = build_query_intent_messages(
+            hypothesis=Hypothesis(id="H-paths", description="inspect logon activity"),
+            recent_history=[],
+            active_hypotheses=[],
+            schema_context="",
+        )
+        system = messages[0]["content"]
+        self.assertIn('"template_id": null', system)
+        self.assertIn('"sql": "SELECT evidence_id FROM evtx_events LIMIT 20"', system)
+        self.assertIn(
+            "copy a template_id exactly from the supplied <TEMPLATE_CATALOG>", system
+        )
+        self.assertNotIn("q_failed_logon_by_ip_window", system)
+
     def test_repeated_memory_action_is_ineligible_after_expansion(self) -> None:
         state = SessionState(session_id="session-action", iteration=1)
         hypothesis = Hypothesis(id="H-action", description="test hypothesis")

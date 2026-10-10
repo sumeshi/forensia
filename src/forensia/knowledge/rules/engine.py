@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from string import Formatter
 from typing import Any
 
-import orjson
 import yaml
 
 from forensia.core.case import Case
@@ -37,10 +37,23 @@ _ALLOWED_FALLBACK_TABLES = {
 }
 
 
-def run_rule(db: CaseDB, rule: Rule) -> list[dict[str, Any]]:
-    result = db.execute(rule.query)
-    columns = [item[0] for item in result.description]
-    return [dict(zip(columns, row, strict=False)) for row in result.fetchall()]
+RULE_RESULT_BATCH_SIZE = 500
+
+
+def iter_rule_row_batches(
+    db: CaseDB, rule: Rule, *, batch_size: int = RULE_RESULT_BATCH_SIZE
+) -> Iterator[list[dict[str, Any]]]:
+    """Yield bounded query result batches from an independent DuckDB cursor."""
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive")
+    cursor = db.conn.cursor()
+    try:
+        result = cursor.execute(rule.query)
+        columns = [item[0] for item in result.description]
+        while rows := result.fetchmany(batch_size):
+            yield [dict(zip(columns, row, strict=False)) for row in rows]
+    finally:
+        cursor.close()
 
 
 def _is_missing_value(value: Any) -> bool:
@@ -75,7 +88,9 @@ def _confidence_with_missing_fields(
     return max(0.0, min(1.0, base_confidence - penalty))
 
 
-def generate_findings(rule: Rule, rows: list[dict[str, Any]]) -> list[Finding]:
+def generate_findings(
+    rule: Rule, rows: Iterable[dict[str, Any]], *, first_ordinal: int = 1
+) -> list[Finding]:
     """Create Finding objects from rule query result rows by rendering title/summary templates.
 
     Auto-detects missing required fields per row and reduces the finding's confidence
@@ -83,7 +98,7 @@ def generate_findings(rule: Rule, rows: list[dict[str, Any]]) -> list[Finding]:
     plus a zero-padded row index.
     """
     findings = []
-    for index, row in enumerate(rows, start=1):
+    for index, row in enumerate(rows, start=first_ordinal):
         # Path-bearing columns may carry the analyst's local ingest tree
         # (e.g. a pre-basename-fix DB whose prefetch source_file is the
         # raw ingest path). Sanitize before the row is rendered into the
@@ -335,7 +350,7 @@ def _annotate_finding_benign_context(
             finding.missing_checks = list(finding.missing_checks or []) + [note]
 
 
-def clear_rule_findings_batch(case: Case, db: CaseDB, rule_ids: set[str]) -> None:
+def clear_rule_findings_batch(db: CaseDB, rule_ids: set[str]) -> None:
     """Remove findings and timeline projections for a set of rule IDs."""
     ids = sorted(rule_id for rule_id in rule_ids if rule_id)
     if not ids:
@@ -350,11 +365,6 @@ def clear_rule_findings_batch(case: Case, db: CaseDB, rule_ids: set[str]) -> Non
             params,
         )
         db.execute(f"DELETE FROM findings WHERE rule_id IN ({placeholders})", params)
-    rule_id_set = set(ids)
-    for path in case.findings_dir.glob("*.json"):
-        rule_id, separator, ordinal = path.stem.rpartition("-")
-        if separator and ordinal.isdigit() and rule_id in rule_id_set:
-            path.unlink(missing_ok=True)
 
 
 def feed_findings_to_timeline(db: CaseDB) -> None:
@@ -392,12 +402,10 @@ def save_findings(
     run_context: FindingRunContext | None = None,
     feed_timeline: bool = True,
 ) -> None:
-    """Persist findings to individual JSON files and the findings database table.
+    """Persist findings to the findings database table.
 
     Applies benign-context annotations and user-defined suppression
-    before writing. Each finding is written as a JSON file for easy inspection
-    and inserted as a row in the findings table for structured querying. A
-    caller can reuse ``run_context`` and defer the timeline projection when it
+    before writing. A caller can reuse ``run_context`` and defer the timeline projection when it
     coordinates persistence for a complete rule-analysis pass.
     """
     now = datetime.now(UTC).replace(tzinfo=None)
@@ -409,8 +417,6 @@ def save_findings(
         )
         if _is_suppressed(finding, context.allowlist_rules):
             finding.status = "suppressed"
-        path = case.findings_dir / f"{finding.finding_id}.json"
-        path.write_bytes(orjson.dumps(finding.model_dump(), option=orjson.OPT_INDENT_2))
         rows.append(
             (
                 finding.finding_id,
@@ -579,15 +585,19 @@ def execute_fallback_search(
             for kw in valid_keywords
         )
         sql = f"SELECT * FROM evtx_events WHERE {like_clauses} LIMIT 100"
-        return run_rule(
-            db,
-            Rule(
-                id="fallback-keyword",
-                title="",
-                query=sql,
-                finding=FindingTemplate(title="", summary=""),
-            ),
-        )
+        return [
+            row
+            for batch in iter_rule_row_batches(
+                db,
+                Rule(
+                    id="fallback-keyword",
+                    title="",
+                    query=sql,
+                    finding=FindingTemplate(title="", summary=""),
+                ),
+            )
+            for row in batch
+        ]
     if phase == "related_event_ids":
         event_ids = fallback.get("event_ids") or []
         if not event_ids:
@@ -606,15 +616,19 @@ def execute_fallback_search(
             return []
         event_list = ",".join(str(eid) for eid in valid_event_ids)
         sql = f"SELECT * FROM evtx_events WHERE event_id IN ({event_list}) LIMIT 100"
-        return run_rule(
-            db,
-            Rule(
-                id="fallback-correlation",
-                title="",
-                query=sql,
-                finding=FindingTemplate(title="", summary=""),
-            ),
-        )
+        return [
+            row
+            for batch in iter_rule_row_batches(
+                db,
+                Rule(
+                    id="fallback-correlation",
+                    title="",
+                    query=sql,
+                    finding=FindingTemplate(title="", summary=""),
+                ),
+            )
+            for row in batch
+        ]
     if phase == "artifact_table":
         table = fallback.get("table")
         if not table:
@@ -629,15 +643,19 @@ def execute_fallback_search(
             )
             return []
         sql = f"SELECT * FROM {table_name} LIMIT 100"
-        return run_rule(
-            db,
-            Rule(
-                id="fallback-artifact",
-                title="",
-                query=sql,
-                finding=FindingTemplate(title="", summary=""),
-            ),
-        )
+        return [
+            row
+            for batch in iter_rule_row_batches(
+                db,
+                Rule(
+                    id="fallback-artifact",
+                    title="",
+                    query=sql,
+                    finding=FindingTemplate(title="", summary=""),
+                ),
+            )
+            for row in batch
+        ]
     if phase and phase not in FALLBACK_PHASES:
         import logging
 

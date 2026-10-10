@@ -174,4 +174,3 @@ class SessionState(BaseModel):
     # query-intent call.  Keep it separate from SQL execution failures so the
     # planner never mistakes a materialization error for a failed query.
     last_planner_error: dict[str, Any] | None = None
-    proposed_keypoints: dict[str, int] = Field(default_factory=dict)

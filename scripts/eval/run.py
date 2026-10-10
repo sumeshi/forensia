@@ -1,792 +1,999 @@
 #!/usr/bin/env python3
-"""Evaluate investigation quality metrics from a forensia case directory.
+"""Read-only evaluation of current Case and Trace databases.
 
-Usage:
-    python scripts/eval/run.py <case_dir>
-
-Outputs report.json and prints a Markdown summary.
-
-Metrics computed (all case-agnostic, no DB/LLM dependency):
-  1. Hypothesis family diversity — distribution of artifact families
-  2. Confirmed-while-benign rate — proportion of confirmed hypotheses whose
-     supporting rows match benign-context rules (placeholder; returns 0
-     when R2-06 annotations absent)
-  3. Placeholder leak count — regex for {...} and [placeholder] in
-     hypotheses, facts, and SQL log content
-  4. Memory duplication ratio — pairwise token-set similarity >=0.7 among
-     overview.md lines
-  5. Report hygiene — error-string leaks, bare-ID tables, day coverage
-  6. Evidence traceability — share of report claims with resolvable IDs
-  7. Per-phase LLM call counts — from ai_logs meta phase labels
+Run ``python scripts/eval/run.py CASE`` or pass ``BASELINE AFTER`` to include
+numeric deltas for measurements recorded in both current-schema cases. Reports
+go to stdout unless an explicit output path outside every case is given.
 """
 
+from __future__ import annotations
+
 import argparse
+import hashlib
 import json
-import re
 import sys
 from collections import Counter
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
-# ---------------------------------------------------------------------------
-# helpers
-# ---------------------------------------------------------------------------
+import duckdb
 
-
-def _read(path: Path) -> str:
-    try:
-        return path.read_text(encoding="utf-8", errors="replace")
-    except FileNotFoundError:
-        return ""
+from forensia.db.schema import SCHEMA_VERSION
 
 
-def _parse_hypothesis_file(path: Path) -> dict:
-    text = _read(path)
-    lines = text.splitlines()
-    meta = {
-        "id": path.stem,
-        "path": str(path),
-        "status": "",
-        "verdict": "",
-        "description": "",
-        "summary": "",
-    }
-    in_section = None
-    for line in lines:
-        stripped = line.strip()
-        if stripped == "## Status":
-            in_section = "status"
-        elif stripped == "## Verdict":
-            in_section = "verdict"
-        elif stripped == "## Description":
-            in_section = "description"
-        elif stripped == "## Summary":
-            in_section = "summary"
-        elif stripped.startswith("## "):
-            in_section = None
-        elif in_section and stripped and not stripped.startswith("#"):
-            if in_section == "status":
-                meta["status"] = stripped.lstrip("- ")
-            elif in_section == "verdict":
-                meta["verdict"] = stripped.lstrip("- ")
-            elif in_section == "description":
-                meta["description"] += stripped + " "
-            elif in_section == "summary":
-                meta["summary"] += stripped + " "
-    for k in ("description", "summary"):
-        meta[k] = meta[k].strip()
-    return meta
-
-
-def _load_hypotheses(memory_dir: Path) -> list[dict]:
-    hyp_dir = memory_dir / "hypotheses"
-    if not hyp_dir.is_dir():
-        return []
-    results = []
-    for f in sorted(hyp_dir.iterdir()):
-        if f.suffix == ".md":
-            results.append(_parse_hypothesis_file(f))
-    return results
-
-
-def _family_from_description(desc: str) -> str:
-    lower = desc.lower()
-    if any(
-        w in lower
-        for w in (
-            "logon",
-            "log in",
-            "log-in",
-            "rdp",
-            "credential",
-            "authentication",
-            "password",
-            "4648",
-            "4624",
-            "4625",
-        )
-    ):
-        return "account"
-    if any(w in lower for w in ("service", "driver", "installation", "7045", "7040")):
-        return "persistence"
-    if any(w in lower for w in ("timeline", "time", "date", "sequence", "chornolog")):
-        return "timeline"
-    if any(
-        w in lower
-        for w in ("mft", "file", "rename", "desktop", "document", "folder", "directory")
-    ):
-        return "mft"
-    if any(w in lower for w in ("prefetch", "execut", "process", "binary", "program")):
-        return "host"
-    if any(
-        w in lower
-        for w in ("cloud", "email", "mail", "browser", "internet", "sync", "drive")
-    ):
-        return "ioc"
-    if any(
-        w in lower
-        for w in (
-            "antiforensic",
-            "anti-forensic",
-            "log clear",
-            "tamper",
-            "eraser",
-            "ccleaner",
-        )
-    ):
-        return "gaps"
-    if any(w in lower for w in ("ip", "network", "connect", "external", "remote")):
-        return "ioc"
-    return "other"
-
-
-def _load_facts(memory_dir: Path) -> list[str]:
-    facts_text = _read(memory_dir / "facts.md")
-    lines = []
-    for line in facts_text.splitlines():
-        stripped = line.strip().lstrip("- ")
-        if stripped and not stripped.startswith("#"):
-            lines.append(stripped)
-    return lines
-
-
-def _load_overview(memory_dir: Path) -> list[str]:
-    text = _read(memory_dir / "overview.md")
-    lines = []
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped and not stripped.startswith("#"):
-            lines.append(stripped)
-    return lines
-
-
-def _load_report(path: Path) -> str:
-    report_md = path / "reports" / "report.md"
-    return _read(report_md)
-
-
-def _token_set(s: str) -> set[str]:
-    return set(re.findall(r"[a-zA-Z0-9_]+", s.lower()))
-
-
-def _jaccard(a: set, b: set) -> float:
-    if not a and not b:
-        return 0.0
-    return len(a & b) / len(a | b)
-
-
-def _find_placeholder_lines(text: str) -> list[str]:
-    pattern = re.compile(
-        r"\{[a-z_]+}|\[[a-z_]*placeholder[a-z_]*]|\[start_time]|\[end_time]"
-    )
-    return [line for line in text.splitlines() if pattern.search(line)]
-
-
-_INSTRUCTION_TONE_RE = re.compile(
-    r"(do not treat|should be verified|needs verification|requires confirmation|"
-    r"must be confirmed|should not be assumed|evaluate carefully|"
-    r"do not conclude|correlate further|needs more evidence)",
-    re.IGNORECASE,
-)
-
-_EVIDENCE_ID_RE_GLOBAL = re.compile(r"\b(evtx|mft|prefetch)-[a-z0-9-]+\b")
-
-
-# ---------------------------------------------------------------------------
-# metrics
-# ---------------------------------------------------------------------------
-
-
-def instruction_tone_ratio(text: str) -> float:
-    """Return the fraction of sentences that contain instruction-tone phrases."""
-    if not text:
-        return 0.0
-    sentences = re.split(r"[。．.!?\n]+", text)
-    sentences = [s.strip() for s in sentences if s.strip()]
-    if not sentences:
-        return 0.0
-    flagged = sum(1 for s in sentences if _INSTRUCTION_TONE_RE.search(s))
-    return flagged / len(sentences)
-
-
-def ui_file_consistency(report_sections_path: str, report_md_path: str) -> dict:
-    """Check if report_sections bodies match report.md content."""
-    sections_path = Path(report_sections_path)
-    md_path = Path(report_md_path)
-
-    if not sections_path.exists() or not md_path.exists():
-        return {"status": "missing_files", "mismatches": []}
-
-    sections = json.loads(sections_path.read_text())
-    md_text = md_path.read_text()
-
-    mismatches = []
-    for section in sections:
-        key = section.get("section_key", "")
-        body = str(section.get("body", "")).strip()
-        body_preview = body[:200]
-        if body_preview and body_preview not in md_text:
-            mismatches.append(
-                {
-                    "section_key": key,
-                    "body_preview": body_preview[:100],
-                }
-            )
-
-    return {
-        "status": "ok" if not mismatches else "mismatch",
-        "mismatch_count": len(mismatches),
-        "mismatches": mismatches[:5],
-    }
-
-
-def block_language_conformity(
-    report_sections_path: str, target_language: str = "ja"
-) -> dict:
-    """Check per-block language conformity from report_sections.json."""
-    sections_path = Path(report_sections_path)
-    if not sections_path.exists():
-        return {"status": "missing_file", "blocks": 0, "conforming": 0}
-
-    sections = json.loads(sections_path.read_text())
-
-    from forensia.report.sections.quality_gates import _detect_body_language
-
-    total_blocks = 0
-    conforming = 0
-    block_results = []
-
-    for section in sections:
-        body = str(section.get("body", "")).strip()
-        if not body:
-            continue
-        clean = re.sub(r"^\*\*Status:\*\*.*$", "", body, flags=re.MULTILINE).strip()
-        if not clean:
-            continue
-        total_blocks += 1
-        detected = _detect_body_language(clean)
-        if detected == target_language:
-            conforming += 1
-        block_results.append(
-            {
-                "section_key": section.get("section_key", ""),
-                "detected": detected,
-                "target": target_language,
-            }
-        )
-
-    return {
-        "blocks": total_blocks,
-        "conforming": conforming,
-        "rate": conforming / total_blocks if total_blocks else 1.0,
-        "target_language": target_language,
-        "block_results": block_results,
-    }
-
-
-def count_invalid_evidence_ids(report_sections_path: str, db_path: str) -> dict:
-    """Count cited evidence IDs that don't exist in the DB."""
-    import duckdb
-
-    sections_path = Path(report_sections_path)
-    db_file = Path(db_path)
-
-    if not sections_path.exists() or not db_file.exists():
-        return {"status": "missing_files", "invalid_count": 0}
-
-    conn = duckdb.connect(str(db_file))
-    sections = json.loads(sections_path.read_text())
-
-    table_map = {
-        "evtx": "evtx_events",
-        "mft": "mft_entries",
-        "prefetch": "prefetch_executions",
-    }
-
-    all_ids = set()
-    for section in sections:
-        body = str(section.get("body", "")).strip()
-        for match in _EVIDENCE_ID_RE_GLOBAL.finditer(body):
-            all_ids.add(match.group(0))
-
-    invalid = []
-    valid = []
-    for eid in sorted(all_ids):
-        prefix = eid.split("-")[0]
-        table = table_map.get(prefix)
-        if not table:
-            invalid.append(eid)
-            continue
+def _json(value: Any) -> Any:
+    if isinstance(value, (dict, list)):
+        return value
+    if isinstance(value, str):
         try:
-            row = conn.execute(
-                f"SELECT 1 FROM {table} WHERE evidence_id = ? LIMIT 1", (eid,)
-            ).fetchone()
-            if row:
-                valid.append(eid)
-            else:
-                invalid.append(eid)
-        except Exception:
-            invalid.append(eid)
-
-    conn.close()
-    return {
-        "total_cited": len(all_ids),
-        "valid": len(valid),
-        "invalid_count": len(invalid),
-        "invalid_ids": invalid,
-    }
-
-
-# ---------------------------------------------------------------------------
-# main
-# ---------------------------------------------------------------------------
-
-
-def hypothesis_family_diversity(hypotheses: list[dict]) -> dict:
-    families = Counter()
-    for h in hypotheses:
-        families[_family_from_description(h.get("description", ""))] += 1
-    total = sum(families.values()) or 1
-    shares = {k: round(v / total, 3) for k, v in sorted(families.items())}
-    dominant_share = max(shares.values()) if shares else 0
-    return {
-        "total_hypotheses": sum(families.values()),
-        "families": dict(families),
-        "family_shares": shares,
-        "dominant_family_share": dominant_share,
-        "flag_single_family_over_70pct": dominant_share > 0.7,
-    }
-
-
-def confirmed_while_benign_rate(hypotheses: list[dict]) -> dict:
-    confirmed = [h for h in hypotheses if h.get("verdict") == "confirmed"]
-    total_confirmed = len(confirmed)
-    return {
-        "total_confirmed": total_confirmed,
-        "note": "benign-context annotation (R2-06) not implemented yet; rate is 0 until annotations available",
-        "confirmed_while_benign_count": 0,
-        "confirmed_while_benign_rate": 0.0,
-    }
-
-
-def placeholder_leak_count(memory_dir: Path, ai_logs_dir: Path | None) -> dict:
-    sources: dict[str, list[str]] = {}
-    overview_text = _read(memory_dir / "overview.md")
-    facts_text = _read(memory_dir / "facts.md")
-    hyp_dir = memory_dir / "hypotheses"
-    all_hyp_text = ""
-    if hyp_dir.is_dir():
-        for f in hyp_dir.iterdir():
-            if f.suffix == ".md":
-                all_hyp_text += _read(f) + "\n"
-
-    for label, text in [
-        ("hypotheses", all_hyp_text),
-        ("facts", facts_text),
-        ("overview", overview_text),
-    ]:
-        leaks = _find_placeholder_lines(text)
-        if leaks:
-            sources[label] = leaks
-
-    sql_text = ""
-    if ai_logs_dir and ai_logs_dir.is_dir():
-        for f in sorted(ai_logs_dir.iterdir()):
-            if f.suffix == ".json":
-                raw = f.read_text(encoding="utf-8", errors="replace")
-                found = _find_placeholder_lines(raw)
-                if found:
-                    sql_text += "\n".join(found) + "\n"
-        sql_leaks = _find_placeholder_lines(sql_text)
-        if sql_leaks:
-            sources["ai_logs_sql_content"] = sql_leaks
-
-    total_lines = sum(len(v) for v in sources.values())
-    return {
-        "total_leak_lines": total_lines,
-        "sources_with_leaks": {k: len(v) for k, v in sources.items()},
-        "leak_detail_by_source": {k: v[:5] for k, v in sources.items()},
-    }
-
-
-def memory_duplication_ratio(overview_lines: list[str]) -> dict:
-    if len(overview_lines) < 2:
-        return {
-            "pairwise_comparisons": 0,
-            "high_similarity_pairs": 0,
-            "duplication_ratio": 0.0,
-            "flag_high_duplication": False,
-        }
-
-    token_sets = [_token_set(line) for line in overview_lines]
-    high_sim = 0
-    total_pairs = 0
-    for i in range(len(token_sets)):
-        for j in range(i + 1, len(token_sets)):
-            total_pairs += 1
-            if _jaccard(token_sets[i], token_sets[j]) >= 0.7:
-                high_sim += 1
-
-    ratio = high_sim / total_pairs if total_pairs else 0.0
-    return {
-        "total_lines": len(overview_lines),
-        "pairwise_comparisons": total_pairs,
-        "high_similarity_pairs": high_sim,
-        "duplication_ratio": round(ratio, 3),
-        "flag_high_duplication": ratio > 0.3,
-    }
-
-
-def report_hygiene(case_dir: Path, hypotheses: list[dict]) -> dict:
-    report_text = _load_report(case_dir)
-
-    # 1. Error string leaks
-    error_patterns = re.compile(
-        r"(sqlglot|internal-error|LLM failed|Required keyword|ValueError|KeyError|TypeError|Traceback|duckdb\.Error)",
-        re.IGNORECASE,
-    )
-    error_lines = [l for l in report_text.splitlines() if error_patterns.search(l)]
-
-    # 2. Bare-ID tables (Unresolved Hypotheses table cells containing only IDs)
-    bare_id_pattern = re.compile(r"^\| (H-\d+|gap-[a-f0-9]+) \|", re.MULTILINE)
-    bare_id_hits = bare_id_pattern.findall(report_text)
-
-    # 3. Days with findings vs days in timeline
-    finding_dates = set()
-    findings_dir = case_dir / "findings"
-    if findings_dir.is_dir():
-        for f in findings_dir.iterdir():
-            if f.suffix == ".json":
-                finding_data = json.loads(_read(f))
-                for ev in finding_data.get("evidence", []):
-                    ts = ev.get("timestamp", "")
-                    if ts:
-                        d = ts[:10]
-                        if re.match(r"\d{4}-\d{2}-\d{2}", d):
-                            finding_dates.add(d)
-    timeline_dates = set()
-    memory_timeline = _read(case_dir / "memory" / "timeline.md")
-    for m in re.finditer(r"\d{4}-\d{2}-\d{2}", memory_timeline):
-        timeline_dates.add(m.group())
-    for m in re.finditer(r"\|\s*(\d{4}-\d{2}-\d{2})\s*\|", report_text):
-        timeline_dates.add(m.group(1))
-
-    return {
-        "error_string_leaks": len(error_lines),
-        "error_preview_lines": error_lines[:3],
-        "bare_id_hypotheses_in_report": bare_id_hits,
-        "bare_id_count": len(bare_id_hits),
-        "days_with_findings": len(finding_dates),
-        "days_in_timeline_coverage": len(timeline_dates),
-        "day_coverage_ratio": round(
-            len(timeline_dates) / max(len(finding_dates), 1), 3
-        ),
-    }
-
-
-def evidence_traceability(case_dir: Path) -> dict:
-    report_text = _load_report(case_dir)
-    finding_ids = re.findall(r"finding_id['\"]?\s*[:=]\s*['\"]?([\w\-]+)", report_text)
-    evidence_ids_in_report = re.findall(
-        r"evidence_id['\"]?\s*[:=]\s*['\"]?([\w\-]+)", report_text
-    )
-
-    findings_dir = case_dir / "findings"
-    registered_evidence_ids: set[str] = set()
-    registered_finding_ids: set[str] = set()
-    if findings_dir.is_dir():
-        for f in findings_dir.iterdir():
-            if f.suffix == ".json":
-                try:
-                    data = json.loads(_read(f))
-                    fid = data.get("finding_id")
-                    if fid:
-                        registered_finding_ids.add(fid)
-                    for ev in data.get("evidence", []):
-                        eid = ev.get("evidence_id")
-                        if eid:
-                            registered_evidence_ids.add(eid)
-                except json.JSONDecodeError:
-                    pass
-
-    resolvable_findings = sum(1 for fid in finding_ids if fid in registered_finding_ids)
-    resolvable_evidence = sum(
-        1 for eid in evidence_ids_in_report if eid in registered_evidence_ids
-    )
-    total_claims_in_report = len(finding_ids) + len(evidence_ids_in_report) or 1
-
-    return {
-        "finding_ids_in_report": len(finding_ids),
-        "evidence_ids_in_report": len(evidence_ids_in_report),
-        "resolvable_finding_ids": resolvable_findings,
-        "resolvable_evidence_ids": resolvable_evidence,
-        "traceability_ratio": round(
-            (resolvable_findings + resolvable_evidence) / total_claims_in_report, 3
-        ),
-    }
-
-
-def per_phase_llm_call_counts(ai_logs_dir: Path) -> dict:
-    if not ai_logs_dir or not ai_logs_dir.is_dir():
-        return {"note": "ai_logs directory not found", "phases": {}, "total_calls": 0}
-
-    counts: Counter[str] = Counter()
-    for f in ai_logs_dir.iterdir():
-        if f.suffix == ".json":
-            try:
-                data = json.loads(_read(f))
-                phase = data.get("meta", {}).get("phase", "unknown")
-            except json.JSONDecodeError, KeyError:
-                phase = "unknown"
-            counts[phase] += 1
-
-    return {
-        "phases": dict(counts),
-        "total_calls": sum(counts.values()),
-    }
-
-
-# ---------------------------------------------------------------------------
-# main
-# ---------------------------------------------------------------------------
-
-
-def evaluate(case_dir: Path) -> dict:
-    memory_dir = case_dir / "memory"
-    ai_logs = _find_ai_logs(case_dir)
-    reports_dir = case_dir / "reports"
-    db_dir = case_dir / "db"
-
-    hypotheses = _load_hypotheses(memory_dir)
-    overview_lines = _load_overview(memory_dir)
-
-    metrics = {
-        "case_dir": str(case_dir),
-        "hypothesis_family_diversity": hypothesis_family_diversity(hypotheses),
-        "confirmed_while_benign_rate": confirmed_while_benign_rate(hypotheses),
-        "placeholder_leak_count": placeholder_leak_count(memory_dir, ai_logs),
-        "memory_duplication_ratio": memory_duplication_ratio(overview_lines),
-        "report_hygiene": report_hygiene(case_dir, hypotheses),
-        "evidence_traceability": evidence_traceability(case_dir),
-        "per_phase_llm_call_counts": per_phase_llm_call_counts(ai_logs),
-    }
-
-    # R3-11: Eval metrics for failure detection
-    report_sections_path = reports_dir / "report_sections.json"
-    if report_sections_path.exists():
-        report_sections = json.loads(_read(report_sections_path))
-        section_texts = {
-            s.get("section_key", f"block_{i}"): str(s.get("body", ""))
-            for i, s in enumerate(report_sections)
-        }
-    else:
-        section_texts = {}
-        report_sections = []
-
-    ir = {}
-    for section_key, text in section_texts.items():
-        ir[section_key] = instruction_tone_ratio(text)
-
-    report_md_path = reports_dir / "report.md"
-    blc = (
-        block_language_conformity(str(report_sections_path))
-        if report_sections_path.exists()
-        else {"status": "missing_file"}
-    )
-    db_path = db_dir / "case.duckdb"
-    inv = (
-        count_invalid_evidence_ids(str(report_sections_path), str(db_path))
-        if report_sections_path.exists()
-        else {"status": "missing_files"}
-    )
-
-    metrics["r3_metrics"] = {
-        "instruction_tone_ratio": ir,
-        "ui_file_consistency": ui_file_consistency(
-            str(report_sections_path), str(report_md_path)
-        ),
-        "block_language_conformity": blc,
-        "invalid_evidence_ids": inv,
-    }
-    return metrics
-
-
-def _find_ai_logs(case_dir: Path) -> Path | None:
-    ai_logs_dir = case_dir / "ai_logs"
-    if ai_logs_dir.is_dir():
-        sessions = sorted(ai_logs_dir.iterdir())
-        if sessions:
-            return sessions[-1]
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return None
     return None
 
 
-def _format_markdown(metrics: dict) -> str:
-    lines = []
-    lines.append("# Evaluation Report")
-    lines.append("")
-    lines.append(f"**Case directory:** `{metrics['case_dir']}`")
-    lines.append("")
+def _unknown(reason: str) -> dict[str, Any]:
+    return {"value": None, "reason": reason}
 
-    lines.append("## 1. Hypothesis Family Diversity")
-    d = metrics["hypothesis_family_diversity"]
-    lines.append(f"- Total hypotheses: {d['total_hypotheses']}")
-    lines.append(f"- Families: {d['families']}")
-    lines.append(f"- Dominant family share: {d['dominant_family_share']:.1%}")
-    lines.append(
-        f"- ⚠️ **Flag (>70% single-family):** {d['flag_single_family_over_70pct']}"
+
+def _measure(value: Any, reason: str | None = None) -> dict[str, Any]:
+    return {"value": value, "reason": reason}
+
+
+def _tree_stats(case_dir: Path) -> dict[str, Any]:
+    case_files = case_bytes = finding_files = finding_bytes = 0
+    findings_dir = case_dir / "findings"
+    for path in case_dir.rglob("*"):
+        if path.is_symlink() or not path.is_file():
+            continue
+        size = path.stat().st_size
+        case_files += 1
+        case_bytes += size
+        if findings_dir in path.parents and path.suffix == ".json":
+            finding_files += 1
+            finding_bytes += size
+    return {
+        "case_files": _measure(case_files),
+        "case_bytes": _measure(case_bytes),
+        "finding_export_files": _measure(finding_files),
+        "finding_export_bytes": _measure(finding_bytes),
+        "elapsed_ms": _unknown("Stage elapsed time is not persisted in Case or Trace"),
+        "peak_memory_bytes": _unknown(
+            "Peak process memory is not persisted in Case or Trace"
+        ),
+    }
+
+
+def _check_schema(conn: duckdb.DuckDBPyConnection) -> None:
+    versions = {
+        catalog: conn.execute(
+            f'SELECT version FROM "{catalog}".forensia_schema'
+        ).fetchone()
+        for catalog in ("case", "trace")
+    }
+    if any(row != (SCHEMA_VERSION,) for row in versions.values()):
+        raise ValueError(
+            f"Unsupported Case/Trace schema pair: {versions}; expected version {SCHEMA_VERSION}"
+        )
+
+
+@contextmanager
+def _read_only_case_trace(case_dir: Path) -> Iterator[duckdb.DuckDBPyConnection]:
+    """Open and validate the current Case/Trace pair without permitting writes."""
+    core_path = case_dir / "db" / "case.duckdb"
+    trace_path = case_dir / "db" / "trace.duckdb"
+    if not core_path.is_file() or not trace_path.is_file():
+        raise FileNotFoundError(
+            f"Current Case/Trace database pair not found under {case_dir / 'db'}"
+        )
+    with duckdb.connect(str(core_path), read_only=True) as conn:
+        trace_sql_path = trace_path.as_posix().replace("'", "''")
+        conn.execute(f"ATTACH '{trace_sql_path}' AS trace (READ_ONLY)")
+        _check_schema(conn)
+        yield conn
+
+
+def _latest_receipt(
+    conn: duckdb.DuckDBPyConnection, phase: str
+) -> dict[str, Any] | None:
+    row = conn.execute(
+        "SELECT output_json, created_at FROM trace.investigation_steps "
+        "WHERE phase = ? ORDER BY created_at DESC, step_id DESC LIMIT 1",
+        [phase],
+    ).fetchone()
+    if not row:
+        return None
+    output = _json(row[0])
+    if not isinstance(output, dict):
+        return {"status": "invalid_receipt", "created_at": str(row[1])}
+    return {**output, "created_at": row[1].isoformat() if row[1] else None}
+
+
+def _stage_elapsed_ms(conn: duckdb.DuckDBPyConnection, phase: str) -> dict[str, Any]:
+    rows = conn.execute(
+        "SELECT output_json, created_at FROM trace.investigation_steps "
+        "WHERE phase = ? ORDER BY created_at, step_id",
+        [phase],
+    ).fetchall()
+    parsed = [(_json(output), timestamp) for output, timestamp in rows]
+    if not parsed:
+        return _unknown(f"No {phase} stage receipts are recorded")
+    latest, end = parsed[-1]
+    if not isinstance(latest, dict) or latest.get("status") != "completed":
+        return _unknown(f"Latest {phase} receipt is not completed")
+    revision = latest.get("revision")
+    start = next(
+        (
+            timestamp
+            for output, timestamp in reversed(parsed[:-1])
+            if isinstance(output, dict)
+            and output.get("status") == "running"
+            and output.get("revision") == revision
+        ),
+        None,
     )
-    lines.append("")
+    if start is None or end is None:
+        return _unknown(f"{phase} start or completion timestamp is absent")
+    return _measure(max(0, round((end - start).total_seconds() * 1000)))
 
-    lines.append("## 2. Confirmed-while-Benign Rate")
-    d = metrics["confirmed_while_benign_rate"]
-    lines.append(f"- Total confirmed hypotheses: {d['total_confirmed']}")
-    lines.append(
-        f"- Confirmed-while-benign: {d['confirmed_while_benign_count']} ({d['confirmed_while_benign_rate']})"
+
+def _analysis_metrics(receipt: dict[str, Any] | None) -> dict[str, Any]:
+    reason = "No pipeline-analyze receipt is recorded in Trace"
+    if receipt is None:
+        return {
+            key: _unknown(reason)
+            for key in (
+                "analysis_rules_completed",
+                "analysis_rules_not_observed",
+                "analysis_rules_with_matches",
+                "analysis_matches",
+                "analysis_unfinished_rules",
+            )
+        }
+    rules = receipt.get("rules")
+    if not isinstance(rules, list):
+        reason = "Latest pipeline-analyze receipt has no structured rules list"
+        return {
+            key: _unknown(reason)
+            for key in (
+                "analysis_rules_completed",
+                "analysis_rules_not_observed",
+                "analysis_rules_with_matches",
+                "analysis_matches",
+                "analysis_unfinished_rules",
+            )
+        }
+    statuses = Counter(
+        str((rule.get("execution") or {}).get("status") or "unknown")
+        for rule in rules
+        if isinstance(rule, dict)
     )
-    lines.append(f"- Note: {d['note']}")
-    lines.append("")
-
-    lines.append("## 3. Placeholder Leak Count")
-    d = metrics["placeholder_leak_count"]
-    lines.append(f"- Total leak lines: {d['total_leak_lines']}")
-    for src, cnt in d.get("sources_with_leaks", {}).items():
-        lines.append(f"  - {src}: {cnt} leak(s)")
-    if d.get("leak_detail_by_source"):
-        for src, leaks in d["leak_detail_by_source"].items():
-            if leaks:
-                lines.append(f"  - {src} (first {len(leaks)}):")
-                for leak in leaks:
-                    lines.append(f"    - `{leak[:100]}`")
-    lines.append("")
-
-    lines.append("## 4. Memory Duplication Ratio")
-    d = metrics["memory_duplication_ratio"]
-    lines.append(f"- Overview lines: {d['total_lines']}")
-    lines.append(f"- Pairwise comparisons: {d['pairwise_comparisons']}")
-    lines.append(
-        f"- High-similarity pairs (≥0.7 Jaccard): {d['high_similarity_pairs']}"
+    completed = [
+        rule
+        for rule in rules
+        if isinstance(rule, dict)
+        and (rule.get("execution") or {}).get("status") == "completed"
+    ]
+    matches_known = all(
+        isinstance((rule.get("execution") or {}).get("matches"), int)
+        for rule in completed
     )
-    lines.append(f"- Duplication ratio: {d['duplication_ratio']}")
-    lines.append(f"- ⚠️ **Flag (ratio >0.3):** {d['flag_high_duplication']}")
-    lines.append("")
-
-    lines.append("## 5. Report Hygiene")
-    d = metrics["report_hygiene"]
-    lines.append(f"- Error string leaks: {d['error_string_leaks']}")
-    if d.get("error_preview_lines"):
-        for el in d["error_preview_lines"]:
-            lines.append(f"  - `{el[:120]}`")
-    lines.append(f"- Bare-ID hypotheses in report: {d['bare_id_count']}")
-    if d.get("bare_id_hypotheses_in_report"):
-        lines.append(f"  - IDs: {d['bare_id_hypotheses_in_report'][:5]}")
-    lines.append(f"- Days with findings: {d['days_with_findings']}")
-    lines.append(f"- Days in timeline coverage: {d['days_in_timeline_coverage']}")
-    lines.append(f"- Day coverage ratio: {d['day_coverage_ratio']}")
-    lines.append("")
-
-    lines.append("## 6. Evidence Traceability")
-    d = metrics["evidence_traceability"]
-    lines.append(f"- Finding IDs in report: {d['finding_ids_in_report']}")
-    lines.append(f"- Evidence IDs in report: {d['evidence_ids_in_report']}")
-    lines.append(f"- Resolvable finding IDs: {d['resolvable_finding_ids']}")
-    lines.append(f"- Resolvable evidence IDs: {d['resolvable_evidence_ids']}")
-    lines.append(f"- Traceability ratio: {d['traceability_ratio']}")
-    lines.append("")
-
-    lines.append("## 7. Per-Phase LLM Call Counts")
-    d = metrics["per_phase_llm_call_counts"]
-    lines.append(f"- Total LLM calls: {d['total_calls']}")
-    for phase, count in sorted(d.get("phases", {}).items()):
-        lines.append(f"  - {phase}: {count}")
-    if "note" in d:
-        lines.append(f"- Note: {d['note']}")
-    lines.append("")
-
-    # R3-11 sections
-    r3 = metrics.get("r3_metrics", {})
-    if r3:
-        lines.append("## 8. Instruction-Tone Ratio")
-        ir = r3.get("instruction_tone_ratio", {})
-        if ir:
-            for section_key, ratio in ir.items():
-                flag = " ⚠️" if ratio > 0.10 else ""
-                lines.append(f"- {section_key}: {ratio:.1%}{flag}")
-        else:
-            lines.append("- No report sections found.")
-        lines.append("")
-
-        lines.append("## 9. UI / File Consistency")
-        uif = r3.get("ui_file_consistency", {})
-        lines.append(f"- Status: {uif.get('status', 'unknown')}")
-        lines.append(f"- Mismatch count: {uif.get('mismatch_count', 0)}")
-        for m in uif.get("mismatches", []):
-            lines.append(f"  - {m['section_key']}: `{m['body_preview'][:80]}`")
-        lines.append("")
-
-        lines.append("## 10. Per-Block Language Conformity")
-        blc = r3.get("block_language_conformity", {})
-        lines.append(f"- Blocks: {blc.get('blocks', 0)}")
-        lines.append(f"- Conforming: {blc.get('conforming', 0)}")
-        lines.append(f"- Rate: {blc.get('rate', 1.0):.1%}")
-        lines.append(f"- Target language: {blc.get('target_language', 'ja')}")
-        lines.append("")
-
-        lines.append("## 11. Invalid Evidence ID Count")
-        inv = r3.get("invalid_evidence_ids", {})
-        lines.append(f"- Total cited: {inv.get('total_cited', 0)}")
-        lines.append(f"- Valid: {inv.get('valid', 0)}")
-        lines.append(f"- Invalid: {inv.get('invalid_count', 0)}")
-        ids = inv.get("invalid_ids", [])
-        if ids:
-            lines.append(f"- Invalid IDs: {ids[:10]}")
-        if "status" in inv:
-            lines.append(f"- Note: {inv['status']}")
-        lines.append("")
-
-    return "\n".join(lines)
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Evaluate investigation quality metrics for a forensia case"
+    rules_with_matches = (
+        _measure(sum(rule["execution"]["matches"] > 0 for rule in completed))
+        if matches_known
+        else _unknown("Completed rule receipts contain missing match counts")
     )
-    parser.add_argument("case_dir", type=str, help="Path to forensia case directory")
+    stage_complete = receipt.get("status") == "completed"
+    rule_definitions = [
+        {
+            key: rule.get(key)
+            for key in (
+                "id",
+                "format",
+                "definition_sha256",
+                "source_rule_id",
+                "target",
+                "fixture",
+            )
+            if key in rule
+        }
+        for rule in rules
+        if isinstance(rule, dict)
+    ]
+    rule_definitions.sort(key=lambda item: str(item.get("id") or ""))
+    executions = [
+        {key: rule.get(key) for key in ("id", "query", "execution") if key in rule}
+        for rule in rules
+        if isinstance(rule, dict)
+    ]
+    executions.sort(key=lambda item: str(item.get("id") or ""))
+    canonical = lambda value: json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str
+    ).encode()
+    return {
+        "analysis_rules_completed": _measure(statuses["completed"]),
+        "analysis_rules_not_observed": _measure(statuses["not_observed"]),
+        "analysis_rules_with_matches": rules_with_matches,
+        "analysis_matches": (
+            _measure(sum(rule["execution"]["matches"] for rule in completed))
+            if stage_complete and matches_known
+            else _unknown(
+                "Latest analysis receipt is incomplete or has unknown match counts"
+            )
+        ),
+        "analysis_unfinished_rules": _measure(
+            sum(
+                count
+                for status, count in statuses.items()
+                if status not in {"completed", "not_observed"}
+            )
+        ),
+        "analysis_identity": {
+            "rule_definitions_sha256": hashlib.sha256(
+                canonical(rule_definitions)
+            ).hexdigest(),
+            "executable_queries_and_outcomes_sha256": hashlib.sha256(
+                canonical(executions)
+            ).hexdigest(),
+            "rule_count": len(rules),
+        },
+    }
+
+
+def _bundle_identity(bundle: Any) -> dict[str, Any] | None:
+    if not isinstance(bundle, dict):
+        return None
+    summary = bundle.get("summary") or {}
+    summary_fields = (
+        "admitted_bindings",
+        "admitted_rules",
+        "bindings",
+        "by_conversion",
+        "by_fixture",
+    )
+    return {
+        key: bundle.get(key)
+        for key in ("build_id", "artifact_sha256", "source", "environment_hashes")
+        if key in bundle
+    } | {
+        "summary": {key: summary[key] for key in summary_fields if key in summary},
+        "target_count": len(summary.get("by_target") or {}),
+    }
+
+
+def _rowset_fingerprint(conn: duckdb.DuckDBPyConnection, query: str) -> dict[str, Any]:
+    cursor = conn.execute(query)
+    hashes: list[str] = []
+    while batch := cursor.fetchmany(1000):
+        hashes.extend(
+            hashlib.sha256(
+                json.dumps(
+                    row, sort_keys=True, ensure_ascii=False, default=str
+                ).encode()
+            ).hexdigest()
+            for row in batch
+        )
+    hashes.sort()
+    return {
+        "rows": len(hashes),
+        "sha256": hashlib.sha256("".join(hashes).encode()).hexdigest(),
+    }
+
+
+def _result_identity(conn: duckdb.DuckDBPyConnection) -> dict[str, Any]:
+    tables = {
+        "evtx_events": (
+            "evidence_id, source_file, channel, event_id, record_id, timestamp, computer, "
+            "user_name, target_user, subject_user, src_ip, dst_ip, dst_port, protocol, "
+            "logon_type, process_name, process_id, command_line, service_name, exception_code, "
+            "object_dn, attribute, target_server, target_group, task_name, session_id, share_name, "
+            "access_mask, normalized_src_ip, normalized_target_user, parent_process, "
+            "parent_process_id, parent_cmd, child_process, child_process_id, child_cmd, parent_image, "
+            "file_path, parent_guid, child_guid, clear_time, clear_event_id, first_seen, last_seen, "
+            "hour_bucket, request_count, status, reason, message, tags, severity"
+        ),
+        "mft_entries": "*",
+        "prefetch_executions": (
+            "evidence_id, source_file, executable_name, exec_count, last_exec_time, exec_times, "
+            "prefetch_hash, filenames, volumes, tags, severity"
+        ),
+        "registry_artifacts": (
+            "artifact_id, dataset_id, source_ids, plugin, hive, key_path, value_name, timestamp, "
+            "timestamp_kind"
+        ),
+    }
+    result = {
+        f"{name}_normalized": _rowset_fingerprint(conn, f"SELECT {columns} FROM {name}")
+        for name, columns in tables.items()
+    }
+    result.update(
+        {
+            f"{name}_serialized": _rowset_fingerprint(conn, f"SELECT * FROM {name}")
+            for name in ("evtx_events", "prefetch_executions", "registry_artifacts")
+        }
+    )
+    result["findings"] = _rowset_fingerprint(
+        conn,
+        "SELECT finding_id, rule_id, title, summary, severity, confidence, status, tags, "
+        "attack, evidence, ai_summary, missing_checks FROM findings",
+    )
+    result["suppressed_findings"] = _rowset_fingerprint(
+        conn, "SELECT finding_id FROM findings WHERE status = 'suppressed'"
+    )
+    return result
+
+
+def _token_usage(conn: duckdb.DuckDBPyConnection) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for direction in ("input", "output"):
+        source_col = f"{direction}_tokens_source"
+        token_col = f"{direction}_tokens"
+        rows = conn.execute(
+            f"SELECT {source_col}, COUNT(*), COUNT({token_col}), SUM({token_col}) "
+            f"FROM trace.llm_provider_attempts GROUP BY {source_col}"
+        ).fetchall()
+        by_source = {
+            str(source or "unknown"): (int(count), int(with_tokens), total)
+            for source, count, with_tokens, total in rows
+        }
+        for source, label in (
+            ("provider_actual", "actual"),
+            ("local_estimate", "estimated"),
+        ):
+            count, with_tokens, total = by_source.get(source, (0, 0, None))
+            result[f"{direction}_tokens_{label}"] = (
+                _measure(int(total))
+                if with_tokens
+                else _unknown(f"No {label} {direction} token measurements are recorded")
+            )
+            result[f"{direction}_token_{label}_attempts"] = _measure(count)
+        unmeasured = int(
+            conn.execute(
+                f"SELECT COUNT(*) FROM trace.llm_provider_attempts "
+                f"WHERE {source_col} NOT IN ('provider_actual', 'local_estimate') "
+                f"OR {source_col} IS NULL OR {token_col} IS NULL"
+            ).fetchone()[0]
+        )
+        result[f"{direction}_token_unmeasured_attempts"] = _measure(unmeasured)
+    return result
+
+
+def _cycle_rows(conn: duckdb.DuckDBPyConnection) -> list[dict[str, Any]]:
+    cycles: dict[tuple[str, int], dict[str, Any]] = {}
+
+    def get_cycle(session_id: Any, iteration: Any) -> dict[str, Any] | None:
+        if session_id is None or iteration is None:
+            return None
+        key = (str(session_id), int(iteration))
+        return cycles.setdefault(
+            key,
+            {
+                "session_id": key[0],
+                "iteration": key[1],
+                "reasoning_verdicts": {},
+                "reasoning_entries": 0,
+                "logical_calls": 0,
+                "provider_attempts": 0,
+                "candidate_outcomes": {},
+            },
+        )
+
+    for session_id, iteration, verdict, count in conn.execute(
+        "SELECT session_id, iteration, verdict, COUNT(*) "
+        "FROM trace.hypothesis_reasoning WHERE session_id IS NOT NULL "
+        "AND iteration IS NOT NULL GROUP BY session_id, iteration, verdict"
+    ).fetchall():
+        cycle = get_cycle(session_id, iteration)
+        if cycle is not None:
+            verdicts = cycle["reasoning_verdicts"]
+            label = str(verdict or "unknown")
+            verdicts[label] = verdicts.get(label, 0) + int(count)
+            cycle["reasoning_entries"] = cycle.get("reasoning_entries", 0) + int(count)
+
+    for session_id, iteration, count in conn.execute(
+        "SELECT session_id, iteration, COUNT(*) FROM trace.llm_logical_calls "
+        "WHERE session_id IS NOT NULL AND iteration IS NOT NULL "
+        "GROUP BY session_id, iteration"
+    ).fetchall():
+        cycle = get_cycle(session_id, iteration)
+        if cycle is not None:
+            cycle["logical_calls"] += int(count)
+
+    for session_id, iteration, count in conn.execute(
+        "SELECT c.session_id, c.iteration, COUNT(*) "
+        "FROM trace.llm_provider_attempts a "
+        "JOIN trace.llm_logical_calls c USING (logical_call_id) "
+        "WHERE c.session_id IS NOT NULL AND c.iteration IS NOT NULL "
+        "GROUP BY c.session_id, c.iteration"
+    ).fetchall():
+        cycle = get_cycle(session_id, iteration)
+        if cycle is not None:
+            cycle["provider_attempts"] += int(count)
+
+    for session_id, iteration, output_json in conn.execute(
+        "SELECT session_id, iteration, output_json FROM trace.investigation_steps "
+        "WHERE phase = 'plan-broad-candidate' AND session_id IS NOT NULL "
+        "AND iteration IS NOT NULL"
+    ).fetchall():
+        cycle = get_cycle(session_id, iteration)
+        output = _json(output_json) or {}
+        if cycle is not None:
+            outcomes = cycle["candidate_outcomes"]
+            label = str(output.get("status") or "unknown")
+            outcomes[label] = outcomes.get(label, 0) + 1
+    for session_id, iteration, output_json in conn.execute(
+        "SELECT session_id, iteration, output_json FROM trace.investigation_steps "
+        "WHERE phase = 'plan-broad' AND session_id IS NOT NULL AND iteration IS NOT NULL"
+    ).fetchall():
+        cycle = get_cycle(session_id, iteration)
+        output = _json(output_json) or {}
+        if cycle is not None:
+            cycle["plan_broad_status"] = output.get("status")
+            cycle["candidate_summary"] = output.get("candidate_summary")
+    return [cycles[key] for key in sorted(cycles)]
+
+
+def extract_cycles(case_dir: Path) -> dict[str, Any]:
+    """Read only per-cycle Trace measurements from a current Case/Trace pair."""
+    case_dir = case_dir.resolve()
+    try:
+        with _read_only_case_trace(case_dir) as conn:
+            return {"cycles": _cycle_rows(conn), "reader_status": "complete"}
+    except (
+        duckdb.Error,
+        FileNotFoundError,
+        ValueError,
+        TypeError,
+        KeyError,
+        json.JSONDecodeError,
+    ) as exc:
+        return {
+            "reader_status": "incomplete",
+            "reason": f"Could not read the current Case/Trace schema: {type(exc).__name__}: {exc}",
+        }
+
+
+def _candidate_workflow(conn: duckdb.DuckDBPyConnection) -> dict[str, Any]:
+    rows = conn.execute(
+        "SELECT step_id, input_json, output_json FROM trace.investigation_steps "
+        "WHERE phase = 'plan-broad-candidate' ORDER BY created_at, step_id"
+    ).fetchall()
+    statuses: Counter[str] = Counter()
+    draft_reached = 0
+    admitted_ids: set[str] = set()
+    for _step_id, _input_json, output_json in rows:
+        output = _json(output_json) or {}
+        status = str(output.get("status") or "unknown")
+        statuses[status] += 1
+        if status in {
+            "invalid_draft",
+            "admission_rejected",
+            "merge_missing",
+            "admitted",
+        }:
+            draft_reached += 1
+        if status == "admitted" and output.get("admitted_hypothesis_id"):
+            admitted_ids.add(str(output["admitted_hypothesis_id"]))
+
+    admitted_persisted = {
+        str(row[0])
+        for row in conn.execute(
+            "SELECT DISTINCT h.hypothesis_id FROM hypotheses h "
+            "JOIN trace.investigation_steps s "
+            "ON h.hypothesis_id = json_extract_string(s.output_json, '$.admitted_hypothesis_id') "
+            "WHERE s.phase = 'plan-broad-candidate' "
+            "AND json_extract_string(s.output_json, '$.status') = 'admitted'"
+        ).fetchall()
+    }
+    verification_ids = {
+        str(row[0])
+        for row in conn.execute(
+            "SELECT hypothesis_id FROM trace.investigation_steps "
+            "WHERE hypothesis_id IS NOT NULL AND phase IN ('check', 'do') "
+            "UNION SELECT hypothesis_id FROM trace.hypothesis_reasoning "
+            "WHERE hypothesis_id IS NOT NULL"
+        ).fetchall()
+    }
+    return {
+        "candidate_population": _unknown("No plan-broad receipt is recorded"),
+        "candidate_attempt_receipts": _measure(len(rows)),
+        "candidate_outcome_counts": dict(sorted(statuses.items())),
+        "draft_reached": _measure(draft_reached),
+        "admitted_hypothesis_ids": _measure(len(admitted_ids)),
+        "admitted_ids_present_in_case": _measure(len(admitted_persisted)),
+        "admitted_with_check_or_reasoning": _measure(
+            len(admitted_persisted & verification_ids)
+        ),
+    }
+
+
+def _candidate_summary(conn: duckdb.DuckDBPyConnection) -> dict[str, Any]:
+    row = conn.execute(
+        "SELECT output_json, created_at FROM trace.investigation_steps "
+        "WHERE phase = 'plan-broad' ORDER BY created_at DESC, step_id DESC LIMIT 1"
+    ).fetchone()
+    if not row:
+        return _candidate_workflow(conn)
+    output = _json(row[0]) or {}
+    summary = output.get("candidate_summary")
+    if not isinstance(summary, dict) or output.get("status") != "completed":
+        result = _candidate_workflow(conn)
+        result["candidate_population"] = _unknown(
+            f"Latest plan-broad receipt status is {output.get('status', 'unknown')} and has no completed candidate summary"
+        )
+        result["latest_plan_broad_status"] = output.get("status")
+        result["latest_plan_broad_created_at"] = row[1].isoformat() if row[1] else None
+        return result
+    result = _candidate_workflow(conn)
+    result["latest_plan_broad_status"] = output["status"]
+    result["latest_plan_broad_created_at"] = row[1].isoformat() if row[1] else None
+    result["candidate_population"] = {
+        "value": summary.get("candidate_count"),
+        "reason": None
+        if isinstance(summary.get("candidate_count"), int)
+        else "Candidate count missing from receipt",
+    }
+    result["candidate_summary"] = {
+        key: _measure(value)
+        if isinstance(value, int)
+        else _unknown("Field absent from plan-broad receipt")
+        for key, value in summary.items()
+        if key.endswith("_count")
+        or key in {"available_hypothesis_slots", "remaining_call_allowance"}
+    }
+    return result
+
+
+def _claim_traceability(conn: duckdb.DuckDBPyConnection) -> dict[str, Any]:
+    row = conn.execute(
+        "WITH cited AS ("
+        " SELECT DISTINCT json_extract_string(j.value, '$') AS evidence_id "
+        " FROM claims c, json_each(c.evidence_ids) j "
+        " WHERE c.evidence_ids IS NOT NULL"
+        "), valid AS ("
+        " SELECT evidence_id FROM evtx_events UNION "
+        " SELECT evidence_id FROM mft_entries UNION "
+        " SELECT evidence_id FROM prefetch_executions UNION "
+        " SELECT evidence_id FROM prefetch_timeline UNION "
+        " SELECT artifact_id AS evidence_id FROM registry_artifacts"
+        ") SELECT COUNT(*), COUNT(*) FILTER (WHERE valid.evidence_id IS NOT NULL) "
+        "FROM cited LEFT JOIN valid USING (evidence_id)"
+    ).fetchone()
+    cited, resolvable = map(int, row)
+    if cited == 0:
+        return {
+            "value": None,
+            "reason": "No claim evidence references are recorded",
+            "cited_evidence_ids": 0,
+            "resolvable_evidence_ids": 0,
+        }
+    return {
+        "value": resolvable / cited,
+        "reason": None,
+        "cited_evidence_ids": cited,
+        "resolvable_evidence_ids": resolvable,
+    }
+
+
+def _benign_link_rate(conn: duckdb.DuckDBPyConnection) -> dict[str, Any]:
+    confirmed = conn.execute(
+        "WITH supported AS ("
+        " SELECT h.hypothesis_id, COUNT(DISTINCT f.finding_id) AS linked_findings, "
+        " BOOL_OR(COALESCE((SELECT BOOL_OR(starts_with("
+        "   json_extract_string(tag.value, '$'), 'benign-context:')) "
+        "   FROM json_each(f.tags) tag), FALSE)) AS has_benign_context "
+        " FROM hypotheses h LEFT JOIN hypothesis_evidence he "
+        " ON he.hypothesis_id = h.hypothesis_id "
+        " AND he.role IN ('supporting', 'corroborating') "
+        " LEFT JOIN findings f ON f.finding_id = he.finding_id "
+        " WHERE h.verdict = 'confirmed' GROUP BY h.hypothesis_id"
+        ") SELECT COUNT(*), COUNT(*) FILTER (WHERE linked_findings > 0), "
+        " COUNT(*) FILTER (WHERE linked_findings > 0 AND has_benign_context) "
+        " FROM supported"
+    ).fetchone()
+    total_confirmed, linked_confirmed, benign_confirmed = map(int, confirmed)
+    if linked_confirmed == 0:
+        reason = (
+            "No confirmed hypotheses have support-linked Findings with persisted benign-context tags"
+            if total_confirmed
+            else "No confirmed hypotheses are recorded"
+        )
+        rate = _unknown(reason)
+    else:
+        rate = {
+            "value": benign_confirmed / linked_confirmed,
+            "reason": None,
+            "confirmed_hypotheses": total_confirmed,
+            "confirmed_with_finding_support": linked_confirmed,
+            "confirmed_with_benign_tagged_support_link": benign_confirmed,
+            "finding_support_coverage": linked_confirmed / total_confirmed
+            if total_confirmed
+            else None,
+            "basis": "Historical support links; evidence currentness is not recomputed by this read-only evaluator",
+        }
+    return rate
+
+
+def extract_case(case_dir: Path) -> dict[str, Any]:
+    """Extract actual measurements from the current, read-only Case/Trace pair."""
+    case_dir = case_dir.resolve()
+    result: dict[str, Any] = {"case_dir": str(case_dir), "cycles": []}
+    result["storage"] = (
+        _tree_stats(case_dir)
+        if case_dir.is_dir()
+        else {
+            "case_files": _unknown("Case directory not found"),
+            "case_bytes": _unknown("Case directory not found"),
+        }
+    )
+    core_path = case_dir / "db" / "case.duckdb"
+    trace_path = case_dir / "db" / "trace.duckdb"
+    if not core_path.is_file() or not trace_path.is_file():
+        result.update(
+            reader_status="incomplete",
+            reason=f"Current Case/Trace database pair not found under {case_dir / 'db'}",
+        )
+        return result
+
+    try:
+        with _read_only_case_trace(case_dir) as conn:
+            result["case_counts"] = {
+                "findings": _measure(
+                    int(conn.execute("SELECT COUNT(*) FROM findings").fetchone()[0])
+                ),
+                "hypotheses": _measure(
+                    int(conn.execute("SELECT COUNT(*) FROM hypotheses").fetchone()[0])
+                ),
+                "report_sections": _measure(
+                    int(
+                        conn.execute("SELECT COUNT(*) FROM report_sections").fetchone()[
+                            0
+                        ]
+                    )
+                ),
+                "claims": _measure(
+                    int(conn.execute("SELECT COUNT(*) FROM claims").fetchone()[0])
+                ),
+                "report_query_runs": _measure(
+                    int(
+                        conn.execute(
+                            "SELECT COUNT(*) FROM section_runs WHERE phase = 'query'"
+                        ).fetchone()[0]
+                    )
+                ),
+            }
+            distinct_evidence = int(
+                conn.execute(
+                    "SELECT COUNT(DISTINCT json_extract_string(j.value, ?)) "
+                    "FROM findings f, json_each(f.evidence) j",
+                    ["$.evidence_id"],
+                ).fetchone()[0]
+            )
+            result["case_counts"]["finding_rows"] = result["case_counts"]["findings"]
+            result["case_counts"]["distinct_finding_evidence"] = _measure(
+                distinct_evidence
+            )
+
+            analysis_receipt = _latest_receipt(conn, "pipeline-analyze")
+            normalize_receipt = _latest_receipt(conn, "pipeline-normalize")
+            result["pipeline_receipts"] = {
+                "normalize": {
+                    key: (normalize_receipt or {}).get(key)
+                    for key in (
+                        "status",
+                        "revision",
+                        "parser_revision",
+                        "summary",
+                        "created_at",
+                    )
+                }
+                if normalize_receipt
+                else None,
+                "analyze": (
+                    {
+                        key: (analysis_receipt or {}).get(key)
+                        for key in ("status", "revision", "summary", "created_at")
+                    }
+                    | {
+                        "sigma_bundle": _bundle_identity(
+                            (analysis_receipt or {}).get("sigma_bundle")
+                        )
+                    }
+                )
+                if analysis_receipt
+                else None,
+            }
+            result["storage"]["elapsed_ms"] = _stage_elapsed_ms(
+                conn, "pipeline-analyze"
+            )
+            result["result_identity"] = _result_identity(conn)
+            result["case_counts"].update(_analysis_metrics(analysis_receipt))
+            bundle = (analysis_receipt or {}).get("sigma_bundle")
+            source_rows = [
+                tuple(row)
+                for row in conn.execute(
+                    "SELECT sha256, source_kind, size FROM ingested_files ORDER BY sha256"
+                ).fetchall()
+            ]
+            result["generation_identity"] = {
+                "analysis_revision": (analysis_receipt or {}).get("revision"),
+                "sigma_bundle": _bundle_identity(bundle),
+                "input_source_count": len(source_rows),
+                "input_source_bytes": sum(int(row[2] or 0) for row in source_rows),
+                "input_source_fingerprint": hashlib.sha256(
+                    json.dumps(source_rows, separators=(",", ":")).encode()
+                ).hexdigest(),
+                "input_families": [
+                    {"source_kind": row[0], "files": row[1], "bytes": row[2]}
+                    for row in conn.execute(
+                        "SELECT source_kind, COUNT(*), SUM(size) FROM ingested_files "
+                        "GROUP BY source_kind ORDER BY source_kind"
+                    ).fetchall()
+                ],
+            }
+
+            result["quality"] = {
+                "confirmed_hypotheses_with_benign_tagged_finding_link_rate": _benign_link_rate(
+                    conn
+                ),
+                "false_positive_count": _unknown(
+                    "No persisted lead annotations or adjudicated outcomes are available"
+                ),
+                "false_negative_count": _unknown(
+                    "No persisted lead annotations or adjudicated outcomes are available"
+                ),
+                "claim_evidence_traceability": _claim_traceability(conn),
+            }
+
+            result["usage"] = {
+                "logical_calls": _measure(
+                    int(
+                        conn.execute(
+                            "SELECT COUNT(*) FROM trace.llm_logical_calls"
+                        ).fetchone()[0]
+                    )
+                ),
+                "provider_attempts": _measure(
+                    int(
+                        conn.execute(
+                            "SELECT COUNT(*) FROM trace.llm_provider_attempts"
+                        ).fetchone()[0]
+                    )
+                ),
+                "deterministic_ops": _measure(
+                    int(
+                        conn.execute(
+                            "SELECT COUNT(*) FROM trace.llm_deterministic_ops"
+                        ).fetchone()[0]
+                    )
+                ),
+                "hypothesis_query_ops": _measure(
+                    int(
+                        conn.execute(
+                            "SELECT COUNT(*) FROM trace.llm_deterministic_ops WHERE op_type = 'query'"
+                        ).fetchone()[0]
+                    )
+                ),
+                "report_query_runs": result["case_counts"]["report_query_runs"],
+            }
+            result["usage"].update(_token_usage(conn))
+            result["llm_request_profiles"] = [
+                {
+                    "provider": row[0],
+                    "model": row[1],
+                    "schema_mode": row[2],
+                    "configured_output_limit": row[3],
+                    "known_context_limit": row[4],
+                    "effective_output_limit": row[5],
+                    "attempts": row[6],
+                }
+                for row in conn.execute(
+                    "SELECT provider, model, schema_mode, configured_output_limit, "
+                    "known_context_limit, effective_output_limit, COUNT(*) "
+                    "FROM trace.llm_provider_attempts GROUP BY ALL "
+                    "ORDER BY provider, model, schema_mode"
+                ).fetchall()
+            ]
+
+            result["sessions"] = [
+                {
+                    "session_id": row[0],
+                    "started_at": row[1].isoformat() if row[1] else None,
+                    "finished_at": row[2].isoformat() if row[2] else None,
+                    "iterations": row[3],
+                    "status": row[4],
+                    "terminal_reason": row[5],
+                    "phase": row[6],
+                    "status_reason": row[7],
+                }
+                for row in conn.execute(
+                    "SELECT session_id, started_at, finished_at, iterations, status, "
+                    "terminal_reason, phase, status_reason "
+                    "FROM trace.investigation_sessions ORDER BY started_at, session_id"
+                ).fetchall()
+            ]
+            outcome_rows = conn.execute(
+                "SELECT session_id, SUM(created), SUM(resolved), "
+                "SUM(confirmed_at_creation), SUM(refuted_at_creation) FROM ("
+                " SELECT created_session AS session_id, 1 AS created, 0 AS resolved, "
+                " CASE WHEN verdict = 'confirmed' THEN 1 ELSE 0 END AS confirmed_at_creation, "
+                " CASE WHEN verdict = 'refuted' THEN 1 ELSE 0 END AS refuted_at_creation "
+                " FROM hypotheses WHERE created_session IS NOT NULL UNION ALL "
+                " SELECT resolved_session, 0, 1, 0, 0 FROM hypotheses "
+                " WHERE resolved_session IS NOT NULL"
+                ") GROUP BY session_id ORDER BY session_id"
+            ).fetchall()
+            result["session_hypothesis_outcomes"] = [
+                {
+                    "session_id": row[0],
+                    "created": int(row[1] or 0),
+                    "resolved": int(row[2] or 0),
+                    "currently_confirmed_created": int(row[3] or 0),
+                    "currently_refuted_created": int(row[4] or 0),
+                }
+                for row in outcome_rows
+            ]
+
+            result["candidate_workflow"] = _candidate_summary(conn)
+            result["cycles"] = _cycle_rows(conn)
+            result["reader_status"] = "complete"
+    except (duckdb.Error, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
+        result["reader_status"] = "incomplete"
+        result["reason"] = (
+            f"Could not read the current Case/Trace schema: {type(exc).__name__}: {exc}"
+        )
+    return result
+
+
+def _numeric_deltas(cases: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if len(cases) != 2:
+        return None
+    before, after = cases
+    groups = ("case_counts", "quality", "usage", "storage")
+    metrics: dict[str, Any] = {}
+    for group in groups:
+        metrics[group] = {}
+        for key, new in after.get(group, {}).items():
+            old = before.get(group, {}).get(key, {})
+            old_value, new_value = old.get("value"), new.get("value")
+            delta = (
+                new_value - old_value
+                if isinstance(old_value, (int, float))
+                and isinstance(new_value, (int, float))
+                else None
+            )
+            metrics[group][key] = {
+                "before": old_value,
+                "after": new_value,
+                "delta": delta,
+                "reason": None
+                if delta is not None
+                else "Both cases need a measured numeric value",
+            }
+    identity_keys = (
+        "input_source_fingerprint",
+        "sigma_bundle",
+    )
+    identities: dict[str, Any] = {}
+    for key in identity_keys:
+        old = before.get("generation_identity", {}).get(key)
+        new = after.get("generation_identity", {}).get(key)
+        identities[key] = {
+            "before": old,
+            "after": new,
+            "match": old == new if old is not None and new is not None else None,
+        }
+    old_result = before.get("result_identity", {})
+    new_result = after.get("result_identity", {})
+    identities["result_sets"] = {
+        name: {
+            "before": old_result.get(name),
+            "after": new_result.get(name),
+            "match": old_result[name] == new_result[name]
+            if name in old_result and name in new_result
+            else None,
+        }
+        for name in sorted(set(old_result) | set(new_result))
+    }
+    identities["analysis_fingerprints"] = {
+        name: {
+            "before": before.get("case_counts", {})
+            .get("analysis_identity", {})
+            .get(name),
+            "after": after.get("case_counts", {})
+            .get("analysis_identity", {})
+            .get(name),
+            "match": before.get("case_counts", {})
+            .get("analysis_identity", {})
+            .get(name)
+            == after.get("case_counts", {}).get("analysis_identity", {}).get(name),
+        }
+        for name in (
+            "rule_definitions_sha256",
+            "executable_queries_and_outcomes_sha256",
+        )
+    }
+    return {
+        "before_case": before["case_dir"],
+        "after_case": after["case_dir"],
+        "metrics": metrics,
+        "identity_comparison": identities,
+    }
+
+
+def _markdown(data: dict[str, Any]) -> str:
+    lines = ["# Investigation evaluation", ""]
+    for case in data["cases"]:
+        lines.extend(
+            [
+                f"## {case['case_dir']}",
+                "",
+                f"Reader status: {case['reader_status']}",
+                "",
+            ]
+        )
+        for group in ("case_counts", "quality", "usage", "storage"):
+            values = case.get(group, {})
+            if not values:
+                continue
+            lines.append(f"### {group.replace('_', ' ').title()}")
+            for name, metric in values.items():
+                if isinstance(metric, dict) and "value" in metric:
+                    value = json.dumps(metric["value"], ensure_ascii=False)
+                    reason = f" — {metric['reason']}" if metric.get("reason") else ""
+                else:
+                    value = json.dumps(metric, ensure_ascii=False, sort_keys=True)
+                    reason = ""
+                lines.append(f"- {name}: {value}{reason}")
+            lines.append("")
+    comparison = data.get("comparison")
+    if comparison:
+        lines.extend(["## Before/after deltas", ""])
+        for group, metrics in comparison["metrics"].items():
+            for name, metric in metrics.items():
+                delta = metric["delta"] if metric["delta"] is not None else "unknown"
+                lines.append(f"- {group}.{name}: {delta}")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--output",
-        type=str,
-        default=None,
-        help="Output JSON path (default: <case_dir>/eval_report.json)",
+        "case_dirs", nargs="+", type=Path, help="one case, or baseline then after"
     )
     parser.add_argument(
-        "--markdown",
-        type=str,
-        default=None,
-        help="Output Markdown path (default: stdout)",
+        "--output", type=Path, help="write JSON outside evaluated cases"
+    )
+    parser.add_argument(
+        "--markdown", type=Path, help="write Markdown outside evaluated cases"
     )
     args = parser.parse_args()
+    if len(args.case_dirs) > 2:
+        parser.error("pass one case or exactly baseline and after cases")
 
-    case_path = Path(args.case_dir).resolve()
-    if not case_path.is_dir():
-        print(f"Error: {args.case_dir} is not a directory", file=sys.stderr)
-        sys.exit(1)
-
-    metrics = evaluate(case_path)
+    roots = [path.resolve() for path in args.case_dirs]
+    cases = [extract_case(path) for path in roots]
+    data = {"cases": cases, "comparison": _numeric_deltas(cases)}
+    for output in (args.output, args.markdown):
+        if output is not None:
+            target = output.resolve()
+            if any(target == root or root in target.parents for root in roots):
+                parser.error(
+                    f"evaluation output must be outside case directories: {target}"
+                )
 
     if args.output:
-        output_path = Path(args.output)
+        args.output.resolve().write_text(
+            json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
     else:
-        output_path = case_path / "eval_report.json"
-    output_path.write_text(
-        json.dumps(metrics, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
-    print(f"JSON report saved to {output_path}", file=sys.stderr)
-
-    md = _format_markdown(metrics)
+        print(json.dumps(data, indent=2, ensure_ascii=False))
     if args.markdown:
-        Path(args.markdown).write_text(md, encoding="utf-8")
-        print(f"Markdown report saved to {args.markdown}", file=sys.stderr)
-    else:
-        print(md)
+        args.markdown.resolve().write_text(_markdown(data), encoding="utf-8")
+    return 0 if all(case["reader_status"] == "complete" for case in cases) else 2
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

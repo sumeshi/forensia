@@ -69,7 +69,7 @@ def _template_catalog_block(entries: list[dict[str, Any]]) -> str:
         "<TEMPLATE_CATALOG>",
         "Executable query templates selected for this work's artifact tables. "
         "Use template_id + params (the host re-renders and validates the SQL); "
-        "unknown cases still adapt a bounded SELECT with template_id=null.",
+        "unknown cases still adapt a bounded SELECT with template_id=null and non-empty sql.",
         "<INDEX>",
     ]
     for entry in entries:
@@ -448,12 +448,14 @@ def build_query_intent_messages(
         "<OUTPUT_SCHEMA>\n"
         "Return exactly one of these JSON objects:\n"
         '{"action": {"type": "memory.read_more", "paths": ["exact scoped memory paths"]}}\n'
-        '{"action": {"type": "sql.query", "intent": "what to retrieve", "target_table": "known table", '
-        '"template_id": "executable template_catalog ID or null", "params": {}, "sql": "SELECT ... or empty", '
-        '"filters_required": [], "time_window": "bounds", "expected_row_shape": "columns"}}\n'
+        'Raw SQL example: {"action": {"type": "sql.query", "intent": "inspect matching evidence", '
+        '"target_table": "evtx_events", "template_id": null, "params": {}, '
+        '"sql": "SELECT evidence_id FROM evtx_events LIMIT 20", "filters_required": [], '
+        '"time_window": "case range", "expected_row_shape": "evidence_id"}}\n'
+        "Template path: use the same sql.query fields, copy a template_id exactly from the supplied <TEMPLATE_CATALOG>, set its params, and set sql to an empty string."
         "</OUTPUT_SCHEMA>\n"
         "<RULES>\n"
-        "Choose exactly one action. Use memory.read_more only when additional scoped context is required; after that expansion, choose sql.query and never request memory again. The memory action MUST contain at least one exact relative path. The sql.query action MUST include a complete intent, known target_table, and either a template_id listed by template_catalog with params or bounded SELECT. RECIPE_INDEX IDs are never valid template_id values. Do not emit unknown actions, free-form tools, or an empty/ambiguous action.\n"
+        "Choose exactly one action. Use memory.read_more only when additional scoped context is required; after that expansion, choose sql.query and never request memory again. The memory action MUST contain at least one exact relative path. The sql.query action MUST include a complete intent, known target_table, and exactly one execution path: for a template, copy an executable ID from <TEMPLATE_CATALOG>, set params, and set sql to an empty string; for raw SQL, set template_id to null and provide a bounded SELECT. If the catalog contains no applicable template, use raw SQL. RECIPE_INDEX IDs are never valid template_id values. Do not emit unknown actions, free-form tools, or an empty/ambiguous action.\n"
         "If EXECUTION_ERROR is present, you MUST change the query — at minimum change the table list, the WHERE clause, or eliminate the failing JOIN. Never repeat the same SQL that caused an execution error.\n"
         "If prior_check_feedback names specific missing event_ids or evidence types, the new SQL MUST include those event_ids or evidence types. Never ignore prior check feedback.\n"
         "</RULES>"
@@ -761,67 +763,140 @@ def build_hypothesis_drafter_messages(
     case_policy: Any | None = None,
     db: Any | None = None,
     session_id: str | None = None,
+    observed_candidate: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, str]], dict]:
-    """role: hypothesis_drafter.
-    Goal: draft ONE hypothesis targeting the given gap_area.
-    """
+    """Draft one testable hypothesis from a real observation or existing gap."""
     schema = hypothesis_drafter_schema()
-    _gap_words = [gap_area.get("keypoint_id", "")]
+    gap_words = [gap_area.get("keypoint_id", "")]
+    matched_rule_ids = [
+        str(rule.get("id") or rule.get("rule_id") or "")
+        for rule in available_rules
+        if isinstance(rule, dict) and (rule.get("id") or rule.get("rule_id"))
+    ]
+    observed_block = ""
+    if observed_candidate:
+        evidence_fields = (
+            "evidence_id",
+            "_source",
+            "source_file",
+            "timestamp",
+            "timestamp_kind",
+            "channel",
+            "provider",
+            "event_id",
+            "command_line",
+            "computer",
+            "host",
+            "service_name",
+            "logon_type",
+            "subject_user",
+            "target_user",
+            "target_group",
+            "target_server",
+            "src_ip",
+            "dst_ip",
+            "file_path",
+            "si_created",
+            "si_modified",
+            "fn_created",
+            "fn_modified",
+            "process_name",
+            "executable_name",
+            "last_exec_time",
+            "exec_time",
+            "plugin",
+            "hive",
+            "key_path",
+            "value_name",
+            "value_data",
+            "object_dn",
+        )
+        observations = [
+            {
+                **{
+                    key: row[key] for key in evidence_fields if row.get(key) is not None
+                },
+                **(
+                    {
+                        "provider": row["raw"]
+                        .get("winlog", {})
+                        .get("provider", {})
+                        .get("name")
+                    }
+                    if isinstance(row.get("raw"), dict)
+                    and isinstance(row["raw"].get("winlog"), dict)
+                    and isinstance(row["raw"]["winlog"].get("provider"), dict)
+                    and row["raw"]["winlog"]["provider"].get("name") is not None
+                    else {}
+                ),
+            }
+            for row in (observed_candidate.get("evidence") or [])[:3]
+            if isinstance(row, dict)
+        ]
+        projection = {
+            "candidate_ref": observed_candidate.get("candidate_ref"),
+            "title": observed_candidate.get("title"),
+            "summary": observed_candidate.get("summary"),
+            "scope": observed_candidate.get("scope"),
+            "match_count": observed_candidate.get("match_count"),
+            "evidence_count": observed_candidate.get("evidence_count"),
+            "evidence_ids": observed_candidate.get("evidence_ids", [])[:3],
+            "observations": observations,
+        }
+        observed_block = (
+            "<OBSERVED_CANDIDATE>\n"
+            + json.dumps(projection, ensure_ascii=False, default=str)
+            + "\n</OBSERVED_CANDIDATE>\n"
+        )
+        for value in (
+            observed_candidate.get("title"),
+            observed_candidate.get("summary"),
+        ):
+            if isinstance(value, str) and value.strip():
+                gap_words.append(value.strip()[:160])
+        gap_words.extend(matched_rule_ids)
+        for rule in available_rules:
+            if not isinstance(rule, dict):
+                continue
+            title = rule.get("title")
+            if isinstance(title, str) and title.strip():
+                gap_words.append(title.strip()[:120])
+            tags = rule.get("tags") or []
+            if isinstance(tags, str):
+                tags = [tags]
+            if isinstance(tags, list):
+                gap_words.extend(
+                    tag.strip()[:80]
+                    for tag in tags[:10]
+                    if isinstance(tag, str) and tag.strip()
+                )
     system = (
         (f"{case_policy_block(case_policy)}" if case_policy is not None else "")
-        + "<TASK>You are a hypothesis_drafter. Draft ONE falsifiable hypothesis targeting the given gap_area.</TASK>\n"
+        + "<TASK>You are a hypothesis_drafter. Draft ONE falsifiable, SQL-testable hypothesis from the supplied observation or existing gap.</TASK>\n"
         f"{_case_profile_guidance(case_profile.summary if case_profile else None)}"
-        f"{_org_knowledge_block(extra_words=_gap_words, db=db, session_id=session_id, phase='plan_broad_draft')}"
+        f"{_org_knowledge_block(extra_words=gap_words, db=db, session_id=session_id, phase='plan_broad_draft')}"
         "<OUTPUT_SCHEMA>\n"
         "{\n"
         '  "hypothesis": {\n'
         '    "description": "str (one investigative claim that can be confirmed or refuted by SQL evidence)",\n'
         '    "required_entities": ["snake_case column names such as src_ip, target_user, computer, logon_type, process_name, file_path"],\n'
-        '    "source_rule_ids": ["rule_id from available_rules if any aligns, else empty list"],\n'
+        '    "source_rule_ids": ["an id from the host-supplied matched_rule_ids, or empty list"],\n'
         '    "confirm_when": {"co_observed_event_ids": [int, ...], "same_host": bool, "within_minutes": int, "same_entities": ["src_ip", "target_user"], "min_count": int},\n'
         '    "refute_when": {"zero_rows": true}\n'
         "  }\n"
         "}\n"
         "</OUTPUT_SCHEMA>\n"
         "<RULES>\n"
-        "confirm_when MUST be a JSON object (not a string). Use co_observed_event_ids as a list of integer Windows event IDs (e.g. [4624, 4625, 4768]).\n"
-        "If the description says repeated/multiple, set min_count >= 2. If it says same/single entity, list that exact column in same_entities.\n"
-        "required_entities MUST be column-like identifiers (snake_case), not natural language phrases. Example: src_ip, target_user, computer.\n"
-        "confirm_when.co_observed_event_ids MUST be event IDs commonly logged by DEFAULT Windows audit policy. Avoid event IDs that require non-default auditing such as:\n"
-        "  - 4663 (Object Access) — requires explicit SACL / Object Access auditing\n"
-        "  - 5140/5145 (file share access) — requires File Share auditing\n"
-        "  - 4658 / 4660 — Object Access subcategory\n"
-        "If the hypothesis fundamentally needs these IDs, state in the description that it is only testable when corresponding audit policy is enabled.\n"
-        "event_id semantics:\n"
-        "  - 4624/4625 = logon success/failure\n"
-        "  - 4648 = explicit credential logon attempt\n"
-        "  - 4688 = process creation (NOT 'browser activity' — for browser look at mft_entries / prefetch_executions)\n"
-        "  - 4697 / 7045 = service installation\n"
-        "  - 4698 = scheduled task creation\n"
-        "  - 1102 / 104 = log clearing\n"
-        "For browser usage, file activity, or process artifact analysis, prefer mft_entries + prefetch_executions tables over event IDs.\n"
-        "Output JSON only.\n"
+        "Treat supplied observations as leads, not proof. For an observed candidate, describe a question that tests that candidate and use only fields/ref IDs shown there. Do not infer facts from match counts, severity, titles, or rule names.\n"
+        "Use source_rule_ids only from the host-supplied matched_rule_ids. They identify observed matches and are not evidence support.\n"
+        "For a gap without an observed candidate, stay within its stated objective, gap, keypoint, and available evidence. Do not invent an event, entity, or source.\n"
+        "required_entities must be valid snake_case evidence column names. Keep verification conditions explicit and preserve every event ID you propose; the host will validate the Spec.\n"
+        "confirm_when and refute_when must be JSON objects. Output JSON only.\n"
         "</RULES>\n"
-        "<EXAMPLE>\n"
-        'Input gap_area: {"keypoint_id": "account_bruteforce_clusters", "required_entities": ["src_ip", "target_user"]}\n'
-        'Output: {"hypothesis": {"description": "Repeated 4625 failures from a single src_ip targeting one or more users indicate brute-force attempts that may have been followed by a successful 4624 logon.", "required_entities": ["src_ip", "target_user", "computer"], "source_rule_ids": [], "confirm_when": {"co_observed_event_ids": [4625, 4624], "same_host": true, "within_minutes": 30}, "refute_when": {"zero_rows": true}}}\n'
-        "</EXAMPLE>\n"
-        "<EXAMPLE_GOOD>\n"
-        'Input: gap_area={"keypoint_id": "host_execution_activity", "required_entities": ["computer", "process_name"]}\n'
-        'Output: {"hypothesis": {"description": "Unauthorized execution of LOLBAS binaries (powershell.exe, mshta.exe) on WS-SALES-03 indicates initial code execution.", "required_entities": ["computer", "process_name", "command_line"], "source_rule_ids": [], "confirm_when": {"co_observed_event_ids": [4688, 4624], "same_host": true, "within_minutes": 5}, "refute_when": {"zero_rows": true}}}\n'
-        "</EXAMPLE_GOOD>\n"
-        "<EXAMPLE_BAD>\n"
-        'Output: {"hypothesis": {"description": "...", "required_entities": ["user_identity", "computer_name", "logon_type", "credential_usage"]}}\n'
-        "Reason: required_entities must be snake_case column-like names (target_user, computer, logon_type), not natural language. NEVER use natural language for required_entities.\n"
-        "</EXAMPLE_BAD>\n"
-        "<EXAMPLE_BAD>\n"
-        'Output: {"hypothesis": {"description": "Logon (4624) followed by file access (4663) or browser activity (4688)...", "confirm_when": {"co_observed_event_ids": [4624, 4663, 4688]}}}\n'
-        'Reason: 4663 requires Object Access auditing (rarely enabled), and 4688 is process creation not "browser activity". Better: split into two hypotheses — one tested via 4624 + mft_entries WHERE file_path LIKE patterns, another via 4624 + prefetch_executions filtered to browser executable names.\n'
-        "</EXAMPLE_BAD>\n"
     )
-    # T-09: Slim each rule to essential fields only
+    # Only rules that actually matched this candidate may be disclosed.
     slim_rules: list[dict[str, Any]] = []
-    for rule in available_rules[:5]:
+    for rule in available_rules:
         if not isinstance(rule, dict):
             continue
         slim_hypotheses: list[dict[str, Any]] = []
@@ -837,12 +912,13 @@ def build_hypothesis_drafter_messages(
             {
                 "id": rule.get("id", ""),
                 "title": rule.get("title", ""),
-                "tags": rule.get("tags", []),
                 "hypotheses": slim_hypotheses,
             }
         )
     user = (
         f"gap_area: {json.dumps(gap_area, ensure_ascii=False, default=str)}\n"
+        f"matched_rule_ids: {json.dumps(matched_rule_ids, ensure_ascii=False)}\n"
+        f"{observed_block}"
         f"available_rules: {json.dumps(slim_rules, ensure_ascii=False, default=str)}\n"
     )
     messages = [

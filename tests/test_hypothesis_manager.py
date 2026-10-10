@@ -497,6 +497,7 @@ class TestResolvedHypothesisDedup:
                     is False
                 )
                 resolved_projection = [resolved]
+                aliases: dict[str, str] = {}
                 reopened = merge_active_hypotheses(
                     db=db,
                     current=[],
@@ -511,10 +512,12 @@ class TestResolvedHypothesisDedup:
                     resolved=resolved_projection,
                     session_id="session-spec-change",
                     origin="broad_plan",
+                    alias_map_out=aliases,
                 )
 
                 assert len(reopened) == 1
                 assert reopened[0].id == "H-001"
+                assert aliases == {"H-new": "H-001"}
                 assert reopened[0].status == "active"
                 assert reopened[0].verdict is None
                 assert reopened[0].verification_spec.refute_conditions == {

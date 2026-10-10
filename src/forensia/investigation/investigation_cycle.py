@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-import re
+import hashlib
+import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -10,6 +11,7 @@ from typing import Any
 from forensia.context.case_profile import (
     CaseEvidenceProfile,
 )
+from forensia.context.investigation_candidates import build_investigation_candidates
 from forensia.core.case import Case
 from forensia.core.log import log as _log
 from forensia.core.memory import MemoryManager
@@ -22,9 +24,6 @@ from forensia.investigation.hypotheses.hypothesis_manager import (
     admit_new_hypothesis,
     merge_active_hypotheses,
     qualify_event_contexts,
-)
-from forensia.investigation.hypotheses.hypothesis_model import (
-    _filter_valid_entities,
 )
 from forensia.investigation.hypotheses.hypothesis_runner import (
     _investigate_one_hypothesis,
@@ -48,13 +47,14 @@ from forensia.investigation.prompts import (
 from forensia.investigation.selection import (
     select_focus_hypotheses,
 )
+from forensia.investigation.work_judgment import judge_work
 from forensia.knowledge.rules.loader import _get_rule_cache
 from forensia.llm import json_response
 from forensia.llm.llm_client import (
     LLMRequestTimeoutError,
     LLMServerUnavailableError,
 )
-from forensia.llm.telemetry import telemetry_scope
+from forensia.llm.telemetry import get_active_telemetry, telemetry_scope
 from forensia.report.answers.keypoint_catalog import (
     REPORT_KEYPOINTS,
     investigation_keypoint_names,
@@ -94,65 +94,16 @@ class _BroadPlanContext:
     case_policy: Any | None = None
 
 
-def _normalize_hypothesis_tokens(text: str) -> set[str]:
-    import re
-
-    return {
-        token
-        for token in re.findall(r"[a-z0-9]+", str(text).lower())
-        if len(token) >= 3
-    }
-
-
-def _audit_broad_plan_hypotheses(
-    state: SessionState,
-    hypotheses: list[Hypothesis],
-) -> list[dict[str, Any]]:
-    """Classify each new hypothesis as new/duplicate/follow_up/related against existing ones."""
-    audits: list[dict[str, Any]] = []
-    existing = [*state.active_hypotheses, *state.resolved_hypotheses]
-    for hyp in hypotheses:
-        best_match: Hypothesis | None = None
-        best_score = 0.0
-        hyp_tokens = _normalize_hypothesis_tokens(hyp.description)
-        for candidate in existing:
-            candidate_tokens = _normalize_hypothesis_tokens(candidate.description)
-            if not hyp_tokens or not candidate_tokens:
-                continue
-            union = hyp_tokens | candidate_tokens
-            score = len(hyp_tokens & candidate_tokens) / len(union)
-            if score > best_score:
-                best_score = score
-                best_match = candidate
-        if best_match is None:
-            relation = "new"
-        elif best_score >= 0.75:
-            relation = "duplicate"
-        elif set(hyp.source_rule_ids) & set(best_match.source_rule_ids):
-            relation = "follow_up"
-        else:
-            relation = "related"
-        audits.append(
-            {
-                "hypothesis_id": hyp.id,
-                "description": hyp.description,
-                "relation": relation,
-                "matched_hypothesis_id": best_match.id if best_match else None,
-                "similarity": round(best_score, 3),
-            }
-        )
-    return audits
-
-
 def _parse_hypothesis_from_drafter(
-    parsed: dict[str, Any], case_profile: CaseEvidenceProfile | None
+    parsed: dict[str, Any],
+    *,
+    allowed_rule_ids: set[str],
 ) -> Hypothesis | None:
     """Parse drafter LLM output into a Hypothesis object.
 
     The drafter returns ``{"hypothesis": {"description": "...", "required_entities": [...], "source_rule_ids": [...], "confirm_when": {...}, "refute_when": {...}}}``.
-    Tolerates LLMs that return ``confirm_when`` / ``refute_when`` as strings by
-    coercing to the schema's dict shape. Assigns a placeholder id that
-    ``merge_active_hypotheses`` will replace.
+    Constrains source rules to the host-supplied matched candidates and assigns
+    a placeholder id that ``merge_active_hypotheses`` will replace.
     """
     hyp_raw = parsed.get("hypothesis")
     if not isinstance(hyp_raw, dict):
@@ -160,44 +111,24 @@ def _parse_hypothesis_from_drafter(
     hyp_raw = dict(hyp_raw)
     hyp_raw.setdefault("id", "draft")
     hyp_raw.setdefault("source_rule_ids", [])
-    # Coerce string confirm_when/refute_when (LLM drift) into the dict shape Pydantic expects.
-    for key in ("confirm_when", "refute_when"):
-        val = hyp_raw.get(key)
-        if isinstance(val, str):
-            hyp_raw[key] = {"_llm_note": val} if val.strip() else None
-    entities = _filter_valid_entities(hyp_raw.get("required_entities") or [])
-    if not entities:
+    supplied_rule_ids = hyp_raw.get("source_rule_ids") or []
+    if not isinstance(supplied_rule_ids, list):
+        supplied_rule_ids = []
+    unobserved_rule_ids = {
+        str(rule_id)
+        for rule_id in supplied_rule_ids
+        if str(rule_id) not in allowed_rule_ids
+    }
+    if unobserved_rule_ids:
         _log(
             "PLAN",
-            f"drafter output dropped: invalid required_entities {hyp_raw.get('required_entities')}",
+            f"drafter source_rule_ids outside matched candidates ignored: {sorted(unobserved_rule_ids)}",
         )
-        return None
-    hyp_raw["required_entities"] = entities
-    # Filter co_observed_event_ids to only include event IDs available in the case profile
-    cw = hyp_raw.get("confirm_when")
-    if isinstance(cw, dict):
-        co_ids = cw.get("co_observed_event_ids")
-        if co_ids and isinstance(co_ids, list):
-            available_ids = case_profile.event_ids if case_profile else None
-            if available_ids is not None:
-                numeric_ids: list[int] = []
-                for eid in co_ids:
-                    try:
-                        numeric_ids.append(int(str(eid).strip()))
-                    except TypeError, ValueError:
-                        continue
-                filtered = [eid for eid in numeric_ids if eid in available_ids]
-                if len(filtered) < len(numeric_ids) or len(numeric_ids) < len(co_ids):
-                    dropped = sorted(set(numeric_ids) - available_ids)
-                    _log(
-                        "PLAN",
-                        f"drafter co_observed_event_ids filtered: dropped {dropped} (not in case evidence profile)",
-                    )
-                    cw["co_observed_event_ids"] = filtered
-                    if not filtered:
-                        cw["_llm_note"] = (
-                            "All co_observed_event_ids were removed (not in case evidence). This hypothesis may be untestable via event IDs."
-                        )
+    hyp_raw["source_rule_ids"] = [
+        str(rule_id)
+        for rule_id in supplied_rule_ids
+        if str(rule_id) in allowed_rule_ids
+    ]
     try:
         return Hypothesis.model_validate(hyp_raw)
     except Exception as exc:
@@ -214,7 +145,9 @@ def _broad_plan_observed_labels(observed_keypoints: list[dict[str, Any]]) -> lis
     ]
 
 
-async def _identify_broad_plan_gaps(ctx: _BroadPlanContext) -> list[dict[str, Any]]:
+async def _identify_broad_plan_gaps(
+    ctx: _BroadPlanContext, *, max_gap_areas: int
+) -> list[dict[str, Any]]:
     observed_kp_strs = (
         ctx.observed_keypoint_labels
         or _observed_keypoints_from_findings(ctx.state.findings_snapshot)
@@ -223,8 +156,72 @@ async def _identify_broad_plan_gaps(ctx: _BroadPlanContext) -> list[dict[str, An
         observed_kp_strs,
         ctx.state.active_hypotheses,
         ctx.state.resolved_hypotheses,
-        proposed_counts=ctx.state.proposed_keypoints,
     )
+    if not uncovered_keypoints or max_gap_areas <= 0:
+        return []
+    gap_input_fingerprint = _fingerprint(
+        {
+            "observed": observed_kp_strs,
+            "uncovered": uncovered_keypoints,
+            "policy": _policy_fingerprint(ctx),
+        }
+    )
+    prior_gap_attempts = ctx.db.execute(
+        "SELECT input_json, output_json FROM investigation_steps "
+        "WHERE phase = 'plan-broad-gap-selection'"
+    ).fetchall()
+    matching_gap_attempts: list[tuple[str | None, dict[str, Any]]] = []
+    for input_json, output_json in prior_gap_attempts:
+        try:
+            saved_input = json.loads(input_json)
+            saved_output = json.loads(output_json)
+        except TypeError, json.JSONDecodeError:
+            continue
+        if saved_input.get("input_fingerprint") == gap_input_fingerprint:
+            matching_gap_attempts.append((saved_output.get("status"), saved_output))
+    completed = next(
+        (
+            output
+            for status, output in reversed(matching_gap_attempts)
+            if status == "completed"
+        ),
+        None,
+    )
+    if completed is not None:
+        saved_areas = completed.get("gap_areas")
+        return (
+            list(saved_areas)[: min(4, max_gap_areas)]
+            if isinstance(saved_areas, list)
+            else []
+        )
+    failed_attempts = sum(
+        status in {"attempting", "failed", "interrupted", "budget_exhausted"}
+        for status, _output in matching_gap_attempts
+    )
+    if failed_attempts >= 2:
+        return []
+    gap_attempt = failed_attempts + 1
+    gap_step_suffix = f"{gap_input_fingerprint[:16]}-{gap_attempt}"
+
+    def save_gap_attempt(status: str, **details: Any) -> None:
+        _save_step(
+            db=ctx.db,
+            session_id=ctx.session_id,
+            iteration=ctx.plan_cycle,
+            phase="plan-broad-gap-selection",
+            hypothesis_id=None,
+            input_json={
+                "input_fingerprint": gap_input_fingerprint,
+                "observed_keypoints": observed_kp_strs[:20],
+                "uncovered_keypoints": uncovered_keypoints,
+                "attempt": gap_attempt,
+                "policy_fingerprint": _policy_fingerprint(ctx),
+            },
+            output_json={"status": status, **details},
+            suffix=gap_step_suffix,
+        )
+
+    save_gap_attempt("attempting")
     active_hypotheses_slim = [
         {"id": h.id, "description": h.description, "verdict": h.verdict}
         for h in ctx.state.active_hypotheses[:10]
@@ -238,25 +235,36 @@ async def _identify_broad_plan_gaps(ctx: _BroadPlanContext) -> list[dict[str, An
         db=ctx.db,
         session_id=ctx.session_id,
     )
-    gap_parsed = await _call_with_outage_recovery(
-        json_response.request_llm_json,
-        base_url=ctx.base_url,
-        model=ctx.model,
-        _outage_progress_callback=ctx.progress_callback,
-        messages=gap_msgs,
-        json_schema=gap_schema,
-        telemetry_phase="plan-broad-gap",
-        status_callback=ctx.llm_status_fn,
-    )
-    gap_areas = gap_parsed.get("gap_areas", [])
-    for gap in gap_areas:
-        kpid = gap.get("keypoint_id", "")
-        if kpid:
-            ctx.state.proposed_keypoints[kpid] = (
-                ctx.state.proposed_keypoints.get(kpid, 0) + 1
-            )
+    try:
+        gap_parsed = await _call_with_outage_recovery(
+            json_response.request_llm_json,
+            base_url=ctx.base_url,
+            model=ctx.model,
+            _outage_progress_callback=ctx.progress_callback,
+            messages=gap_msgs,
+            json_schema=gap_schema,
+            telemetry_phase="plan-broad-gap",
+            status_callback=ctx.llm_status_fn,
+        )
+    except BaseException as exc:
+        save_gap_attempt(
+            "budget_exhausted"
+            if isinstance(exc, LLMBudgetExceededError)
+            else "failed"
+            if isinstance(exc, Exception)
+            else "interrupted",
+            error_type=type(exc).__name__,
+            reason=str(exc)[:300],
+        )
+        raise
+    raw_gap_areas = gap_parsed.get("gap_areas", [])
+    gap_areas = raw_gap_areas if isinstance(raw_gap_areas, list) else []
 
-    valid_gap_areas = [g for g in gap_areas if g.get("keypoint_id") in REPORT_KEYPOINTS]
+    valid_gap_areas = [
+        gap
+        for gap in gap_areas
+        if isinstance(gap, dict) and gap.get("keypoint_id") in REPORT_KEYPOINTS
+    ]
     if len(valid_gap_areas) < len(gap_areas):
         _log(
             "PLAN",
@@ -264,103 +272,490 @@ async def _identify_broad_plan_gaps(ctx: _BroadPlanContext) -> list[dict[str, An
         )
     gap_areas = valid_gap_areas
 
-    available_slots = max(0, MAX_ACTIVE_HYPOTHESES - len(ctx.state.active_hypotheses))
-    max_gap_areas = max(2, min(4, available_slots))
+    max_gap_areas = min(4, max_gap_areas)
     if len(gap_areas) > max_gap_areas:
         gap_areas = gap_areas[:max_gap_areas]
+    save_gap_attempt("completed", gap_areas=gap_areas)
     return gap_areas
 
 
-def _rank_broad_plan_rules(
-    gap_areas: list[dict[str, Any]], case_profile: CaseEvidenceProfile | None
-) -> list[dict[str, Any]]:
+def _rules_for_candidate(candidate: dict[str, Any]) -> list[dict[str, Any]]:
     rule_cache = _get_rule_cache()
-    all_rule_models = list(rule_cache.values())
-    all_gap_kp_text = " ".join(str(g.get("keypoint_id", "")) for g in gap_areas)
-    all_gap_tokens: set[str] = (
-        set(re.findall(r"[a-z0-9]+", all_gap_kp_text.lower()))
-        if all_gap_kp_text
-        else set()
+    rules = []
+    for rule_id in candidate.get("rule_ids") or []:
+        rule = rule_cache.get(str(rule_id))
+        if rule is not None:
+            rules.append(rule.model_dump())
+    return rules
+
+
+def _fingerprint(value: Any) -> str:
+    encoded = json.dumps(value, sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _policy_fingerprint(ctx: _BroadPlanContext) -> str:
+    policy = ctx.case_policy
+    return str(
+        getattr(policy, "content_sha256", None)
+        or _fingerprint(getattr(policy, "body", ""))
     )
-    profile_eids = case_profile.event_ids if case_profile else None
-
-    def _rule_relevance_score(rule: Any) -> float:
-        score = 0.0
-        rule_text = f"{rule.id} {rule.title} {' '.join(rule.tags)}".lower()
-        rule_tokens = set(re.findall(r"[a-z0-9]+", rule_text))
-        if all_gap_tokens and rule_tokens:
-            overlap = len(all_gap_tokens & rule_tokens)
-            score += overlap / max(len(all_gap_tokens), 1)
-        rule_event_ids: set[int] = set()
-        for corr in getattr(rule, "correlate_with", []) or []:
-            rule_event_ids.update(getattr(corr, "event_ids", []) or [])
-        if profile_eids and rule_event_ids:
-            intersection = len(rule_event_ids & profile_eids)
-            score += intersection / max(len(rule_event_ids), 1) * 0.5
-        return score
-
-    scored = sorted(all_rule_models, key=_rule_relevance_score, reverse=True)
-    return [rule.model_dump() for rule in scored[:5]]
 
 
-async def _draft_broad_plan_hypotheses(
+def _candidate_linked_work(
+    candidate: dict[str, Any],
+    state: SessionState,
+    prior_attempts: dict[str, list[dict[str, Any]]],
+    *,
+    additional_ids: set[str] | None = None,
+) -> list[dict[str, str | None]]:
+    candidate_ref = str(candidate.get("candidate_ref") or "")
+    hypothesis_ids = {
+        str(attempt.get("admitted_hypothesis_id"))
+        for attempt in prior_attempts.get(candidate_ref, [])
+        if attempt.get("status") == "admitted" and attempt.get("admitted_hypothesis_id")
+    }
+    hypothesis_ids.update(additional_ids or set())
+    by_id = {
+        hypothesis.id: hypothesis
+        for hypothesis in [*state.active_hypotheses, *state.resolved_hypotheses]
+    }
+    work = []
+    for hypothesis_id in sorted(hypothesis_ids):
+        hypothesis = by_id.get(hypothesis_id)
+        work.append(
+            {
+                "hypothesis_id": hypothesis_id,
+                "spec_fingerprint": (
+                    _fingerprint(hypothesis.verification_spec.model_dump(mode="json"))
+                    if hypothesis
+                    else None
+                ),
+            }
+        )
+    return work
+
+
+def _candidate_input_fingerprint(
+    candidate: dict[str, Any],
     ctx: _BroadPlanContext,
-    gap_areas: list[dict[str, Any]],
-    available_rules: list[dict[str, Any]],
-) -> list[Hypothesis]:
-    drafted_hypotheses: list[Hypothesis] = []
-    for gap in gap_areas:
-        h_msgs, h_schema = build_hypothesis_drafter_messages(
-            gap,
-            available_rules,
-            case_profile=ctx.case_profile,
-            case_policy=ctx.case_policy,
+    prior_attempts: dict[str, list[dict[str, Any]]],
+    *,
+    additional_ids: set[str] | None = None,
+) -> str:
+    return _fingerprint(
+        {
+            "candidate_fingerprint": candidate.get("candidate_fingerprint"),
+            "policy_fingerprint": _policy_fingerprint(ctx),
+            "linked_work": _candidate_linked_work(
+                candidate, ctx.state, prior_attempts, additional_ids=additional_ids
+            ),
+        }
+    )
+
+
+def _prior_candidate_attempts(db: CaseDB) -> dict[str, list[dict[str, Any]]]:
+    attempts: dict[str, list[dict[str, Any]]] = {}
+    rows = db.execute(
+        "SELECT input_json, output_json FROM investigation_steps "
+        "WHERE phase = 'plan-broad-candidate' ORDER BY created_at, step_id"
+    ).fetchall()
+    for input_json, output_json in rows:
+        try:
+            input_payload = json.loads(input_json)
+            output_payload = json.loads(output_json)
+        except TypeError, json.JSONDecodeError:
+            continue
+        candidate_ref = str(input_payload.get("candidate_ref") or "")
+        if not candidate_ref:
+            continue
+        attempts.setdefault(candidate_ref, []).append(
+            {
+                **input_payload,
+                "status": output_payload.get("status"),
+                "settled_input_fingerprint": output_payload.get(
+                    "settled_input_fingerprint"
+                ),
+                "admitted_hypothesis_id": output_payload.get("admitted_hypothesis_id"),
+            }
+        )
+    return attempts
+
+
+def _remaining_broad_plan_calls(db: CaseDB, session_id: str, cap: int) -> int:
+    telemetry = get_active_telemetry()
+    limit = int(getattr(telemetry, "max_logical_calls", 0) or 0)
+    if not limit:
+        return cap
+    used = int(
+        db.execute(
+            "SELECT COUNT(*) FROM llm_logical_calls WHERE session_id = ?",
+            [session_id],
+        ).fetchone()[0]
+        or 0
+    )
+    return min(cap, max(0, limit - used))
+
+
+def _select_candidate_drafts(
+    ctx: _BroadPlanContext, limit: int
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    prior = _prior_candidate_attempts(ctx.db)
+    eligible_inputs: dict[str, dict[str, Any]] = {}
+    exhausted_count = 0
+    already_linked_count = 0
+    examined_count = 0
+
+    def eligible(metadata: dict[str, Any]) -> bool:
+        nonlocal exhausted_count, already_linked_count, examined_count
+        examined_count += 1
+        candidate_ref = str(metadata.get("candidate_ref") or "")
+        fingerprint = str(metadata.get("candidate_fingerprint") or "")
+        if not candidate_ref or not fingerprint:
+            return False
+        input_fingerprint = _candidate_input_fingerprint(metadata, ctx, prior)
+        candidate_attempts = [
+            attempt
+            for attempt in prior.get(candidate_ref, [])
+            if attempt.get("candidate_fingerprint") == fingerprint
+        ]
+        if any(
+            attempt.get("status") == "admitted"
+            and attempt.get("settled_input_fingerprint") == input_fingerprint
+            for attempt in candidate_attempts
+        ):
+            already_linked_count += 1
+            return False
+        same_input_attempts = [
+            attempt
+            for attempt in candidate_attempts
+            if attempt.get("input_fingerprint") == input_fingerprint
+            and attempt.get("status")
+            in {
+                "attempting",
+                "interrupted",
+                "failed",
+                "invalid_draft",
+                "admission_rejected",
+                "merge_missing",
+            }
+        ]
+        if len(same_input_attempts) >= 2:
+            exhausted_count += 1
+            return False
+        if len(eligible_inputs) < max(0, limit):
+            eligible_inputs[fingerprint] = {
+                "input_fingerprint": input_fingerprint,
+                "attempt_number": len(same_input_attempts) + 1,
+                "linked_work": _candidate_linked_work(metadata, ctx.state, prior),
+            }
+        return True
+
+    projection = build_investigation_candidates(
+        ctx.db,
+        limit=max(0, min(20, limit)),
+        eligible=eligible,
+    )
+    counts = {
+        key: int(value or 0) for key, value in (projection.get("counts") or {}).items()
+    }
+    selected = []
+    for candidate in projection.get("candidates") or []:
+        fingerprint = str(candidate.get("candidate_fingerprint") or "")
+        selected.append(
+            {
+                "candidate": candidate,
+                **eligible_inputs.get(fingerprint, {}),
+                "prior_attempts": prior,
+            }
+        )
+    counts.update(
+        {
+            "draft_selected_count": len(selected),
+            "attempt_exhausted_count": exhausted_count,
+            "already_linked_count": already_linked_count,
+            "unexamined_candidate_count": max(
+                0, counts.get("candidate_count", 0) - examined_count
+            ),
+            "draft_cap_omitted_count": max(
+                0, counts.get("eligible_candidate_count", 0) - len(selected)
+            ),
+        }
+    )
+    return selected, counts
+
+
+async def _call_broad_drafter(
+    ctx: _BroadPlanContext,
+    gap: dict[str, Any],
+    *,
+    candidate: dict[str, Any] | None,
+    draft_index: int,
+) -> Hypothesis | None:
+    available_rules = _rules_for_candidate(candidate) if candidate else []
+    allowed_rule_ids = {
+        str(rule_id) for rule_id in (candidate or {}).get("rule_ids") or []
+    }
+    h_msgs, h_schema = build_hypothesis_drafter_messages(
+        gap,
+        available_rules,
+        case_profile=ctx.case_profile,
+        case_policy=ctx.case_policy,
+        db=ctx.db,
+        session_id=ctx.session_id,
+        observed_candidate=candidate,
+    )
+    h_parsed = await _call_with_outage_recovery(
+        json_response.request_llm_json,
+        base_url=ctx.base_url,
+        model=ctx.model,
+        _outage_progress_callback=ctx.progress_callback,
+        messages=h_msgs,
+        json_schema=h_schema,
+        telemetry_phase="plan-broad-draft",
+        max_tokens=_BROAD_DRAFT_MAX_TOKENS,
+        status_callback=ctx.llm_status_fn,
+    )
+    hypothesis = _parse_hypothesis_from_drafter(
+        h_parsed,
+        allowed_rule_ids=allowed_rule_ids,
+    )
+    if hypothesis:
+        keypoint_id = gap.get("keypoint_id", "")
+        if keypoint_id:
+            hypothesis.target_keypoint_id = keypoint_id
+        hypothesis.id = f"draft-{ctx.plan_cycle}-{draft_index}"
+    return hypothesis
+
+
+async def _draft_and_admit_candidate(
+    ctx: _BroadPlanContext, selected: dict[str, Any], draft_index: int
+) -> tuple[Hypothesis | None, dict[str, Any]]:
+    candidate = selected["candidate"]
+    candidate_ref = str(candidate["candidate_ref"])
+    candidate_fingerprint = str(candidate["candidate_fingerprint"])
+    input_fingerprint = str(selected["input_fingerprint"])
+    attempt_number = int(selected["attempt_number"])
+    prior_attempts = selected["prior_attempts"]
+    linked_work_before = selected.get("linked_work") or _candidate_linked_work(
+        candidate, ctx.state, prior_attempts
+    )
+    input_payload = {
+        "candidate_ref": candidate_ref,
+        "candidate_fingerprint": candidate_fingerprint,
+        "input_fingerprint": input_fingerprint,
+        "policy_fingerprint": _policy_fingerprint(ctx),
+        "linked_work": linked_work_before,
+        "selection_reason": (
+            "existing uncovered keypoint"
+            if candidate.get("gap_keypoint_id")
+            else "current observed match; eligible for bounded draft attempt"
+        ),
+        "rule_ids": candidate.get("rule_ids", [])[:20],
+        "evidence_ids": candidate.get("evidence_ids", [])[:3],
+        "scope": candidate.get("scope", {}),
+    }
+    step_suffix = f"{candidate_ref}-{input_fingerprint[:10]}-{attempt_number}"
+
+    def save_outcome(output: dict[str, Any]) -> None:
+        _save_step(
             db=ctx.db,
             session_id=ctx.session_id,
+            iteration=ctx.plan_cycle,
+            phase="plan-broad-candidate",
+            hypothesis_id=None,
+            input_json=input_payload,
+            output_json=output,
+            suffix=step_suffix,
         )
-        h_parsed = await _call_with_outage_recovery(
-            json_response.request_llm_json,
-            base_url=ctx.base_url,
-            model=ctx.model,
-            _outage_progress_callback=ctx.progress_callback,
-            messages=h_msgs,
-            json_schema=h_schema,
-            telemetry_phase="plan-broad-draft",
-            max_tokens=_BROAD_DRAFT_MAX_TOKENS,
-            status_callback=ctx.llm_status_fn,
+
+    save_outcome({"status": "attempting", "attempt_number": attempt_number})
+    gap = selected.get("gap") or {
+        "candidate_ref": candidate_ref,
+        "title": candidate.get("title"),
+        "summary": candidate.get("summary"),
+        "scope": candidate.get("scope", {}),
+    }
+    try:
+        hypothesis = await _call_broad_drafter(
+            ctx,
+            gap,
+            candidate=selected.get("prompt_candidate", candidate),
+            draft_index=draft_index,
         )
-        hyp = _parse_hypothesis_from_drafter(h_parsed, ctx.case_profile)
-        if hyp:
-            kpid = gap.get("keypoint_id", "")
-            if kpid:
-                hyp.target_keypoint_id = kpid
-            hyp.id = f"draft-{ctx.plan_cycle}-{len(drafted_hypotheses) + 1}"
-            drafted_hypotheses.append(hyp)
-    return drafted_hypotheses
-
-
-def _admit_broad_plan_hypotheses(
-    ctx: _BroadPlanContext, drafted_hypotheses: list[Hypothesis]
-) -> None:
-    admitted = []
-    for hyp in drafted_hypotheses:
-        qualify_event_contexts(hyp, ctx.db)
-        ok, reason = admit_new_hypothesis(hyp, ctx.state)
-        if ok:
-            admitted.append(hyp)
-        else:
-            _log(
-                "HYPOTHESIS",
-                f"broad_plan rejected: '{hyp.description[:80]}' reason={reason}",
+        if hypothesis is None:
+            save_outcome({"status": "invalid_draft", "attempt_number": attempt_number})
+            return None, {
+                "candidate_ref": candidate_ref,
+                "status": "invalid_draft",
+                "attempt_number": attempt_number,
+            }
+        qualify_event_contexts(hypothesis, ctx.db)
+        accepted, reason = admit_new_hypothesis(hypothesis, ctx.state)
+        if not accepted:
+            save_outcome(
+                {
+                    "status": "admission_rejected",
+                    "reason": reason,
+                    "description": hypothesis.description[:240],
+                    "attempt_number": attempt_number,
+                }
             )
-    ctx.state.active_hypotheses = merge_active_hypotheses(
-        db=ctx.db,
-        current=ctx.state.active_hypotheses,
-        updates=admitted,
-        resolved=ctx.state.resolved_hypotheses,
-        session_id=ctx.session_id,
-        origin="broad_plan",
-    )
+            return hypothesis, {
+                "candidate_ref": candidate_ref,
+                "status": "admission_rejected",
+                "reason": reason,
+                "attempt_number": attempt_number,
+            }
+
+        aliases: dict[str, str] = {}
+        ctx.state.active_hypotheses = merge_active_hypotheses(
+            db=ctx.db,
+            current=ctx.state.active_hypotheses,
+            updates=[hypothesis],
+            resolved=ctx.state.resolved_hypotheses,
+            session_id=ctx.session_id,
+            origin="broad_plan",
+            alias_map_out=aliases,
+        )
+        admitted_id = aliases.get(hypothesis.id)
+        merged = next(
+            (
+                item
+                for item in [
+                    *ctx.state.active_hypotheses,
+                    *ctx.state.resolved_hypotheses,
+                ]
+                if item.id == admitted_id
+            ),
+            None,
+        )
+        if merged is None:
+            save_outcome(
+                {
+                    "status": "merge_missing",
+                    "reason": "canonical merge did not return an admitted hypothesis ID",
+                    "draft_hypothesis_id": hypothesis.id,
+                    "attempt_number": attempt_number,
+                }
+            )
+            return hypothesis, {
+                "candidate_ref": candidate_ref,
+                "status": "merge_missing",
+                "attempt_number": attempt_number,
+            }
+        settled_fingerprint = _candidate_input_fingerprint(
+            candidate, ctx, prior_attempts, additional_ids={merged.id}
+        )
+        save_outcome(
+            {
+                "status": "admitted",
+                "draft_hypothesis_id": hypothesis.id,
+                "admitted_hypothesis_id": merged.id,
+                "admitted_spec_fingerprint": _fingerprint(
+                    merged.verification_spec.model_dump(mode="json")
+                ),
+                "settled_input_fingerprint": settled_fingerprint,
+                "linked_work": _candidate_linked_work(
+                    candidate,
+                    ctx.state,
+                    prior_attempts,
+                    additional_ids={merged.id},
+                ),
+                "attempt_number": attempt_number,
+            }
+        )
+        return hypothesis, {
+            "candidate_ref": candidate_ref,
+            "status": "admitted",
+            "draft_hypothesis_id": hypothesis.id,
+            "admitted_hypothesis_id": merged.id,
+            "attempt_number": attempt_number,
+        }
+    except BaseException as exc:
+        save_outcome(
+            {
+                "status": (
+                    "budget_exhausted"
+                    if isinstance(exc, LLMBudgetExceededError)
+                    else "failed"
+                    if isinstance(exc, Exception)
+                    else "interrupted"
+                ),
+                "error_type": type(exc).__name__,
+                "reason": str(exc)[:300],
+                "attempt_number": attempt_number,
+            }
+        )
+        raise
+
+
+def _select_gap_drafts(
+    ctx: _BroadPlanContext, gaps: list[dict[str, Any]], limit: int
+) -> tuple[list[dict[str, Any]], int]:
+    prior = _prior_candidate_attempts(ctx.db)
+    selected: list[dict[str, Any]] = []
+    exhausted = 0
+    for gap in gaps:
+        keypoint_id = str(gap.get("keypoint_id") or "").strip()
+        if not keypoint_id:
+            continue
+        candidate_ref = "gap-" + keypoint_id
+        candidate = {
+            "candidate_ref": candidate_ref,
+            "candidate_fingerprint": _fingerprint(
+                {
+                    "keypoint_id": keypoint_id,
+                    "observed_keypoints": ctx.observed_keypoint_labels,
+                }
+            ),
+            "gap_keypoint_id": keypoint_id,
+            "rule_ids": [],
+            "evidence_ids": [],
+            "scope": {},
+            "title": keypoint_id,
+            "summary": "Existing observed keypoint without a current Finding candidate.",
+        }
+        input_fingerprint = _candidate_input_fingerprint(candidate, ctx, prior)
+        attempts = [
+            attempt
+            for attempt in prior.get(candidate_ref, [])
+            if attempt.get("candidate_fingerprint")
+            == candidate["candidate_fingerprint"]
+            and attempt.get("input_fingerprint") == input_fingerprint
+            and attempt.get("status")
+            in {
+                "attempting",
+                "interrupted",
+                "failed",
+                "invalid_draft",
+                "admission_rejected",
+                "merge_missing",
+            }
+        ]
+        if any(
+            attempt.get("status") == "admitted"
+            and attempt.get("settled_input_fingerprint") == input_fingerprint
+            for attempt in prior.get(candidate_ref, [])
+        ):
+            continue
+        if len(attempts) >= 2:
+            exhausted += 1
+            continue
+        selected.append(
+            {
+                "candidate": candidate,
+                "prompt_candidate": None,
+                "input_fingerprint": input_fingerprint,
+                "attempt_number": len(attempts) + 1,
+                "gap": gap,
+                "prior_attempts": prior,
+                "linked_work": _candidate_linked_work(candidate, ctx.state, prior),
+            }
+        )
+        if len(selected) >= limit:
+            break
+    return selected, exhausted
 
 
 def _save_broad_plan_results(
@@ -368,7 +763,21 @@ def _save_broad_plan_results(
     plan_input: dict[str, Any],
     gap_areas: list[dict[str, Any]],
     drafted_hypotheses: list[Hypothesis],
+    candidate_summary: dict[str, Any],
+    candidate_outcomes: list[dict[str, Any]],
+    *,
+    status: str = "completed",
+    terminal_error: dict[str, Any] | None = None,
 ) -> None:
+    output = {
+        "status": status,
+        "gap_areas": gap_areas,
+        "hypotheses": [h.model_dump() for h in drafted_hypotheses],
+        "candidate_summary": candidate_summary,
+        "candidate_outcomes": candidate_outcomes,
+    }
+    if terminal_error:
+        output["terminal_error"] = terminal_error
     _save_step(
         db=ctx.db,
         session_id=ctx.session_id,
@@ -376,35 +785,32 @@ def _save_broad_plan_results(
         phase="plan-broad",
         hypothesis_id=None,
         input_json=plan_input,
-        output_json={
-            "gap_areas": gap_areas,
-            "hypotheses": [h.model_dump() for h in drafted_hypotheses],
-        },
-    )
-    _save_step(
-        db=ctx.db,
-        session_id=ctx.session_id,
-        iteration=ctx.plan_cycle,
-        phase="plan-broad-audit",
-        hypothesis_id=None,
-        input_json={"hypotheses": [item.model_dump() for item in drafted_hypotheses]},
-        output_json={
-            "audits": _audit_broad_plan_hypotheses(ctx.state, drafted_hypotheses)
-        },
+        output_json=output,
     )
 
 
 def _emit_broad_plan_result(
-    ctx: _BroadPlanContext, drafted_hypotheses: list[Hypothesis], stop_flag: bool
+    ctx: _BroadPlanContext,
+    drafted_hypotheses: list[Hypothesis],
+    stop_flag: bool,
+    candidate_summary: dict[str, Any],
 ) -> None:
+    candidate_count = int(candidate_summary.get("candidate_count", 0))
+    unassessed_count = int(
+        candidate_summary.get("unexamined_candidate_count", 0)
+        + candidate_summary.get("draft_cap_omitted_count", 0)
+    )
     _log(
         "PLAN",
-        f"+{len(drafted_hypotheses)} new hypotheses (active={len(ctx.state.active_hypotheses)}, stop={stop_flag})",
+        f"+{len(drafted_hypotheses)} draft(s), candidates={candidate_count}, "
+        f"unassessed={unassessed_count}, active={len(ctx.state.active_hypotheses)}, "
+        f"stop={stop_flag}",
     )
     if ctx.emit_fn:
         ctx.emit_fn(
             "investigate/plan",
-            f"[plan] new_hypotheses={len(drafted_hypotheses)} active={len(ctx.state.active_hypotheses)}",
+            f"[plan] drafts={len(drafted_hypotheses)} candidates={candidate_count} "
+            f"unassessed={unassessed_count} active={len(ctx.state.active_hypotheses)}",
             iteration=ctx.plan_cycle,
         )
 
@@ -423,7 +829,7 @@ async def _run_broad_plan_step(
     case_profile: CaseEvidenceProfile | None = None,
     case_policy: Any | None = None,
 ) -> bool:
-    """Execute broad planning step (2-stage: gap_identifier → hypothesis_drafter). Returns stop flag."""
+    """Plan from observed candidates, or fall back to uncovered keypoints."""
     import httpx
 
     observed_keypoint_labels = _broad_plan_observed_labels(observed_keypoints)
@@ -443,18 +849,139 @@ async def _run_broad_plan_step(
         case_profile=case_profile,
         case_policy=case_policy,
     )
-    try:
-        gap_areas = await _identify_broad_plan_gaps(ctx)
-        available_rules = _rank_broad_plan_rules(gap_areas, case_profile)
-        drafted_hypotheses = await _draft_broad_plan_hypotheses(
-            ctx, gap_areas, available_rules
+    gap_areas: list[dict[str, Any]] = []
+    drafted_hypotheses: list[Hypothesis] = []
+    candidate_outcomes: list[dict[str, Any]] = []
+    candidate_summary: dict[str, Any] = {}
+
+    def save_terminal_plan(exc: BaseException) -> None:
+        _save_broad_plan_results(
+            ctx,
+            plan_input,
+            gap_areas,
+            drafted_hypotheses,
+            candidate_summary,
+            candidate_outcomes,
+            status=(
+                "budget_exhausted"
+                if isinstance(exc, LLMBudgetExceededError)
+                else "interrupted"
+                if not isinstance(exc, Exception)
+                else "failed"
+            ),
+            terminal_error={
+                "error_type": type(exc).__name__,
+                "reason": str(exc)[:300],
+            },
         )
-        _admit_broad_plan_hypotheses(ctx, drafted_hypotheses)
-        stop_flag = not bool(gap_areas)
-        _save_broad_plan_results(ctx, plan_input, gap_areas, drafted_hypotheses)
-        _emit_broad_plan_result(ctx, drafted_hypotheses, stop_flag)
+
+    try:
+        available_slots = max(0, MAX_ACTIVE_HYPOTHESES - len(state.active_hypotheses))
+        call_allowance = _remaining_broad_plan_calls(
+            db, session_id, cap=min(4, available_slots)
+        )
+        selected, candidate_summary = _select_candidate_drafts(
+            ctx, limit=min(4, available_slots, call_allowance)
+        )
+        candidate_summary.update(
+            {
+                "available_hypothesis_slots": available_slots,
+                "remaining_call_allowance": call_allowance,
+            }
+        )
+        if not selected:
+            remaining_calls = _remaining_broad_plan_calls(
+                db, session_id, cap=min(4, available_slots)
+            )
+            max_gap_areas = min(4, available_slots, max(0, remaining_calls - 1))
+            gap_areas = await _identify_broad_plan_gaps(
+                ctx, max_gap_areas=max_gap_areas
+            )
+            remaining_calls = _remaining_broad_plan_calls(
+                db, session_id, cap=min(4, available_slots)
+            )
+            gap_selected, exhausted_gaps = _select_gap_drafts(
+                ctx,
+                gap_areas,
+                limit=min(len(gap_areas), available_slots, remaining_calls),
+            )
+            candidate_summary.update(
+                {
+                    "gap_areas_returned": len(gap_areas),
+                    "gap_drafts_selected": len(gap_selected),
+                    "gap_attempt_exhausted_count": exhausted_gaps,
+                    "gap_draft_unassessed_count": max(
+                        0, len(gap_areas) - len(gap_selected) - exhausted_gaps
+                    ),
+                }
+            )
+            selected = gap_selected
+        _save_broad_plan_results(
+            ctx,
+            plan_input,
+            gap_areas,
+            drafted_hypotheses,
+            candidate_summary,
+            candidate_outcomes,
+            status="running",
+        )
+        for draft_index, selection in enumerate(selected, start=1):
+            hypothesis, outcome = await _draft_and_admit_candidate(
+                ctx, selection, draft_index
+            )
+            candidate_outcomes.append(outcome)
+            if hypothesis is not None:
+                drafted_hypotheses.append(hypothesis)
+
+        candidate_summary["drafted_count"] = len(drafted_hypotheses)
+        candidate_summary["admitted_count"] = sum(
+            outcome.get("status") == "admitted" for outcome in candidate_outcomes
+        )
+        candidate_summary["rejected_count"] = sum(
+            outcome.get("status") in {"admission_rejected", "invalid_draft"}
+            for outcome in candidate_outcomes
+        )
+        observed_labels = observed_keypoint_labels or _observed_keypoints_from_findings(
+            state.findings_snapshot
+        )
+        uncovered_count = len(
+            _compute_uncovered_keypoints(
+                observed_labels,
+                state.active_hypotheses,
+                state.resolved_hypotheses,
+            )
+        )
+        candidate_summary["uncovered_keypoint_count"] = uncovered_count
+        if available_slots == 0:
+            candidate_summary["stop_reason"] = "active_hypothesis_cap"
+        elif call_allowance == 0 and (
+            candidate_summary.get("candidate_count", 0) or uncovered_count
+        ):
+            candidate_summary["stop_reason"] = "llm_budget_exhausted"
+        elif candidate_summary.get("attempt_exhausted_count", 0):
+            candidate_summary["stop_reason"] = "candidate_retry_exhausted"
+        elif candidate_summary.get("draft_cap_omitted_count", 0):
+            candidate_summary["stop_reason"] = "candidate_draft_cap"
+        stop_flag = (
+            int(candidate_summary.get("candidate_count", 0)) == 0
+            and not gap_areas
+            and not selected
+            and uncovered_count == 0
+            and available_slots > 0
+            and call_allowance > 0
+        )
+        _save_broad_plan_results(
+            ctx,
+            plan_input,
+            gap_areas,
+            drafted_hypotheses,
+            candidate_summary,
+            candidate_outcomes,
+        )
+        _emit_broad_plan_result(ctx, drafted_hypotheses, stop_flag, candidate_summary)
         return stop_flag
     except httpx.HTTPStatusError as exc:
+        save_terminal_plan(exc)
         if exc.response.status_code >= 500:
             raise
         err_msg = f"LLM failed: {exc}"
@@ -463,23 +990,30 @@ async def _run_broad_plan_step(
             emit_fn("investigate/plan", err_msg, iteration=plan_cycle)
         return False
     except (httpx.ConnectError, httpx.TimeoutException) as exc:
+        save_terminal_plan(exc)
         err_msg = f"LLM server error: {exc}"
         _log("PLAN_BROAD", err_msg, level="error")
         raise
     except LLMRequestTimeoutError as exc:
+        save_terminal_plan(exc)
         err_msg = f"LLM request timed out; broad planning skipped: {exc}"
         _log("PLAN_BROAD", err_msg, level="error")
         if emit_fn:
             emit_fn("investigate/plan", err_msg, iteration=plan_cycle)
         return False
-    except LLMServerUnavailableError, LLMBudgetExceededError:
+    except (LLMServerUnavailableError, LLMBudgetExceededError) as exc:
+        save_terminal_plan(exc)
         raise
     except Exception as exc:
+        save_terminal_plan(exc)
         err_msg = f"LLM failed: {exc}"
         _log("PLAN_BROAD", err_msg, level="error")
         if emit_fn:
             emit_fn("investigate/plan", err_msg, iteration=plan_cycle)
         return False
+    except BaseException as exc:
+        save_terminal_plan(exc)
+        raise
 
 
 async def _run_cycle_body(
@@ -549,10 +1083,28 @@ async def _run_cycle_body(
     )
 
     if not report_only:
-        if len(state.active_hypotheses) >= MAX_ACTIVE_HYPOTHESES:
-            _log(
-                "PLAN",
-                f"active cap reached ({len(state.active_hypotheses)} >= {MAX_ACTIVE_HYPOTHESES}); skipping broad_plan this cycle",
+        runnable_ids = sorted(
+            hypothesis_id
+            for hypothesis_id, judgment in judge_work(
+                db,
+                [hypothesis.id for hypothesis in state.active_hypotheses],
+                selection_gate=True,
+            ).items()
+            if judgment.runnable
+        )
+        if runnable_ids:
+            _save_step(
+                db=db,
+                session_id=session_id,
+                iteration=plan_cycle,
+                phase="plan-broad",
+                hypothesis_id=None,
+                input_json={"runnable_existing_hypothesis_ids": runnable_ids},
+                output_json={
+                    "status": "skipped",
+                    "reason": "existing_runnable_work",
+                    "runnable_existing_hypothesis_ids": runnable_ids,
+                },
             )
         else:
             broad_plan_stop = await _call_with_outage_recovery(

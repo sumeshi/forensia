@@ -165,10 +165,6 @@ class Case:
         return self.path / "db"
 
     @property
-    def findings_dir(self) -> Path:
-        return self.path / "findings"
-
-    @property
     def reports_dir(self) -> Path:
         return self.path / "reports"
 
@@ -208,7 +204,7 @@ class Case:
         drop_database: bool = True,
         preserve_raw: bool = False,
     ) -> None:
-        """Remove runtime outputs (raw, findings, reports, DB, memory)
+        """Remove runtime outputs (raw, reports, DB, memory)
         while optionally preserving memory, raw evidence, and/or the database.
 
         ``preserve_raw=True`` keeps the ingested JSONL under ``raw/``. This is the
@@ -216,7 +212,7 @@ class Case:
         already-ingested evidence). ``preserve_raw=False`` (default) wipes raw and
         requires a fresh ingest from ``input_dir``.
         """
-        cleared = (self.findings_dir, self.reports_dir)
+        cleared = (self.reports_dir,)
         if not preserve_raw:
             cleared = (self.raw_dir, *cleared)
         for directory in cleared:
@@ -242,7 +238,6 @@ class Case:
         for directory in (
             case.raw_dir,
             case.db_dir,
-            case.findings_dir,
             case.reports_dir,
             case.memory_dir,
             case.report_template_dir,
@@ -257,7 +252,6 @@ class Case:
                 "paths": {
                     "raw": str(case.raw_dir.relative_to(case.path)),
                     "db": str(case.db_dir.relative_to(case.path)),
-                    "findings": str(case.findings_dir.relative_to(case.path)),
                     "reports": str(case.reports_dir.relative_to(case.path)),
                     "memory": str(case.memory_dir.relative_to(case.path)),
                     "report_template": str(

@@ -57,6 +57,8 @@ def merge_active_hypotheses(
     resolved: list[Hypothesis],
     session_id: str,
     origin: str,
+    *,
+    alias_map_out: dict[str, str] | None = None,
 ) -> list[Hypothesis]:
     """Merge incoming hypotheses into the active set with dedup, aliasing, and an active cap."""
     resolved_ids = {item.id for item in resolved}
@@ -82,6 +84,8 @@ def merge_active_hypotheses(
                 _merge_hypothesis_fields(same_id_resolved, item).verification_spec
                 == same_id_resolved.verification_spec
             ):
+                if same_id_resolved is not None:
+                    alias_map[item.id] = same_id_resolved.id
                 continue
         incoming_id = alias_map.get(item.id, item.id)
         # FIRST: Check against resolved hypotheses — prevents the same claim
@@ -118,6 +122,7 @@ def merge_active_hypotheses(
                     _normalize_hypothesis_description(resolved_existing.description),
                     None,
                 )
+                alias_map[item.id] = merged.id
                 _log(
                     "HYPOTHESIS",
                     f"reopened {merged.id}: VerificationSpec changed after "
@@ -234,6 +239,8 @@ def merge_active_hypotheses(
             "CAP",
             f"active hypothesis cap reached ({MAX_ACTIVE_HYPOTHESES}); skipped {len(skipped_for_cap)} new: {skipped_for_cap[:3]}…",
         )
+    if alias_map_out is not None:
+        alias_map_out.update(alias_map)
     return list(by_id.values())
 
 

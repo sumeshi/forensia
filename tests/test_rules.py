@@ -9,7 +9,11 @@ from pathlib import Path
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
 from forensia.evidence.evtx import normalize_evtx
-from forensia.knowledge.rules.engine import generate_findings, save_findings
+from forensia.knowledge.rules.engine import (
+    generate_findings,
+    iter_rule_row_batches,
+    save_findings,
+)
 from forensia.knowledge.rules.loader import load_rules
 from forensia.knowledge.rules.models import Finding, Rule
 
@@ -466,7 +470,9 @@ class SigmaRuleBoundaryTests(unittest.TestCase):
 
                 import duckdb
 
-                from forensia.knowledge.rules.engine import run_rule as actual_run_rule
+                from forensia.knowledge.rules.engine import (
+                    iter_rule_row_batches as actual_iter_rule_row_batches,
+                )
                 from forensia.knowledge.rules.loader import load_rules
 
                 with (
@@ -526,7 +532,8 @@ class SigmaRuleBoundaryTests(unittest.TestCase):
                         ).fetchone()[0],
                     )
                     with patch(
-                        "forensia.pipeline.run_rule", wraps=actual_run_rule
+                        "forensia.pipeline.iter_rule_row_batches",
+                        wraps=actual_iter_rule_row_batches,
                     ) as resumed_queries:
                         resumed_count = _run_analyze_stage(
                             case, db, False, False, progress, None
@@ -977,6 +984,35 @@ class SigmaCompilerTests(unittest.TestCase):
 
 
 class RuleAndFindingTests(unittest.TestCase):
+    def test_bounded_rule_batches_survive_database_writes_and_keep_ordinals(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            rule = Rule.model_validate(
+                {
+                    "id": "batch-rule",
+                    "title": "batch rule",
+                    "query": "SELECT i AS value FROM range(1003) AS rows(i)",
+                    "finding": {"title": "row {value}", "summary": "row {value}"},
+                }
+            )
+            with CaseDB(case) as db:
+                generated = 0
+                for batch in iter_rule_row_batches(db, rule, batch_size=128):
+                    findings = generate_findings(
+                        rule, batch, first_ordinal=generated + 1
+                    )
+                    save_findings(case, db, findings, feed_timeline=False)
+                    generated += len(findings)
+                rows = db.execute(
+                    "SELECT COUNT(*), MIN(finding_id), MAX(finding_id) FROM findings"
+                ).fetchone()
+                self.assertFalse((case.path / "findings").exists())
+
+        self.assertEqual(1003, generated)
+        self.assertEqual((1003, "batch-rule-0001", "batch-rule-1003"), tuple(rows))
+
     def test_correlation_finding_preserves_source_evidence_ids(self) -> None:
         rule = Rule.model_validate(
             {

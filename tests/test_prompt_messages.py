@@ -76,6 +76,67 @@ class PromptMessageTests(unittest.TestCase):
             brief,
         )
 
+    def test_observed_candidate_drafter_discloses_sigma_fields_and_retrieval_terms(
+        self,
+    ) -> None:
+        from forensia.investigation import prompts
+
+        captured: dict[str, object] = {}
+
+        def capture_knowledge(*, extra_words=None, **_kwargs):
+            captured["extra_words"] = extra_words
+            return ""
+
+        candidate = {
+            "candidate_ref": "cand-test",
+            "title": "Suspicious service creation",
+            "summary": "Service command launched remotely",
+            "scope": {"source_family": "evtx"},
+            "evidence_ids": ["evtx-test"],
+            "evidence": [
+                {
+                    "evidence_id": "evtx-test",
+                    "event_id": 7045,
+                    "command_line": "sc.exe create updater binPath=...",
+                    "service_name": "Updater",
+                    "logon_type": 3,
+                    "subject_user": "CORP\\analyst",
+                    "target_group": "Administrators",
+                    "target_server": "host-02",
+                }
+            ],
+        }
+        rules = [
+            {
+                "id": "sigma-service-rule",
+                "title": "Remote Service Installation",
+                "tags": ["attack.persistence", "attack.t1543.003"],
+            }
+        ]
+        with patch.object(
+            prompts, "_org_knowledge_block", side_effect=capture_knowledge
+        ):
+            messages, _schema = prompts.build_hypothesis_drafter_messages(
+                {"keypoint_id": "host_execution_activity"},
+                rules,
+                observed_candidate=candidate,
+            )
+
+        joined = "\n".join(message["content"] for message in messages)
+        for field in (
+            "command_line",
+            "service_name",
+            "logon_type",
+            "subject_user",
+            "target_group",
+            "target_server",
+        ):
+            self.assertIn(field, joined)
+        self.assertIn("sc.exe create updater", joined)
+        self.assertIn("Remote Service Installation", captured["extra_words"])
+        self.assertIn("attack.t1543.003", captured["extra_words"])
+        self.assertIn("Suspicious service creation", captured["extra_words"])
+
 
 class TestConfirmedFindingsBlock(unittest.TestCase):
     """Tests for the <CONFIRMED_FINDINGS> block in build_query_intent_messages."""

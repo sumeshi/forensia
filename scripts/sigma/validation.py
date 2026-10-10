@@ -22,7 +22,7 @@ from scripts.sigma.converter import compile_sigma_targets
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
 from forensia.evidence.evtx import ingest_evtx_file, normalize_evtx
-from forensia.knowledge.rules.engine import generate_findings, run_rule
+from forensia.knowledge.rules.engine import generate_findings, iter_rule_row_batches
 from forensia.knowledge.rules.models import Rule
 
 _SQL_TEMP_DIR: tempfile.TemporaryDirectory[str] | None = None
@@ -305,15 +305,20 @@ def _run_evtx_fixture(
                     "no generated Rule is available for applicable fixture validation"
                 )
 
-            result_rows = run_rule(db, compiled_rule)
-            findings = generate_findings(compiled_rule, result_rows)
             refs: list[str] = []
-            for finding in findings:
-                for evidence in finding.evidence:
-                    evidence_id = evidence.get("evidence_id")
-                    if isinstance(evidence_id, str):
-                        refs.append(evidence_id)
-            actual = len(findings)
+            actual = 0
+            for result_batch in iter_rule_row_batches(db, compiled_rule):
+                findings = generate_findings(
+                    compiled_rule,
+                    result_batch,
+                    first_ordinal=actual + 1,
+                )
+                for finding in findings:
+                    for evidence in finding.evidence:
+                        evidence_id = evidence.get("evidence_id")
+                        if isinstance(evidence_id, str):
+                            refs.append(evidence_id)
+                actual += len(findings)
             _validate_match_count(expected, actual)
             if actual and len(refs) != actual:
                 raise ValueError(

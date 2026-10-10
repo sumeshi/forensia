@@ -175,9 +175,10 @@ Guidance line GUIDANCE-SENTINEL-495a: count prefetch browser artifacts first.
 def test_case_root_forensia_md_is_adopted_recorded_and_routed_to_investigation_roles() -> (
     None
 ):
-    """V2-05 real CLI path: adoption, recording, prompt routing, gate isolation."""
+    """V2-05 real CLI path with a normalized match: adoption and prompt routing."""
     from typer.testing import CliRunner
 
+    from forensia import pipeline as pipeline_module
     from forensia.cli import app as cli_app
     from forensia.core.case import Case
     from forensia.db.database import CaseDB
@@ -188,8 +189,41 @@ def test_case_root_forensia_md_is_adopted_recorded_and_routed_to_investigation_r
         case_dir = Path(tmpdir) / "case"
         input_dir = case_dir / "input"
         input_dir.mkdir(parents=True)
-        (input_dir / "placeholder.evtx").write_bytes(b"")
         (case_dir / "FORENSIA.md").write_text(POLICY_BODY, encoding="utf-8")
+        case = Case.init(case_dir)
+        with CaseDB(case) as db:
+            db.execute(
+                "INSERT INTO evtx_events (evidence_id, source_file, computer, "
+                "timestamp, target_user, event_id) VALUES "
+                "('evtx-policy-match', 'seeded-normalized-source', 'host-01', "
+                "'2026-01-01T00:00:00', 'analyst', 4624)"
+            )
+            db.execute(
+                "INSERT INTO evidence_sources (source_id, artifact_family, "
+                "display_path, ingest_status, parser_name, parser_version, row_count) "
+                "VALUES ('seeded-normalized-source', 'evtx', 'seeded.evtx', "
+                "'normalized', 'evtx', 'test-fixture', 1)"
+            )
+            db.execute(
+                "INSERT INTO findings (finding_id, rule_id, title, summary, severity, "
+                "confidence, status, evidence) VALUES ('F-policy-match', "
+                "'seeded-observed-match', 'Observed logon', 'Normalized evidence lead', "
+                "'medium', 0.8, 'accepted', ?)",
+                [json.dumps([{"evidence_id": "evtx-policy-match"}])],
+            )
+            pipeline_module._record_stage_receipt(
+                db,
+                "pipeline-normalize",
+                pipeline_module._sources_current_revision(db),
+                "seeded normalized candidate fixture",
+                details={"parser_revision": pipeline_module._parser_revision()},
+            )
+            pipeline_module._record_stage_receipt(
+                db,
+                "pipeline-analyze",
+                pipeline_module._analysis_revision(case),
+                "seeded candidate finding fixture",
+            )
 
         runner = CliRunner()
         with ExitStack() as stack:
@@ -246,10 +280,7 @@ def test_case_root_forensia_md_is_adopted_recorded_and_routed_to_investigation_r
         phases_with_policy = {
             phase for (phase, system) in captured if "CASE_INSTRUCTIONS" in system
         }
-        assert set(phases_with_policy) <= set(_POLICY_ROLES), phases_with_policy
-        assert {"plan-broad-gap", "plan-broad-draft"} <= phases_with_policy, (
-            phases_with_policy
-        )
+        assert phases_with_policy == {"plan-broad-draft"}, phases_with_policy
         assert any(
             "GUIDANCE-SENTINEL-495a" in system
             for (phase, system) in captured

@@ -323,39 +323,44 @@ class MemoryTests(unittest.TestCase):
             self.assertFalse((memory.keypoints_dir / "KP-0002.md").exists())
             self.assertFalse((memory.keypoints_dir / "KP-0003.md").exists())
 
-    def test_finding_snapshot_round_robins_semantic_themes(self) -> None:
+    def test_finding_snapshot_uses_bounded_candidate_projection(self) -> None:
         candidates = [
             {
-                "finding_id": finding_id,
-                "rule_id": theme,
-                "title": finding_id,
-                "summary": finding_id,
-                "confidence": confidence,
-                "evidence": [{"evidence_id": f"ev-{finding_id}"}],
+                "finding_id": "rule-001",
+                "title": "Repeated login",
+                "summary": "26 observations",
+                "rule_ids": ["rule-a"],
+                "candidate_ref": "cand-stable",
+                "candidate_fingerprint": "cf-input",
+                "match_count": 26,
+                "evidence_count": 26,
+                "evidence_ids": ["ev-1", "ev-2", "ev-3"],
+                "evidence": [{"evidence_id": "ev-1"}],
             }
-            for finding_id, theme, confidence in (
-                ("A-1", "theme-a", 0.99),
-                ("A-2", "theme-a", 0.98),
-                ("A-3", "theme-a", 0.97),
-                ("B-1", "theme-b", 0.70),
-                ("C-1", "theme-c", 0.60),
-            )
         ]
-        with (
-            patch.object(
-                investigation_session, "findings_snapshot", return_value=candidates
-            ),
-            patch.object(
-                investigation_session,
-                "classify_finding_theme",
-                side_effect=lambda item: item["rule_id"],
-            ),
-        ):
+        projection = {
+            "counts": {
+                "match_count": 26,
+                "distinct_evidence_count": 26,
+                "candidate_count": 1,
+                "eligible_candidate_count": 1,
+                "excluded_count": 0,
+                "presented_count": 1,
+                "unpresented_count": 0,
+            },
+            "candidates": candidates,
+        }
+        with patch.object(
+            investigation_session,
+            "build_investigation_candidates",
+            return_value=projection,
+        ) as build_projection:
             snapshot = investigation_session._finding_snapshot(Mock(), limit=3)
 
-        self.assertEqual(["A-1", "B-1", "C-1"], [x["finding_id"] for x in snapshot])
-        self.assertEqual(3, snapshot[0]["theme_count"])
-        self.assertEqual(["A-1", "A-2", "A-3"], snapshot[0]["theme_finding_ids"])
+        build_projection.assert_called_once_with(build_projection.call_args.args[0], 3)
+        self.assertEqual("cand-stable", snapshot[0]["candidate_ref"])
+        self.assertEqual("cf-input", snapshot[0]["candidate_fingerprint"])
+        self.assertEqual(projection["counts"], snapshot[0]["projection_counts"])
 
 
 class InvestigationContextFilesRelevanceTests(unittest.TestCase):

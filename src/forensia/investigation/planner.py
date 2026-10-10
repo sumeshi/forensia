@@ -335,13 +335,12 @@ def _compute_uncovered_keypoints(
     observed: list[str],
     active: list[Hypothesis],
     resolved: list[Hypothesis],
-    proposed_counts: dict[str, int] | None = None,
 ) -> list[dict[str, str]]:
     """Compute uncovered keypoints using round-robin across families.
 
     A keypoint is considered covered (excluded from output) when:
     - Any active/resolved hypothesis has target_keypoint_id == keypoint name (exact match)
-    - The keypoint has been proposed >=2 times (from proposed_counts)
+    - It is already targeted by current active/resolved work.
 
     Remaining candidates are grouped by family (first underscore token) and
     selected round-robin across families up to 8 items.
@@ -354,12 +353,6 @@ def _compute_uncovered_keypoints(
         if hyp.target_keypoint_id:
             covered.add(hyp.target_keypoint_id.strip().lower())
 
-    exhausted: set[str] = set()
-    if proposed_counts:
-        for kp_name, count in proposed_counts.items():
-            if count >= 2:
-                exhausted.add(kp_name.strip().lower())
-
     groups: dict[str, list[str]] = {}
     for item in observed:
         name = (
@@ -367,7 +360,7 @@ def _compute_uncovered_keypoints(
             if " (" in item
             else item.strip().lower()
         )
-        if not name or name in covered or name in exhausted:
+        if not name or name in covered:
             continue
         family = name.split("_")[0] if "_" in name else name
         groups.setdefault(family, []).append(name)

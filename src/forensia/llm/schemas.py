@@ -21,8 +21,10 @@ class SQLQueryAction(BaseModel):
 
     One model response chooses exactly one bounded execution path:
 
-    * a recipe (``template_id`` + ``params``) rendered from the catalog, or
-    * a bounded ``sql`` fallback written directly by the model.
+    * a recipe (``template_id`` + ``params``) rendered from the catalog, with
+      ``sql`` set to an empty string, or
+    * a bounded ``sql`` fallback written directly by the model, with
+      ``template_id`` set to null.
 
     The host validates the chosen path deterministically before execution
     (SELECT-only, table/column allow-list, row-limit, dry-run).
@@ -41,10 +43,16 @@ class SQLQueryAction(BaseModel):
         "registry_timeline",
     ]
     # Recipe path: a bounded template id chosen from the catalog.
-    template_id: str | None = None
+    template_id: str | None = Field(
+        default=None,
+        description="Set a non-empty template ID for template execution; set null for raw SQL.",
+    )
     params: dict[str, Any] = Field(default_factory=dict)
     # Fallback path: a bounded SELECT written directly by the model.
-    sql: str = ""
+    sql: str = Field(
+        default="",
+        description="Empty when template_id is set (whitespace-only is also empty to the host); otherwise a non-blank bounded SELECT.",
+    )
     filters_required: list[str] = Field(default_factory=list)
     time_window: str = ""
     expected_row_shape: str = ""
@@ -71,6 +79,50 @@ class QueryIntentResponse(BaseModel):
 
 
 QUERY_INTENT_SCHEMA: dict[str, Any] = QueryIntentResponse.model_json_schema()
+
+# Pydantic's after-validator is a host-side check and is not present in its
+# generated schema. Add the same mutually exclusive execution paths to the
+# schema sent to the planner. The response-format wrapper passes this generated
+# schema through unchanged; the two ``anyOf`` branches are disjoint, so exactly
+# one can match. Every SQL action property is required in each branch so the
+# unused path is explicit on the wire.
+_sql_action_schema = QUERY_INTENT_SCHEMA["$defs"]["SQLQueryAction"]
+_sql_properties = _sql_action_schema["properties"]
+_sql_required = list(_sql_properties)
+_sql_action_schema["required"] = _sql_required
+_sql_action_schema["anyOf"] = []
+for _template_mode in (True, False):
+    _branch_properties = dict(_sql_properties)
+    if _template_mode:
+        _branch_properties["template_id"] = {
+            "type": "string",
+            "minLength": 1,
+            "pattern": r".*\S.*",
+            "description": _sql_properties["template_id"]["description"],
+        }
+        _branch_properties["sql"] = {
+            "type": "string",
+            "pattern": r"^\s*$",
+            "description": _sql_properties["sql"]["description"],
+        }
+    else:
+        _branch_properties["template_id"] = {
+            "type": "null",
+            "description": _sql_properties["template_id"]["description"],
+        }
+        _branch_properties["sql"] = {
+            "type": "string",
+            "pattern": r".*\S.*",
+            "description": _sql_properties["sql"]["description"],
+        }
+    _sql_action_schema["anyOf"].append(
+        {
+            "type": "object",
+            "additionalProperties": False,
+            "required": _sql_required,
+            "properties": _branch_properties,
+        }
+    )
 
 SNAKE_CASE_COLUMNS: list[str] = [
     "computer",
