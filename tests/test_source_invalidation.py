@@ -372,6 +372,34 @@ class SourceInvalidationTests(unittest.TestCase):
                     "WHERE source_id = ?",
                     [source_c],
                 )
+                execute = db.execute
+
+                def fail_source_delete(query, params=None):
+                    if query.lstrip().startswith("DELETE FROM ingested_files"):
+                        raise RuntimeError("simulate source registry write failure")
+                    return execute(query, params)
+
+                with (
+                    patch.object(db, "execute", side_effect=fail_source_delete),
+                    self.assertRaisesRegex(
+                        RuntimeError, "source registry write failure"
+                    ),
+                ):
+                    retire_replaced_sources(db, replaced)
+                self.assertIsNotNone(lookup_evidence_record(db, old_id))
+                self.assertEqual(
+                    ("confirmed", "sufficient", False),
+                    db.execute(
+                        "SELECT status, sufficiency_status, human_review_required "
+                        "FROM hypotheses WHERE hypothesis_id = 'H-1'"
+                    ).fetchone(),
+                )
+                self.assertEqual(
+                    [("supported",)],
+                    db.execute(
+                        "SELECT support_status FROM claims WHERE claim_id = 'C-1'"
+                    ).fetchall(),
+                )
                 retire_replaced_sources(db, replaced)
 
                 self.assertIsNone(lookup_evidence_record(db, old_id))

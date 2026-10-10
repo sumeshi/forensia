@@ -41,7 +41,6 @@ def test_tables_gate_includes_artifact_when_mft_present() -> None:
 
 def test_total_prompt_budget_is_configurable_and_auto_derived() -> None:
     from forensia.config import (
-        get_memory_max_bytes,
         get_prompt_budget_tokens,
         get_system_prompt_budget_chars,
         reload_settings,
@@ -49,21 +48,17 @@ def test_total_prompt_budget_is_configurable_and_auto_derived() -> None:
 
     old_system = os.environ.get("FORENSIA_SYSTEM_PROMPT_BUDGET_CHARS")
     old_total = os.environ.get("FORENSIA_PROMPT_BUDGET_TOKENS")
-    old_memory = os.environ.get("FORENSIA_MEMORY_MAX_BYTES")
     try:
         os.environ["FORENSIA_SYSTEM_PROMPT_BUDGET_CHARS"] = "0"
         os.environ["FORENSIA_PROMPT_BUDGET_TOKENS"] = "0"
-        os.environ["FORENSIA_MEMORY_MAX_BYTES"] = "0"
         reload_settings()
         assert get_prompt_budget_tokens() == 12000
         assert get_system_prompt_budget_chars() == 24000
-        assert get_memory_max_bytes() == 16000
 
         os.environ["FORENSIA_PROMPT_BUDGET_TOKENS"] = "32000"
         reload_settings()
         assert get_prompt_budget_tokens() == 32000
         assert get_system_prompt_budget_chars() == 64000
-        assert get_memory_max_bytes() == 42666
     finally:
         if old_system is None:
             os.environ.pop("FORENSIA_SYSTEM_PROMPT_BUDGET_CHARS", None)
@@ -73,10 +68,6 @@ def test_total_prompt_budget_is_configurable_and_auto_derived() -> None:
             os.environ.pop("FORENSIA_PROMPT_BUDGET_TOKENS", None)
         else:
             os.environ["FORENSIA_PROMPT_BUDGET_TOKENS"] = old_total
-        if old_memory is None:
-            os.environ.pop("FORENSIA_MEMORY_MAX_BYTES", None)
-        else:
-            os.environ["FORENSIA_MEMORY_MAX_BYTES"] = old_memory
         reload_settings()
 
 
@@ -226,6 +217,6 @@ def test_dfir_playbook_discloses_selected_event_rules_and_instruments(
         assert " - Event 4625" in playbook
         assert "load event rule" not in playbook
         assert "First check events [1102, 104]" not in playbook
-        row = db.execute("SELECT source_kind FROM retrieval_events").fetchone()
+        row = db.execute("SELECT source_kind FROM trace.retrieval_events").fetchone()
         assert row is not None
         assert row[0] == "dfir_playbook"

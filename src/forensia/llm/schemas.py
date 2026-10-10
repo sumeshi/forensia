@@ -2,18 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Any, Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-
-
-class MemoryReadMoreAction(BaseModel):
-    """The only memory operation selectable by the hypothesis planner."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    type: Literal["memory.read_more"]
-    paths: list[str] = Field(min_length=1)
 
 
 class SQLQueryAction(BaseModel):
@@ -64,18 +55,12 @@ class SQLQueryAction(BaseModel):
         return self
 
 
-QueryIntentAction = Annotated[
-    MemoryReadMoreAction | SQLQueryAction,
-    Field(discriminator="type"),
-]
-
-
 class QueryIntentResponse(BaseModel):
     """The complete planner response: exactly one bounded action."""
 
     model_config = ConfigDict(extra="forbid")
 
-    action: QueryIntentAction
+    action: SQLQueryAction
 
 
 QUERY_INTENT_SCHEMA: dict[str, Any] = QueryIntentResponse.model_json_schema()
@@ -214,6 +199,48 @@ DEFAULT_AUDITED_EVENT_IDS: list[int] = [
     1100,
 ]
 
+
+def _verification_declaration_fields() -> dict[str, Any]:
+    """Return the same declaration schema used by hypothesis drafting."""
+    return {
+        "confirm_when": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "co_observed_event_ids": {
+                    "type": "array",
+                    "items": {"enum": DEFAULT_AUDITED_EVENT_IDS},
+                },
+                "event_contexts": {
+                    "type": "array",
+                    "description": (
+                        "Optional catalog-qualified context for each event ID; "
+                        "required when channel/provider changes event semantics."
+                    ),
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["event_id", "channel", "provider"],
+                        "properties": {
+                            "event_id": {"type": "integer"},
+                            "channel": {"type": "string"},
+                            "provider": {"type": "string"},
+                        },
+                    },
+                },
+                "same_host": {"type": "boolean"},
+                "within_minutes": {"type": "integer"},
+                "same_entities": {
+                    "type": "array",
+                    "items": {"enum": SNAKE_CASE_COLUMNS},
+                },
+                "min_count": {"type": "integer", "minimum": 2},
+            },
+        },
+        "refute_when": {"type": "object"},
+    }
+
+
 VERDICT_REVIEW_SCHEMA: dict[str, Any] = {
     "title": "VerdictReview",
     "type": "object",
@@ -231,6 +258,29 @@ VERDICT_REVIEW_SCHEMA: dict[str, Any] = {
             "minItems": 1,
         },
         "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "new_hypotheses": {
+            "type": "array",
+            "maxItems": 3,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["description"],
+                "properties": {
+                    "id": {"type": "string", "minLength": 1},
+                    "description": {"type": "string", "minLength": 1},
+                    "required_entities": {
+                        "type": "array",
+                        "maxItems": 8,
+                        "items": {"type": "string"},
+                    },
+                    "source_rule_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                    **_verification_declaration_fields(),
+                },
+            },
+        },
     },
 }
 
@@ -260,37 +310,6 @@ FINDING_EXTRACTOR_SCHEMA: dict[str, Any] = {
                 "required": ["title", "severity", "evidence_ids", "claim_type"],
             },
         },
-    },
-}
-
-_FACT_ITEM_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "text": {"type": "string"},
-        "evidence_ids": {"type": "array", "items": {"type": "string"}},
-        "claim_type": {"type": "string", "enum": ["observation", "interpretation"]},
-    },
-    "required": ["text", "evidence_ids", "claim_type"],
-}
-
-MEMORY_UPDATER_SCHEMA: dict[str, Any] = {
-    "title": "MemoryUpdater",
-    "type": "object",
-    "additionalProperties": False,
-    "properties": {
-        "memory_updates": {
-            "type": "object",
-            "properties": {
-                "facts": {"type": "array", "items": _FACT_ITEM_SCHEMA},
-                "timeline": {"type": "array", "items": {"type": "object"}},
-                "tasks": {"type": "array", "items": {"type": "object"}},
-                "overview": {"type": "array", "items": {"type": "string"}},
-                "refuted_hypotheses": {"type": "array", "items": {"type": "object"}},
-                "resolved_gaps": {"type": "array", "items": {"type": "object"}},
-                "entities": {"type": "array", "items": {"type": "object"}},
-            },
-        },
-        "new_hypotheses": {"type": "array", "items": {"type": "object"}},
     },
 }
 
@@ -340,41 +359,7 @@ def hypothesis_drafter_schema() -> dict[str, Any]:
                         "items": {"enum": SNAKE_CASE_COLUMNS},
                     },
                     "source_rule_ids": {"type": "array", "items": {"type": "string"}},
-                    "confirm_when": {
-                        "type": "object",
-                        "additionalProperties": False,
-                        "properties": {
-                            "co_observed_event_ids": {
-                                "type": "array",
-                                "items": {"enum": DEFAULT_AUDITED_EVENT_IDS},
-                            },
-                            "event_contexts": {
-                                "type": "array",
-                                "description": (
-                                    "Optional catalog-qualified context for each event ID; "
-                                    "required when channel/provider changes event semantics."
-                                ),
-                                "items": {
-                                    "type": "object",
-                                    "additionalProperties": False,
-                                    "required": ["event_id", "channel", "provider"],
-                                    "properties": {
-                                        "event_id": {"type": "integer"},
-                                        "channel": {"type": "string"},
-                                        "provider": {"type": "string"},
-                                    },
-                                },
-                            },
-                            "same_host": {"type": "boolean"},
-                            "within_minutes": {"type": "integer"},
-                            "same_entities": {
-                                "type": "array",
-                                "items": {"enum": SNAKE_CASE_COLUMNS},
-                            },
-                            "min_count": {"type": "integer", "minimum": 2},
-                        },
-                    },
-                    "refute_when": {"type": "object"},
+                    **_verification_declaration_fields(),
                 },
             },
         },

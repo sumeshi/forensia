@@ -477,7 +477,7 @@ def render_html_report(
             db,
             """
             SELECT review_id, finding_id, verdict, report_text, confidence_adjustment, created_at
-            FROM ai_reviews
+            FROM trace.ai_reviews
             ORDER BY created_at DESC
             LIMIT 200
             """,

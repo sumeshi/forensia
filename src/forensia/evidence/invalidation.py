@@ -137,9 +137,9 @@ def retire_replaced_sources(
                 if row[0]
             )
         referenced = fetch_referenced_evidence_ids(db, family) & evidence_ids
-        if referenced:
-            invalidate_removed_evidence(db, referenced)
         with db.transaction():
+            if referenced:
+                _invalidate_removed_evidence_in_transaction(db, referenced)
             for table in tables:
                 db.execute(
                     f"DELETE FROM {table} WHERE source_file IN ({source_placeholders})",
@@ -257,16 +257,28 @@ def invalidate_removed_evidence(
     *,
     reason: str = "Assessed evidence was removed by source replacement",
 ) -> None:
+    """Invalidate evidence dependents atomically in the case database."""
+    if not evidence_ids:
+        return
+    with db.transaction():
+        _invalidate_removed_evidence_in_transaction(db, evidence_ids, reason=reason)
+
+
+def _invalidate_removed_evidence_in_transaction(
+    db: CaseDB,
+    evidence_ids: set[str],
+    *,
+    reason: str = "Assessed evidence was removed by source replacement",
+) -> None:
     """Move dependents of removed or content-changed evidence to review.
 
     Dependents are assessed hypothesis links (their hypotheses reopen as
     active with sufficiency marked needs_review), claims, and report sections
     referenced directly or via ``section_facts.source_section``.
-    ``case_timeline`` rows are historical
-    records of a regeneratable projection with no mutable stale state, so they
-    are only kept as-is; the timeline memory projection re-validates evidence
-    presence on regeneration.  Link history is never deleted; the supplied
-    reason is recorded on the affected hypotheses.
+    ``case_timeline`` rows are historical records of a regeneratable
+    projection with no mutable stale state, so they are only kept as-is. Link
+    history is never deleted; the supplied reason is recorded on the affected
+    hypotheses.
     """
     if not evidence_ids:
         return
@@ -310,38 +322,37 @@ def invalidate_removed_evidence(
         if source_section and set(_json_string_list(raw_ids)) & evidence_ids:
             affected_sections.add(str(source_section))
 
-    with db.transaction():
-        if linked_hypotheses:
-            hypothesis_placeholders = ", ".join("?" for _ in linked_hypotheses)
-            db.execute(
-                f"""
-                UPDATE hypotheses
-                SET status = 'active',
-                    verdict = NULL,
-                    resolved_session = NULL,
-                    sufficiency_status = 'needs_review',
-                    sufficiency_reason = ?,
-                    human_review_required = TRUE,
-                    selection_count = 0,
-                    last_selected_at = NULL,
-                    next_eligible_at = NULL,
-                    blocked_reason = NULL,
-                    updated_at = now()
-                WHERE hypothesis_id IN ({hypothesis_placeholders})
-                """,
-                (reason, *sorted(linked_hypotheses)),
-            )
-        if affected_claims:
-            claim_placeholders = ", ".join("?" for _ in affected_claims)
-            db.execute(
-                f"UPDATE claims SET support_status = 'needs_review', updated_at = now() "
-                f"WHERE claim_id IN ({claim_placeholders})",
-                tuple(sorted(affected_claims)),
-            )
-        if affected_sections:
-            section_placeholders = ", ".join("?" for _ in affected_sections)
-            db.execute(
-                f"UPDATE report_sections SET stale = TRUE "
-                f"WHERE section_key IN ({section_placeholders})",
-                tuple(sorted(affected_sections)),
-            )
+    if linked_hypotheses:
+        hypothesis_placeholders = ", ".join("?" for _ in linked_hypotheses)
+        db.execute(
+            f"""
+            UPDATE hypotheses
+            SET status = 'active',
+                verdict = NULL,
+                resolved_session = NULL,
+                sufficiency_status = 'needs_review',
+                sufficiency_reason = ?,
+                human_review_required = TRUE,
+                selection_count = 0,
+                last_selected_at = NULL,
+                next_eligible_at = NULL,
+                blocked_reason = NULL,
+                updated_at = now()
+            WHERE hypothesis_id IN ({hypothesis_placeholders})
+            """,
+            (reason, *sorted(linked_hypotheses)),
+        )
+    if affected_claims:
+        claim_placeholders = ", ".join("?" for _ in affected_claims)
+        db.execute(
+            f"UPDATE claims SET support_status = 'needs_review', updated_at = now() "
+            f"WHERE claim_id IN ({claim_placeholders})",
+            tuple(sorted(affected_claims)),
+        )
+    if affected_sections:
+        section_placeholders = ", ".join("?" for _ in affected_sections)
+        db.execute(
+            f"UPDATE report_sections SET stale = TRUE "
+            f"WHERE section_key IN ({section_placeholders})",
+            tuple(sorted(affected_sections)),
+        )

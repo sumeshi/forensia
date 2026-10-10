@@ -20,6 +20,116 @@ from forensia.db.database import CaseDB
 
 
 class InvestigateWiringTests(unittest.TestCase):
+    def test_settlement_receipt_failure_rolls_back_case_and_trace_together(
+        self,
+    ) -> None:
+        from types import SimpleNamespace
+
+        from forensia.db.investigation_state import ensure_investigation_state
+        from forensia.investigation.hypotheses import hypothesis_runner
+        from forensia.investigation.verification.settlement import SettlementDecision
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                ensure_investigation_state(db, objective="preserve objective")
+                db.execute(
+                    "INSERT INTO hypotheses (hypothesis_id, description, status, verdict, "
+                    "verification_spec, updated_at) VALUES ('H-1', 'test', 'confirmed', "
+                    "'confirmed', '{\"spec_version\":\"1\"}', now())"
+                )
+                db.execute(
+                    "INSERT INTO evtx_events (evidence_id, source_file) "
+                    "VALUES ('E-1', 'source')"
+                )
+                db.execute(
+                    "INSERT INTO hypothesis_evidence "
+                    "(link_id, hypothesis_id, evidence_id, role) "
+                    "VALUES ('L-1', 'H-1', 'E-1', 'supporting')"
+                )
+                case_state_before = db.execute(
+                    "SELECT status, objective FROM investigation_state WHERE state_id = 'case'"
+                ).fetchone()
+
+                original_save_step = hypothesis_runner._save_step
+
+                def fail_act_receipt(**kwargs):
+                    original_save_step(**kwargs)
+                    if kwargs["phase"] == "act":
+                        raise RuntimeError("simulate act receipt failure")
+
+                rs = SimpleNamespace(
+                    check_result=SimpleNamespace(
+                        verdict="confirmed",
+                        report_text="checked",
+                        new_hypotheses=[],
+                        progress=False,
+                    ),
+                    state=SimpleNamespace(
+                        history=[], active_hypotheses=[], resolved_hypotheses=[]
+                    ),
+                    db=db,
+                    session_id="S-1",
+                    hypothesis=SimpleNamespace(
+                        id="H-1",
+                        verification_spec=SimpleNamespace(evidence_requirements=[]),
+                    ),
+                    planned_query=SimpleNamespace(query_id="Q-1"),
+                    rows=[],
+                    ctx=SimpleNamespace(progress_callback=None),
+                    plan_cycle=1,
+                    query_index=1,
+                    emit_fn=None,
+                )
+                with (
+                    mock.patch.object(hypothesis_runner, "_apply_sufficiency_guard"),
+                    mock.patch.object(hypothesis_runner, "_build_settlement_input"),
+                    mock.patch.object(
+                        hypothesis_runner,
+                        "settle_hypothesis",
+                        return_value=SettlementDecision(
+                            verdict="inconclusive",
+                            reason="settlement blocked",
+                            allowed=False,
+                            gates_failed=["supporting evidence required"],
+                        ),
+                    ),
+                    mock.patch.object(
+                        hypothesis_runner, "_save_step", side_effect=fail_act_receipt
+                    ),
+                    self.assertRaisesRegex(RuntimeError, "act receipt failure"),
+                ):
+                    with db.transaction():
+                        hypothesis_runner._phase_apply_verdict(rs)
+
+            with CaseDB(case) as reopened:
+                self.assertEqual(
+                    ("confirmed", "confirmed"),
+                    reopened.execute(
+                        "SELECT status, verdict FROM hypotheses WHERE hypothesis_id = 'H-1'"
+                    ).fetchone(),
+                )
+                self.assertEqual(
+                    [("E-1",)],
+                    reopened.execute(
+                        "SELECT evidence_id FROM hypothesis_evidence WHERE link_id = 'L-1'"
+                    ).fetchall(),
+                )
+                self.assertEqual(
+                    case_state_before,
+                    reopened.execute(
+                        "SELECT status, objective FROM investigation_state WHERE state_id = 'case'"
+                    ).fetchone(),
+                )
+                self.assertEqual(
+                    (0, 0),
+                    reopened.execute(
+                        "SELECT "
+                        "(SELECT COUNT(*) FROM trace.hypothesis_reasoning WHERE phase = 'settlement'), "
+                        "(SELECT COUNT(*) FROM trace.investigation_steps WHERE phase = 'act')"
+                    ).fetchone(),
+                )
+
     def test_report_only_cycle_completes_without_llm(self) -> None:
         from forensia.investigation import investigation_session
         from forensia.investigation import investigator as investigator_module
@@ -53,7 +163,7 @@ class InvestigateWiringTests(unittest.TestCase):
                     stop_summary={"active": 1},
                 )
                 db.execute(
-                    "INSERT INTO investigation_sessions "
+                    "INSERT INTO trace.investigation_sessions "
                     "(session_id, started_at, finished_at, iterations, status, heartbeat_at) "
                     "VALUES ('old-running', '2020-01-02 03:04:05', NULL, 0, 'running', "
                     "'2020-01-02 03:04:05')"
@@ -85,7 +195,7 @@ class InvestigateWiringTests(unittest.TestCase):
                 self.assertEqual(result["iteration"], 1)
                 row = db.execute(
                     "SELECT status, finished_at, owner_id, heartbeat_at, phase, "
-                    "status_reason FROM investigation_sessions WHERE session_id = ?",
+                    "status_reason FROM trace.investigation_sessions WHERE session_id = ?",
                     (result["session_id"],),
                 ).fetchone()
                 self.assertIsNotNone(row)
@@ -101,7 +211,7 @@ class InvestigateWiringTests(unittest.TestCase):
                         map(
                             str,
                             db.execute(
-                                "SELECT status, finished_at FROM investigation_sessions "
+                                "SELECT status, finished_at FROM trace.investigation_sessions "
                                 "WHERE session_id = 'old-running'"
                             ).fetchone(),
                         )
@@ -188,7 +298,7 @@ class InvestigateWiringTests(unittest.TestCase):
                         [item.id for item in state.active_hypotheses], ["H-001"]
                     )
                     attempt = db.execute(
-                        "SELECT output_json FROM investigation_steps "
+                        "SELECT output_json FROM trace.investigation_steps "
                         "WHERE phase = 'plan-broad-candidate'"
                     ).fetchone()[0]
                     self.assertEqual(
@@ -211,7 +321,7 @@ class InvestigateWiringTests(unittest.TestCase):
                     )
                     self.assertEqual(request.await_count, calls_before_resume)
                     latest = db.execute(
-                        "SELECT output_json FROM investigation_steps "
+                        "SELECT output_json FROM trace.investigation_steps "
                         "WHERE phase = 'plan-broad' ORDER BY created_at DESC LIMIT 1"
                     ).fetchone()[0]
                     self.assertEqual(
@@ -264,7 +374,7 @@ class InvestigateWiringTests(unittest.TestCase):
                     outputs = [
                         json.loads(row[0])
                         for row in db.execute(
-                            "SELECT output_json FROM investigation_steps "
+                            "SELECT output_json FROM trace.investigation_steps "
                             "WHERE phase = 'plan-broad' ORDER BY iteration"
                         ).fetchall()
                     ]
@@ -322,7 +432,7 @@ class InvestigateWiringTests(unittest.TestCase):
                 self.assertEqual(calls.count("plan-broad-gap"), 1)
                 self.assertEqual(calls.count("plan-broad-draft"), 2)
                 gap_attempts = db.execute(
-                    "SELECT output_json FROM investigation_steps "
+                    "SELECT output_json FROM trace.investigation_steps "
                     "WHERE phase = 'plan-broad-gap-selection'"
                 ).fetchall()
                 self.assertEqual(len(gap_attempts), 1)
@@ -397,7 +507,7 @@ class InvestigateWiringTests(unittest.TestCase):
                 self.assertEqual(len(state.active_hypotheses), 8)
                 plan = json.loads(
                     db.execute(
-                        "SELECT output_json FROM investigation_steps WHERE phase = 'plan-broad'"
+                        "SELECT output_json FROM trace.investigation_steps WHERE phase = 'plan-broad'"
                     ).fetchone()[0]
                 )
                 self.assertEqual(
@@ -550,7 +660,7 @@ class InvestigateWiringTests(unittest.TestCase):
                 self.assertFalse(stop)
                 plan = json.loads(
                     db.execute(
-                        "SELECT output_json FROM investigation_steps "
+                        "SELECT output_json FROM trace.investigation_steps "
                         "WHERE phase = 'plan-broad'"
                     ).fetchone()[0]
                 )
@@ -562,7 +672,7 @@ class InvestigateWiringTests(unittest.TestCase):
                 )
                 candidate_attempt = json.loads(
                     db.execute(
-                        "SELECT output_json FROM investigation_steps "
+                        "SELECT output_json FROM trace.investigation_steps "
                         "WHERE phase = 'plan-broad-candidate'"
                     ).fetchone()[0]
                 )
@@ -579,7 +689,7 @@ class InvestigateWiringTests(unittest.TestCase):
             with CaseDB(case) as db:
                 db.execute(
                     """
-                    INSERT INTO investigation_steps (
+                    INSERT INTO trace.investigation_steps (
                         step_id, session_id, hypothesis_id, iteration, phase,
                         input_json, output_json, created_at
                     ) VALUES ('S-1', 'session-planner', 'H-1', 1,
@@ -588,7 +698,7 @@ class InvestigateWiringTests(unittest.TestCase):
                 )
                 db.execute(
                     """
-                    INSERT INTO hypothesis_reasoning (
+                    INSERT INTO trace.hypothesis_reasoning (
                         entry_id, hypothesis_id, session_id, iteration, phase,
                         body, created_at
                     ) VALUES ('R-1', 'H-1', 'session-planner', 1, 'plan',
@@ -610,7 +720,7 @@ class InvestigateWiringTests(unittest.TestCase):
             with CaseDB(case) as db:
                 db.execute(
                     """
-                    INSERT INTO investigation_steps (
+                    INSERT INTO trace.investigation_steps (
                         step_id, session_id, hypothesis_id, iteration, phase,
                         input_json, output_json, created_at
                     ) VALUES ('S-unrelated', 'session-unrelated', NULL, 1,
@@ -624,7 +734,7 @@ class InvestigateWiringTests(unittest.TestCase):
                 )
                 db.execute(
                     """
-                    INSERT INTO investigation_steps (
+                    INSERT INTO trace.investigation_steps (
                         step_id, session_id, hypothesis_id, iteration, phase,
                         input_json, output_json, created_at
                     ) VALUES ('S-executed', 'session-executed', 'H-1', 1,
@@ -633,7 +743,7 @@ class InvestigateWiringTests(unittest.TestCase):
                 )
                 db.execute(
                     """
-                    INSERT INTO investigation_steps (
+                    INSERT INTO trace.investigation_steps (
                         step_id, session_id, hypothesis_id, iteration, phase,
                         input_json, output_json, created_at
                     ) VALUES ('S-do', 'session-executed', 'H-1', 1,
@@ -649,7 +759,6 @@ class InvestigateWiringTests(unittest.TestCase):
     def test_cycle_executes_only_durably_eligible_hypotheses(self) -> None:
         """The cycle uses durable eligibility before calling the deep-dive runner."""
 
-        from forensia.core.memory import MemoryManager
         from forensia.core.session import Hypothesis, SessionState
         from forensia.investigation import investigation_cycle
         from forensia.investigation.investigation_session import Ctx
@@ -688,9 +797,6 @@ class InvestigateWiringTests(unittest.TestCase):
                         new=broad_call,
                     ),
                     mock.patch.object(
-                        investigation_cycle, "ctx_refresh_caches", return_value=None
-                    ),
-                    mock.patch.object(
                         investigation_cycle,
                         "_investigate_one_hypothesis",
                         new=runner,
@@ -705,7 +811,6 @@ class InvestigateWiringTests(unittest.TestCase):
                             session_id="S-WIRING",
                             base_url="http://127.0.0.1:9",
                             model="none",
-                            memory=MemoryManager(case),
                             progress_callback=None,
                             max_queries_per_hypothesis=1,
                             plan_cycle=1,
@@ -726,7 +831,7 @@ class InvestigateWiringTests(unittest.TestCase):
                 )
                 skipped_plan = json.loads(
                     db.execute(
-                        "SELECT output_json FROM investigation_steps "
+                        "SELECT output_json FROM trace.investigation_steps "
                         "WHERE phase = 'plan-broad'"
                     ).fetchone()[0]
                 )
@@ -734,7 +839,6 @@ class InvestigateWiringTests(unittest.TestCase):
                 self.assertEqual(skipped_plan["reason"], "existing_runnable_work")
 
     def test_blocked_active_work_does_not_suppress_broad_planning(self) -> None:
-        from forensia.core.memory import MemoryManager
         from forensia.core.session import Hypothesis, SessionState
         from forensia.investigation import investigation_cycle
         from forensia.investigation.investigation_session import Ctx
@@ -768,9 +872,6 @@ class InvestigateWiringTests(unittest.TestCase):
                         new=broad_call,
                     ),
                     mock.patch.object(
-                        investigation_cycle, "ctx_refresh_caches", return_value=None
-                    ),
-                    mock.patch.object(
                         investigation_cycle,
                         "_investigate_one_hypothesis",
                         new=runner,
@@ -785,7 +886,6 @@ class InvestigateWiringTests(unittest.TestCase):
                             session_id="S-BLOCKED-ONLY",
                             base_url="http://127.0.0.1:9",
                             model="none",
-                            memory=MemoryManager(case),
                             progress_callback=None,
                             max_queries_per_hypothesis=1,
                             plan_cycle=1,
@@ -840,7 +940,7 @@ class InvestigateWiringTests(unittest.TestCase):
                     )
                 runner.assert_not_awaited()
                 session = db.execute(
-                    "SELECT status, phase, finished_at FROM investigation_sessions"
+                    "SELECT status, phase, finished_at FROM trace.investigation_sessions"
                 ).fetchone()
                 self.assertEqual(session[:2], ("failed", "terminal"))
                 self.assertIsNotNone(session[2])
@@ -867,7 +967,7 @@ class InvestigateWiringTests(unittest.TestCase):
                     [("failed", "terminal", True), ("failed", "terminal", True)],
                     db.execute(
                         "SELECT status, phase, finished_at IS NOT NULL "
-                        "FROM investigation_sessions ORDER BY started_at"
+                        "FROM trace.investigation_sessions ORDER BY started_at"
                     ).fetchall(),
                 )
 
@@ -923,8 +1023,7 @@ class InvestigateWiringTests(unittest.TestCase):
                 self.assertEqual(result["status"], "stopped")
                 self.assertEqual(states_seen_by_refresh, ["stopped"])
 
-    def test_stop_classification_projects_terminal_tasks_to_memory(self) -> None:
-        from forensia.core.memory import MemoryManager
+    def test_stop_classification_persists_terminal_tasks_in_case_db(self) -> None:
         from forensia.investigation import investigator as investigator_module
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -941,12 +1040,14 @@ class InvestigateWiringTests(unittest.TestCase):
                     db,
                     [],
                     "no_progress_limit",
-                    MemoryManager(case),
                 )
+                row = db.execute(
+                    "SELECT kind, status, description FROM investigation_tasks"
+                ).fetchone()
 
-            projected = (case.memory_dir / "tasks.md").read_text(encoding="utf-8")
-            self.assertIn("[untestable] Acquire missing telemetry", projected)
-            self.assertIn("TASK-STOP-", projected)
+            self.assertEqual("untestable", row[0])
+            self.assertEqual("open", row[1])
+            self.assertIn("Acquire missing telemetry", row[2])
 
 
 class ReportRefreshFailureTests(unittest.TestCase):
@@ -961,7 +1062,6 @@ class ReportRefreshFailureTests(unittest.TestCase):
         from contextlib import redirect_stdout
         from unittest import mock
 
-        from forensia.core.memory import MemoryManager
         from forensia.core.session import SessionState
         from forensia.investigation import investigator as investigator_module
 
@@ -992,7 +1092,6 @@ class ReportRefreshFailureTests(unittest.TestCase):
                                 focus_sections=[],
                                 report_max_queries_per_section=1,
                                 state=state,
-                                memory=MemoryManager(case),
                             )
                         )
         self.assertTrue(refresh_status.startswith("failed: TypeError"), refresh_status)
@@ -1002,12 +1101,15 @@ class ReportRefreshFailureTests(unittest.TestCase):
             "Traceback", output, "full traceback must be printed, not just str(exc)"
         )
         self.assertTrue(
-            any("TypeError" in str(e.get("summary")) for e in events),
-            "progress event must carry the exception type",
+            any(
+                event.get("kind") == "report.cycle"
+                and event.get("reason") == "exception:TypeError"
+                for event in events
+            ),
+            "progress event must carry a typed failure reason",
         )
 
     def test_run_report_phase_skipped_off_cycle(self) -> None:
-        from forensia.core.memory import MemoryManager
         from forensia.core.session import SessionState
         from forensia.investigation import investigator as investigator_module
 
@@ -1029,7 +1131,6 @@ class ReportRefreshFailureTests(unittest.TestCase):
                         focus_sections=[],
                         report_max_queries_per_section=1,
                         state=state,
-                        memory=MemoryManager(case),
                     )
                 )
         self.assertEqual("skipped", refresh_status)
@@ -1043,7 +1144,7 @@ class ReportRefreshFailureTests(unittest.TestCase):
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
                 db.execute(
-                    "INSERT INTO investigation_sessions "
+                    "INSERT INTO trace.investigation_sessions "
                     "(session_id, started_at, status, owner_id, heartbeat_at) "
                     "VALUES ('live', now(), 'running', 'worker-a', now())"
                 )
@@ -1051,7 +1152,7 @@ class ReportRefreshFailureTests(unittest.TestCase):
                     reconcile_stale_sessions(db)
                 self.assertEqual(
                     db.execute(
-                        "SELECT status FROM investigation_sessions "
+                        "SELECT status FROM trace.investigation_sessions "
                         "WHERE session_id = 'live'"
                     ).fetchone()[0],
                     "running",
@@ -1068,7 +1169,7 @@ class ReportRefreshFailureTests(unittest.TestCase):
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
                 db.execute(
-                    "INSERT INTO investigation_sessions "
+                    "INSERT INTO trace.investigation_sessions "
                     "(session_id, started_at, finished_at, status, terminal_reason) "
                     "VALUES ('old-done', '2020-01-02 03:04:05', '2020-01-02 03:05:05', "
                     "'completed', 'historical reason')"
@@ -1076,7 +1177,7 @@ class ReportRefreshFailureTests(unittest.TestCase):
                 self.assertEqual(reconcile_stale_sessions(db), 0)
                 self.assertEqual(
                     db.execute(
-                        "SELECT status, terminal_reason FROM investigation_sessions "
+                        "SELECT status, terminal_reason FROM trace.investigation_sessions "
                         "WHERE session_id = 'old-done'"
                     ).fetchone(),
                     ("completed", "historical reason"),
@@ -1088,7 +1189,6 @@ class ReportRefreshFailureTests(unittest.TestCase):
         outage budget propagates and stops the session."""
         from unittest import mock
 
-        from forensia.core.memory import MemoryManager
         from forensia.core.session import SessionState
         from forensia.investigation import investigation_session
         from forensia.investigation import investigator as investigator_module
@@ -1138,7 +1238,6 @@ class ReportRefreshFailureTests(unittest.TestCase):
                                 focus_sections=[],
                                 report_max_queries_per_section=1,
                                 state=state,
-                                memory=MemoryManager(case),
                             )
                         )
                     self.assertTrue(
@@ -1255,13 +1354,186 @@ class TerminationDurableWorkTests(unittest.TestCase):
                 ).fetchone()
                 assert state_row == ("stopped", "budget_exhausted")
                 row = db.execute(
-                    "SELECT status, status_reason, finished_at FROM investigation_sessions "
+                    "SELECT status, status_reason, finished_at FROM trace.investigation_sessions "
                     "WHERE session_id = ?",
                     (result["session_id"],),
                 ).fetchone()
                 assert row[0] == "stopped"
                 assert "budget_exhausted" in row[1].lower()
                 assert row[2] is not None
+
+
+def test_report_gap_and_terminal_events_are_persisted_with_durable_refs() -> None:
+    from forensia.investigation import investigation_cycle, investigator
+
+    async def refresh(**_kwargs):
+        return {
+            "report_status": {},
+            "gaps": ["Use external threat intel to assess indicator ownership"],
+        }
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        case = Case.init(tmpdir)
+        with CaseDB(case) as db:
+            with (
+                mock.patch.object(
+                    investigation_cycle,
+                    "_run_broad_plan_step",
+                    new=mock.AsyncMock(return_value=False),
+                ),
+                mock.patch.object(
+                    investigator,
+                    "async_refresh_report_sections",
+                    new=mock.AsyncMock(side_effect=refresh),
+                ),
+                mock.patch.object(investigator, "render_written_report"),
+            ):
+                result = asyncio.run(
+                    investigator.investigate(
+                        case=case,
+                        db=db,
+                        base_url="http://unused",
+                        model="unused",
+                        max_iter=1,
+                        report_every_n_cycles=1,
+                    )
+                )
+
+            rows = db.execute(
+                "SELECT kind, status, reason, refs FROM trace.progress_events "
+                "WHERE session_id = ? ORDER BY event_index",
+                [result["session_id"]],
+            ).fetchall()
+            events = [
+                (
+                    kind,
+                    status,
+                    reason,
+                    json.loads(refs) if isinstance(refs, str) else refs,
+                )
+                for kind, status, reason, refs in rows
+            ]
+            task_event = next(
+                event for event in events if event[0] == "investigation.task_admitted"
+            )
+            gap_event = next(
+                event for event in events if event[0] == "report_gap.admitted"
+            )
+            terminal_event = next(
+                event for event in events if event[0] == "investigation.terminal"
+            )
+            gap_id = task_event[3]["gap_id"]
+            task_id = task_event[3]["task_id"]
+            assert gap_event[3]["gap_id"] == gap_id
+            assert db.execute(
+                "SELECT 1 FROM report_gaps WHERE gap_id = ?", [gap_id]
+            ).fetchone()
+            assert db.execute(
+                "SELECT 1 FROM investigation_tasks WHERE task_id = ?", [task_id]
+            ).fetchone()
+            assert terminal_event[3]["session_id"] == result["session_id"]
+            assert terminal_event[1] == result["status"]
+            assert terminal_event[2]
+
+
+def test_invalid_hypothesis_planner_emits_retry_event_and_retries_once() -> None:
+    from types import SimpleNamespace
+
+    from forensia.core.session import Hypothesis, SessionState
+    from forensia.db.progress import record_progress_event
+    from forensia.investigation import investigation_cycle, planner
+    from forensia.investigation.investigation_session import Ctx
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        case = Case.init(tmpdir)
+        hypothesis = Hypothesis(
+            id="H-RETRY", description="inspect the observed event", status="active"
+        )
+        state = SessionState(
+            session_id="S-PLANNER-RETRY", active_hypotheses=[hypothesis]
+        )
+        with CaseDB(case) as db:
+            db.execute(
+                "INSERT INTO hypotheses (hypothesis_id, description, status, "
+                "blocked_reason, verification_spec) VALUES (?, ?, 'active', '', ?)",
+                (hypothesis.id, hypothesis.description, '{"spec_version":"1"}'),
+            )
+            calls = 0
+
+            def invalid_plan(*_args, **_kwargs):
+                nonlocal calls
+                calls += 1
+                return planner._QueryIntentResult(
+                    action=None,
+                    raw_response={"action": {"type": "unsupported.action"}},
+                    error="unsupported action type",
+                )
+
+            with (
+                mock.patch(
+                    "forensia.investigation.planner.request_query_intent",
+                    side_effect=invalid_plan,
+                ),
+                mock.patch.object(
+                    investigation_cycle,
+                    "judge_work",
+                    return_value={hypothesis.id: SimpleNamespace(runnable=True)},
+                ),
+                mock.patch.object(
+                    investigation_cycle,
+                    "_run_broad_plan_step",
+                    new=mock.AsyncMock(return_value=False),
+                ),
+            ):
+                asyncio.run(
+                    investigation_cycle._run_cycle_body(
+                        state=state,
+                        ctx=Ctx(),
+                        db=db,
+                        case=case,
+                        session_id=state.session_id,
+                        base_url="http://unused",
+                        model="offline",
+                        progress_callback=lambda event: record_progress_event(
+                            db, event
+                        ),
+                        max_queries_per_hypothesis=1,
+                        plan_cycle=1,
+                        max_iter=1,
+                        report_only=False,
+                    )
+                )
+
+            events = db.execute(
+                "SELECT kind, status, reason, refs FROM trace.progress_events "
+                "WHERE kind IN ('hypothesis.plan_rejected', 'hypothesis.plan_retry') "
+                "ORDER BY event_index"
+            ).fetchall()
+            assert calls == 2, (
+                f"one invalid response plus one bounded retry expected, got {calls}"
+            )
+            assert len(events) == 3, events
+            rejected = [
+                event for event in events if event[0] == "hypothesis.plan_rejected"
+            ]
+            retries = [event for event in events if event[0] == "hypothesis.plan_retry"]
+            assert len(rejected) == 2, rejected
+            assert len(retries) == 1, retries
+            for event in events:
+                refs = json.loads(event[3]) if isinstance(event[3], str) else event[3]
+                assert refs["hypothesis_id"] == hypothesis.id
+                assert db.execute(
+                    "SELECT 1 FROM trace.investigation_steps WHERE step_id = ?",
+                    [refs["step_id"]],
+                ).fetchone()
+            assert all(
+                (event[1], event[2]) == ("failed", "planner_validation_failed")
+                for event in rejected
+            )
+            assert all(
+                (event[1], event[2]) == ("running", "planner_retry_granted")
+                for event in retries
+            )
 
 
 class ProgressBudgetTests(unittest.TestCase):

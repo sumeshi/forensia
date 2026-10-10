@@ -186,7 +186,7 @@ class StopClassificationTests(unittest.TestCase):
                 )
                 review = _insert_hypothesis(db, "H-003", sufficiency="partial")
                 db.execute(
-                    "INSERT INTO hypothesis_reasoning "
+                    "INSERT INTO trace.hypothesis_reasoning "
                     "(entry_id, hypothesis_id, phase, body) VALUES "
                     "('R-3', 'H-003', 'check', 'partial result')"
                 )
@@ -750,7 +750,7 @@ class RetryAndProjectionTests(unittest.TestCase):
             with CaseDB(Case.init(tmpdir)) as db:
                 hypothesis = _insert_hypothesis(db, "H-001", sufficiency="partial")
                 db.execute(
-                    "INSERT INTO hypothesis_reasoning "
+                    "INSERT INTO trace.hypothesis_reasoning "
                     "(entry_id, hypothesis_id, phase, body) "
                     "VALUES ('R-1', 'H-001', 'check', 'partial')"
                 )

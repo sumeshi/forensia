@@ -49,6 +49,28 @@ def test_pipeline_import_requires_no_terminal_or_http_server_dependencies() -> N
     assert result.returncode == 0, result.stderr
 
 
+def test_missing_manifest_does_not_initialize_over_existing_case_database() -> None:
+    from forensia.pipeline import UsageError, _open_or_init_case
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        case_dir = Path(tmpdir) / "case"
+        db_dir = case_dir / "db"
+        db_dir.mkdir(parents=True)
+        database = db_dir / "case.duckdb"
+        original = b"preserve existing database"
+        database.write_bytes(original)
+
+        try:
+            _open_or_init_case(case_dir, str(case_dir / "input"), "UTC", None)
+        except UsageError as exc:
+            assert "manifest is missing" in str(exc)
+        else:
+            raise AssertionError("existing database without manifest was initialized")
+
+        assert database.read_bytes() == original
+        assert not (case_dir / "manifest.yaml").exists()
+
+
 def test_mft_only_resume_uses_normalization_receipt_and_parser_revision() -> None:
     from forensia.core.case import Case
     from forensia.db.database import CaseDB
@@ -249,8 +271,13 @@ def test_case_root_forensia_md_is_adopted_recorded_and_routed_to_investigation_r
 
         case = Case.open(case_dir)
         with CaseDB(case) as db:
+            terminal_event_count = db.execute(
+                "SELECT COUNT(*) FROM trace.progress_events "
+                "WHERE kind = 'investigation.terminal'"
+            ).fetchone()[0]
+            assert terminal_event_count == 1, terminal_event_count
             steps = db.execute(
-                "SELECT output_json FROM investigation_steps WHERE phase = 'forensia-md'"
+                "SELECT output_json FROM trace.investigation_steps WHERE phase = 'forensia-md'"
             ).fetchall()
             assert steps, "adoption receipt step missing"
             record = json.loads(str(steps[0][0]))
@@ -358,7 +385,7 @@ def test_resume_keeps_recorded_policy_and_explicit_path_adopts_edited_body() -> 
 
             def latest_record():
                 row = db.execute(
-                    "SELECT output_json FROM investigation_steps "
+                    "SELECT output_json FROM trace.investigation_steps "
                     "WHERE phase = 'forensia-md' ORDER BY created_at DESC LIMIT 1"
                 ).fetchone()
                 return json.loads(str(row[0])) if row and row[0] else None
@@ -436,7 +463,7 @@ def test_resume_keeps_recorded_policy_and_explicit_path_adopts_edited_body() -> 
             ).fetchone()
             assert "objective-marker-alpha" in str(state[0])
             sessions = db.execute(
-                "SELECT status FROM investigation_sessions ORDER BY session_id"
+                "SELECT status FROM trace.investigation_sessions ORDER BY session_id"
             ).fetchall()
             assert all(row[0] in {"completed", "stopped"} for row in sessions), sessions
 
@@ -499,7 +526,7 @@ def test_oversized_forensia_md_policy_refuses_with_reason() -> None:
         case = Case.open(case_dir)
         with CaseDB(case) as db:
             rows = db.execute(
-                "SELECT COUNT(*) FROM investigation_steps WHERE phase = 'forensia-md'"
+                "SELECT COUNT(*) FROM trace.investigation_steps WHERE phase = 'forensia-md'"
             ).fetchone()
             assert int(rows[0]) == 0, "oversized policy must not be adopted"
 

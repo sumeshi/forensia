@@ -1,4 +1,4 @@
-"""Investigation session context: setup, caches, step logging, card sync."""
+"""Investigation session setup, leases, and durable step logging."""
 
 from __future__ import annotations
 
@@ -6,7 +6,6 @@ import asyncio
 import hashlib
 import inspect
 import json
-import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -14,12 +13,10 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from forensia.config import get_llm_settings
-from forensia.context.case_profile import propose_scope_candidates
 from forensia.context.investigation_candidates import build_investigation_candidates
 from forensia.core.case import Case
-from forensia.core.memory import MemoryManager
-from forensia.core.session import Hypothesis, SessionState
+from forensia.core.progress_event import progress_event
+from forensia.core.session import SessionState
 from forensia.db.database import CaseDB
 from forensia.db.investigation_state import (
     ensure_investigation_state,
@@ -79,13 +76,13 @@ def persist_session_terminal_receipt(
 
     Always records ``finished_at`` (timezone-aware UTC) and a structured
     ``terminal_reason`` so a session never remains permanently ``running`` even
-    if a later Memory/report/API projection fails (T-12.1).
+    if a later report/API projection fails (T-12.1).
     """
     finished = finished_at or datetime.now(UTC)
     reason = terminal_reason or format_terminal_reason(status)
     if owner_id:
         db.execute(
-            "UPDATE investigation_sessions SET finished_at = ?, status = ?, "
+            "UPDATE trace.investigation_sessions SET finished_at = ?, status = ?, "
             "terminal_reason = ?, phase = 'terminal', status_reason = ? "
             "WHERE session_id = ? AND owner_id = ?",
             (
@@ -99,7 +96,7 @@ def persist_session_terminal_receipt(
         )
     else:
         db.execute(
-            "UPDATE investigation_sessions SET finished_at = ?, status = ?, "
+            "UPDATE trace.investigation_sessions SET finished_at = ?, status = ?, "
             "terminal_reason = ?, phase = 'terminal', status_reason = ? "
             "WHERE session_id = ?",
             (finished.replace(tzinfo=None), status, reason, reason, session_id),
@@ -116,7 +113,7 @@ def touch_session_heartbeat(
 ) -> None:
     """Refresh the owning worker's lease without changing terminal state."""
     db.execute(
-        "UPDATE investigation_sessions SET heartbeat_at = now(), "
+        "UPDATE trace.investigation_sessions SET heartbeat_at = now(), "
         "phase = COALESCE(?, phase), status_reason = COALESCE(?, status_reason) "
         "WHERE session_id = ? AND owner_id = ? AND status = 'running'",
         (phase, reason, session_id, owner_id),
@@ -130,7 +127,7 @@ def _conservative_finish_time(db: CaseDB, session_id: str, started_at: Any) -> A
     ``started_at`` only when no later activity exists.
     """
     step_row = db.execute(
-        "SELECT MAX(created_at) FROM investigation_steps WHERE session_id = ?",
+        "SELECT MAX(created_at) FROM trace.investigation_steps WHERE session_id = ?",
         (session_id,),
     ).fetchone()
     last_step = step_row[0] if step_row else None
@@ -159,7 +156,7 @@ def reconcile_stale_sessions(db: CaseDB) -> int:
         seconds=_SESSION_LEASE_TIMEOUT_S
     )
     running_rows = db.execute(
-        "SELECT session_id, started_at, heartbeat_at FROM investigation_sessions "
+        "SELECT session_id, started_at, heartbeat_at FROM trace.investigation_sessions "
         "WHERE status = 'running'"
     ).fetchall()
     active: list[str] = []
@@ -189,8 +186,6 @@ class Ctx:
 
     interrupted: bool = False
     report_status: dict = field(default_factory=dict)
-    memory_plan: str = ""
-    current_hypothesis_id: str | None = None
     owner_id: str | None = None
     progress_callback: Callable[[dict[str, Any]], None] | None = None
     # Adopted FORENSIA.md investigation policy for this session (V2-05),
@@ -250,67 +245,6 @@ def _ctx_get_report_status(
         )
 
 
-def ctx_refresh_caches(
-    ctx: Ctx,
-    memory: MemoryManager,
-    current_hypothesis_id: str | None = None,
-    hypothesis: Hypothesis | None = None,
-    db: CaseDB | None = None,
-    session_id: str | None = None,
-) -> None:
-    """Rebuild the scoped model-visible memory context.
-
-    When *hypothesis* is provided, entity/keypoint files are filtered by
-    relevance to it (G-3) — this cache is handed to the planner as its
-    default context, so the filtering must happen here, not only in the
-    lazy-load fallbacks inside the planner.
-    """
-    if hypothesis is not None and current_hypothesis_id is None:
-        current_hypothesis_id = hypothesis.id
-    relevance_terms = (
-        memory.build_relevance_terms_from_hypothesis(hypothesis)
-        if hypothesis is not None
-        else None
-    )
-    ctx.current_hypothesis_id = current_hypothesis_id
-    plan_budget = max(1024, memory.max_bytes // 3)
-    index_budget = min(2048, max(256, plan_budget // 4))
-    memory_index = memory.build_memory_index(
-        current_hypothesis_id,
-        relevance_terms=relevance_terms or None,
-        max_bytes=index_budget,
-    )
-    ctx.memory_plan = memory.load_investigation_context(
-        current_hypothesis_id,
-        relevance_terms=relevance_terms or None,
-        max_bytes=max(768, plan_budget - len(memory_index.encode("utf-8"))),
-        include_overview=False,
-        include_archive=current_hypothesis_id is None,
-    )
-    if memory_index:
-        ctx.memory_plan = f"{ctx.memory_plan.rstrip()}\n\n{memory_index}".strip()
-    if db is not None:
-        from forensia.context.retrieval import record_retrieval_event
-
-        selected_refs = re.findall(r"^- ([^:][^\n]*\.md)$", memory_index, re.MULTILINE)
-        record_retrieval_event(
-            db,
-            session_id=session_id,
-            scope_kind="hypothesis" if current_hypothesis_id else "global",
-            scope_id=current_hypothesis_id,
-            phase="index",
-            source_kind="memory",
-            query_terms=sorted(relevance_terms or []),
-            candidate_count=sum(
-                int(value)
-                for value in re.findall(r"^- [^:]+: (\d+)", memory_index, re.MULTILINE)
-            ),
-            selected_refs=selected_refs,
-            selected_chars=len(memory_index),
-            budget=index_budget,
-        )
-
-
 def _save_step(
     db: CaseDB,
     session_id: str,
@@ -327,7 +261,7 @@ def _save_step(
         step_id = f"{step_id}-{suffix}"
     db.execute(
         """
-        INSERT INTO investigation_steps (
+        INSERT INTO trace.investigation_steps (
             step_id, session_id, hypothesis_id, iteration, phase, input_json, output_json, created_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (step_id) DO UPDATE SET
@@ -375,7 +309,7 @@ def append_hypothesis_reasoning(
     entry_id = _reasoning_entry_id(hypothesis_id, iteration, phase, query_id)
     db.execute(
         """
-        INSERT INTO hypothesis_reasoning (
+        INSERT INTO trace.hypothesis_reasoning (
             entry_id, hypothesis_id, session_id, iteration, phase, verdict, query_id, body, created_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (entry_id) DO NOTHING
@@ -427,30 +361,6 @@ def append_settlement_feedback(
     )
 
 
-def _initialize_overview(
-    memory: MemoryManager, case: Case, objective: str = ""
-) -> None:
-    """Create the initial investigation overview memory file if it doesn't exist yet."""
-    if memory.has_overview():
-        return
-    output_language = str(get_llm_settings()["output_language"]).lower()
-    open_question_seed = {
-        "en": "Awaiting initial investigation",
-    }.get(output_language, "Awaiting initial investigation")
-    objective_line = objective or _DEFAULT_INVESTIGATION_OBJECTIVE
-    memory.update_overview(
-        f"# Investigation Overview\n\n"
-        f"Case: {case.path.name}\n\n"
-        f"## Investigation Objective\n- {objective_line}\n\n"
-        "## Memory Details\n"
-        "- Detailed fact records can be stored under memory/details/fact-NNN.md and loaded on demand.\n\n"
-        "## Case Scope\n- none\n\n"
-        "## Key Findings\n- none\n\n"
-        "## Investigation Policy\n- preserve evidence fidelity\n\n"
-        f"## Active Tasks\n- {open_question_seed}\n"
-    )
-
-
 def _finding_snapshot(db: CaseDB, limit: int = 20) -> list[dict[str, Any]]:
     """Fetch the shared bounded candidate projection from the complete current match set."""
     projection = build_investigation_candidates(db, limit)
@@ -465,121 +375,6 @@ def _finding_snapshot(db: CaseDB, limit: int = 20) -> list[dict[str, Any]]:
     return projected
 
 
-def _keypoint_card_id(index: int) -> str:
-    return f"KP-{index:04d}"
-
-
-def sync_keypoint_cards(
-    memory: MemoryManager, findings_snapshot: list[dict[str, Any]]
-) -> None:
-    """Reconcile findings → keypoint-memory cards, removing stale entries."""
-    for index, finding in enumerate(findings_snapshot, start=1):
-        evidence_ids: list[str] = []
-        evidence = finding.get("evidence")
-        if isinstance(evidence, str):
-            try:
-                evidence = json.loads(evidence)
-            except json.JSONDecodeError:
-                evidence = []
-        if isinstance(evidence, list):
-            for row in evidence:
-                if not isinstance(row, dict):
-                    continue
-                evidence_id = str(row.get("evidence_id") or "").strip()
-                if evidence_id:
-                    evidence_ids.append(evidence_id)
-        lines = [
-            f"# {_keypoint_card_id(index)}",
-            "",
-            f"- finding_id: {finding.get('finding_id')}",
-            f"- title: {finding.get('title')}",
-            f"- severity: {finding.get('severity')}",
-            f"- confidence: {finding.get('confidence')}",
-            f"- candidate_ref: {finding.get('candidate_ref') or 'unknown'}",
-            f"- candidate_fingerprint: {finding.get('candidate_fingerprint') or 'unknown'}",
-            f"- matches: {finding.get('match_count') or 0}",
-            f"- distinct_evidence: {finding.get('evidence_count') or 0}",
-            f"- projection_revision: {finding.get('projection_revision') or 'unknown'}",
-            f"- projection_generated_at: {finding.get('projection_generated_at') or 'unknown'}",
-            f"- projection_state: {finding.get('projection_state') or 'unknown'}",
-            "",
-            "## Summary",
-            str(finding.get("summary") or "").strip() or "-",
-        ]
-        if index == 1:
-            counts = finding.get("projection_counts") or {}
-            lines.extend(
-                [
-                    "",
-                    "## Candidate Population",
-                    f"- matches: {counts.get('match_count', 0)}",
-                    f"- distinct_evidence: {counts.get('distinct_evidence_count', 0)}",
-                    f"- candidates: {counts.get('candidate_count', 0)}",
-                    f"- presented: {counts.get('presented_count', 0)}",
-                    f"- unpresented: {counts.get('unpresented_count', 0)}",
-                ]
-            )
-        rule_ids = [
-            str(item) for item in finding.get("rule_ids", []) if str(item).strip()
-        ]
-        lines.extend(["", "## Matched Rule IDs"])
-        lines.extend([f"- {rule_id}" for rule_id in rule_ids] or ["- none"])
-        lines.extend(["", "## Evidence IDs"])
-        lines.extend([f"- {evidence_id}" for evidence_id in evidence_ids] or ["- none"])
-        memory.upsert_keypoint(
-            _keypoint_card_id(index), "\n".join(lines).rstrip() + "\n"
-        )
-    active_ids = {
-        _keypoint_card_id(index) for index in range(1, len(findings_snapshot) + 1)
-    }
-    for path in memory.keypoints_dir.glob("KP-*.md"):
-        if path.stem not in active_ids:
-            path.unlink(missing_ok=True)
-
-
-def sync_scope_candidates(memory: MemoryManager, db: CaseDB, objective: str) -> None:
-    """Project ranked host/time candidates into Memory without excluding evidence."""
-    scope = propose_scope_candidates(db, objective)
-    lines = [
-        "# Scope Candidates",
-        "",
-        f"- policy: {scope['policy']}",
-        f"- objective: {scope['objective'] or '-'}",
-        "",
-        "## Hosts",
-    ]
-    for item in scope["hosts"]:
-        lines.append(
-            f"- {item['host']} | {item['relationship']} | events={item['event_count']} "
-            f"| {item['first_seen'] or '?'}..{item['last_seen'] or '?'}"
-        )
-    if not scope["hosts"]:
-        lines.append("- none observed")
-    lines.extend(["", "## Time Candidates"])
-    for item in scope["time_ranges"]:
-        lines.append(
-            f"- {item['start'] or '?'}..{item['end'] or '?'} | {item['relationship']}"
-        )
-    if not scope["time_ranges"]:
-        lines.append("- none observed")
-    memory.upsert_keypoint("SCOPE-CANDIDATES", "\n".join(lines).rstrip() + "\n")
-
-
-def _sync_hypothesis_cards(
-    memory: MemoryManager,
-    active_hypotheses: list[Hypothesis],
-    resolved_hypotheses: list[Hypothesis],
-) -> None:
-    """Remove hypothesis memory files that no longer correspond to active or resolved hypotheses."""
-    valid_ids = {
-        re.sub(r"[^a-zA-Z0-9._-]+", "-", str(item.id).strip()).strip("-") or "unknown"
-        for item in [*active_hypotheses, *resolved_hypotheses]
-    }
-    for path in memory.hypotheses_dir.glob("*.md"):
-        if path.stem not in valid_ids:
-            path.unlink(missing_ok=True)
-
-
 def _init_session(
     case: Case,
     db: CaseDB,
@@ -588,7 +383,8 @@ def _init_session(
     report_only: bool = False,
     forensia_policy: CasePolicyInput | None = None,
     report_input_record: dict[str, Any],
-) -> tuple[SessionState, Ctx, MemoryManager, str]:
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
+) -> tuple[SessionState, Ctx, str]:
     """Initialize a new investigation session and its durable state.
 
     With ``report_only=True`` the resume writes are skipped (R07): a report
@@ -602,13 +398,13 @@ def _init_session(
     session_id = f"session-{uuid4().hex[:12]}"
     started_at = datetime.now(UTC).replace(tzinfo=None)
     owner_id = f"worker-{uuid4().hex[:12]}"
-    # Acquire the case's single-writer lease before any ingest, memory, or
+    # Acquire the case's single-writer lease before any ingest or
     # investigation-state projection can mutate the case.  A live lease
     # aborts startup; only expired leases are reconciled.
     with db.transaction():
         reconcile_stale_sessions(db)
         db.execute(
-            "INSERT INTO investigation_sessions (session_id, started_at, "
+            "INSERT INTO trace.investigation_sessions (session_id, started_at, "
             "finished_at, iterations, status, owner_id, heartbeat_at, phase, "
             "status_reason) VALUES (?, ?, ?, ?, ?, ?, now(), ?, ?)",
             (
@@ -623,7 +419,6 @@ def _init_session(
             ),
         )
     try:
-        memory = MemoryManager(case)
         if template_root is None:
             seed_case_report_templates(case)
             template_root = case.report_template_dir
@@ -672,20 +467,9 @@ def _init_session(
             )
         else:
             persisted_investigation = load_investigation_state(db) or {}
-        effective_objective = str(
-            persisted_investigation.get("objective")
-            or policy_objective_line
-            or _DEFAULT_INVESTIGATION_OBJECTIVE
-        )
-        _initialize_overview(memory, case, effective_objective)
         if not report_only:
             reopen_retryable_work(db)
             mark_investigation_started(db)
-        sync_scope_candidates(
-            memory,
-            db,
-            str(persisted_investigation.get("objective") or effective_objective),
-        )
         active_hypotheses, resolved_hypotheses = load_persisted_hypotheses(db)
         state = SessionState(
             session_id=session_id,
@@ -695,14 +479,22 @@ def _init_session(
             resolved_hypotheses=resolved_hypotheses,
         )
         if not report_only:
-            _seed_rule_hypotheses(db, state, session_id)
-        sync_keypoint_cards(memory, state.findings_snapshot)
-        _sync_hypothesis_cards(
-            memory, state.active_hypotheses, state.resolved_hypotheses
-        )
+            seeded_hypothesis_ids = _seed_rule_hypotheses(db, state, session_id)
+            if seeded_hypothesis_ids and progress_callback:
+                progress_callback(
+                    progress_event(
+                        "hypothesis.seeded",
+                        "completed",
+                        severity="success",
+                        reason="rule_declared_hypothesis_admitted",
+                        refs={"hypothesis_ids": seeded_hypothesis_ids[:20]},
+                        stage="seed",
+                        session_id=session_id,
+                        summary=f"seeded {len(seeded_hypothesis_ids)} rule-declared hypotheses",
+                    )
+                )
         ctx.report_status = build_report_status(db)
-        ctx_refresh_caches(ctx, memory, db=db, session_id=session_id)
-        return state, ctx, memory, session_id
+        return state, ctx, session_id
     except Exception:
         persist_session_terminal_receipt(
             db,

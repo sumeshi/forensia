@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from typing import Any
 
 from forensia.core.case import Case
-from forensia.core.memory import MemoryManager
 from forensia.db.database import CaseDB
 from forensia.db.query import findings_snapshot as load_findings_snapshot
 from forensia.knowledge.questions import (
@@ -28,46 +27,6 @@ from forensia.report.sections.section_run_store import (
 )
 
 
-class EvidenceOnlyMemory:
-    """Wraps MemoryManager exposing only evidence-based context.
-
-    Used for structured-answer blocks to prevent narrative contamination from
-    hypotheses, scratch, archive, or investigation overview.
-    Only facts, keypoints, entities, and suspicious evidence are loaded.
-    """
-
-    def __init__(self, inner: MemoryManager) -> None:
-        self._inner = inner
-
-    @property
-    def max_bytes(self) -> int:
-        return self._inner.max_bytes
-
-    def _evidence_files(self) -> list[str]:
-        """List evidence-only memory files (facts, entities, keypoints) excluding narrative context."""
-        files: list[str] = ["facts.md"]
-        files.extend(self._inner._markdown_files(self._inner.entities_dir))
-        files.extend(self._inner._markdown_files(self._inner.keypoints_dir))
-        return files
-
-    def load_investigation_context(
-        self,
-        hypothesis_id: str | None = None,
-        **kwargs: object,
-    ) -> str:
-        """Load only evidence-based context, ignoring narrative files like hypotheses and scratch."""
-        return self._inner.load_compact_context(self._evidence_files())
-
-
-def memory_for_section(
-    memory: MemoryManager,
-    *,
-    structured_mode: bool = False,
-) -> MemoryManager | EvidenceOnlyMemory:
-    """Wrap memory in EvidenceOnlyMemory for structured-answer blocks."""
-    return EvidenceOnlyMemory(memory) if structured_mode else memory
-
-
 @dataclass(slots=True)
 class _BlockContext:
     case: Case
@@ -82,7 +41,6 @@ class _BlockContext:
     template_catalog: list[dict]
     reusable_facts: list[dict[str, Any]]
     reusable_evidence: list[dict[str, Any]]
-    memory_context_md: str
     question_mode: bool
     max_queries: int
     findings_snapshot: list[dict[str, Any]]
@@ -108,7 +66,6 @@ def prepare_block_context(
     template_body: str,
     base_url: str,
     model: str,
-    memory: MemoryManager | None,
     max_queries: int,
     evidence_keypoints: list[str] | None,
     question_mode: bool,
@@ -138,14 +95,6 @@ def prepare_block_context(
         spec=question_spec,
         confidence=question_confidence,
     )
-    memory_context_md = ""
-    if memory is not None:
-        memory_context_md = memory.load_investigation_context(
-            None,
-            max_bytes=max(1024, memory.max_bytes // 2),
-            include_overview=False,
-            include_scratch=False,
-        )
     findings_snapshot = load_findings_snapshot(db)
     keypoint_catalog = _keypoint_catalog(
         section_key,
@@ -192,7 +141,6 @@ def prepare_block_context(
         template_catalog=template_catalog,
         reusable_facts=reusable_facts,
         reusable_evidence=reusable_evidence,
-        memory_context_md=memory_context_md,
         question_mode=question_mode,
         max_queries=max_queries,
         findings_snapshot=findings_snapshot,

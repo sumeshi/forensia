@@ -84,7 +84,6 @@ class TableRenderingTests(unittest.TestCase):
         blocks through the LLM agent."""
         import asyncio
 
-        from forensia.core.memory import MemoryManager
         from forensia.report.sections.section_refresher import render_section_blocks
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -112,7 +111,6 @@ class TableRenderingTests(unittest.TestCase):
                         }
                     ],
                 }
-                memory = MemoryManager(case)
                 # base_url points nowhere: if the table branch regresses into the
                 # LLM agent path, this test fails loudly instead of passing.
                 _, body = asyncio.run(
@@ -120,11 +118,11 @@ class TableRenderingTests(unittest.TestCase):
                         request,
                         case,
                         db,
-                        memory,
                         base_url="http://127.0.0.1:1",
                         model="none",
                         max_queries_per_section=1,
                         iteration=1,
+                        session_id="S-table",
                         progress_callback=None,
                         focus_sections=None,
                     )
@@ -231,7 +229,6 @@ class TableRenderingTests(unittest.TestCase):
                     template_body="<!-- mode: narrative; x -->",
                     base_url="http://127.0.0.1:1",
                     model="none",
-                    memory=None,
                     max_queries=1,
                     evidence_keypoints=None,
                     question_mode=False,
@@ -248,7 +245,6 @@ class TableRenderingTests(unittest.TestCase):
         import asyncio
         from unittest import mock
 
-        from forensia.core.memory import MemoryManager
         from forensia.report.sections import section_refresher
         from forensia.report.sections.section_exec import SectionBlockResult
 
@@ -298,11 +294,11 @@ class TableRenderingTests(unittest.TestCase):
                             request,
                             case,
                             db,
-                            MemoryManager(case),
                             base_url="http://127.0.0.1:1",
                             model="none",
                             max_queries_per_section=1,
                             iteration=1,
+                            session_id="S-table",
                             progress_callback=None,
                             focus_sections=None,
                         )
@@ -353,7 +349,6 @@ class TableRenderingTests(unittest.TestCase):
                     ),
                 )
                 results = resolve_evidence_results(
-                    case,
                     db,
                     keypoints=["timeline_log_clearing", "gaps_log_integrity_events"],
                 )
@@ -394,7 +389,7 @@ class TableRenderingTests(unittest.TestCase):
                 )
                 db.execute(
                     """
-                    INSERT INTO hypothesis_reasoning (
+                    INSERT INTO trace.hypothesis_reasoning (
                         entry_id, hypothesis_id, session_id, iteration, phase, body, created_at
                     ) VALUES (?, ?, ?, ?, ?, ?, now())
                     """,
@@ -409,7 +404,7 @@ class TableRenderingTests(unittest.TestCase):
                 )
                 db.execute(
                     """
-                    INSERT INTO hypothesis_reasoning (
+                    INSERT INTO trace.hypothesis_reasoning (
                         entry_id, hypothesis_id, session_id, iteration, phase, body, created_at
                     ) VALUES (?, ?, ?, ?, ?, ?, now() + INTERVAL '1 minute')
                     """,
@@ -465,7 +460,7 @@ class TableRenderingTests(unittest.TestCase):
                 )
                 db.execute(
                     """
-                    INSERT INTO hypothesis_reasoning (
+                    INSERT INTO trace.hypothesis_reasoning (
                         entry_id, hypothesis_id, session_id, iteration, phase, body, created_at
                     ) VALUES (?, ?, ?, ?, ?, ?, now())
                     """,
@@ -517,7 +512,7 @@ class TableRenderingTests(unittest.TestCase):
                 )
                 db.execute(
                     """
-                    INSERT INTO hypothesis_reasoning (
+                    INSERT INTO trace.hypothesis_reasoning (
                         entry_id, hypothesis_id, session_id, iteration, phase, body, created_at
                     ) VALUES (?, ?, ?, ?, ?, ?, now())
                     """,
@@ -685,7 +680,6 @@ class TableRenderingTests(unittest.TestCase):
                     template_body="## Test",
                     base_url="",
                     model="test",
-                    memory=None,
                     max_queries=3,
                     evidence_keypoints=None,
                     question_mode=False,
@@ -700,7 +694,6 @@ class TableRenderingTests(unittest.TestCase):
                     template_body="## Test",
                     base_url="",
                     model="test",
-                    memory=None,
                     max_queries=3,
                     evidence_keypoints=None,
                     question_mode=False,

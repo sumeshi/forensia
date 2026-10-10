@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Print cycle measurements extracted from a read-only Case/Trace pair."""
+"""Print cycle measurements extracted from a read-only case database."""
 
 from __future__ import annotations
 
@@ -26,9 +26,7 @@ def main() -> int:
         return 2
     cycles = data["cycles"]
     if not cycles:
-        print(
-            "No per-iteration records are present in the current Case/Trace databases."
-        )
+        print("No per-iteration records are present in the current case database.")
         return 0
 
     print(

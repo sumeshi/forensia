@@ -103,7 +103,7 @@ def _section_digest(sections: list[SectionSource]) -> str:
 
 def _recorded_report_input(db: CaseDB) -> dict[str, object] | None:
     row = db.execute(
-        "SELECT output_json FROM investigation_steps WHERE phase = ? "
+        "SELECT output_json FROM trace.investigation_steps WHERE phase = ? "
         "ORDER BY created_at DESC, step_id DESC LIMIT 1",
         (REPORT_INPUT_PHASE,),
     ).fetchone()
@@ -122,7 +122,7 @@ def active_report_section_keys(db: CaseDB) -> list[str] | None:
     """Extract active keys in DuckDB without transferring the recorded bodies."""
     row = db.execute(
         "SELECT json_extract_string(output_json, '$.sections[*].section_key') "
-        "FROM investigation_steps WHERE phase = ? "
+        "FROM trace.investigation_steps WHERE phase = ? "
         "ORDER BY created_at DESC, step_id DESC LIMIT 1",
         (REPORT_INPUT_PHASE,),
     ).fetchone()

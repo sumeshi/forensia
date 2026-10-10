@@ -13,7 +13,6 @@ from forensia.investigation.verification.check_guardrails import (
     verify_verdict_consistency,
 )
 from forensia.investigation.verification.check_normalize import (
-    filter_memory_updates,
     validate_extracted_findings,
 )
 
@@ -163,7 +162,6 @@ class TestPayloadGuardrails(unittest.TestCase):
             "finding_updates": [],
             "suspicious_evidence": [],
             "new_hypotheses": [],
-            "memory_updates": {},
             "report_text": "test report",
             "extracted_findings": [],
             "query_id": "q-test",
@@ -194,42 +192,6 @@ class TestPayloadGuardrails(unittest.TestCase):
                     result_summary=_summary([], []),
                 )
                 assert guarded["verdict"] == "inconclusive"
-
-
-class TestMemoryUpdateFiltering(unittest.TestCase):
-    def test_entity_validation_matrix(self) -> None:
-        sample_rows = [
-            {
-                "target_user": "alice",
-                "computer": "pc-01",
-                "file_path": r"C:\Users\jdoe\app.exe",
-                "evidence_id": "ev-1",
-            }
-        ]
-        cases = (
-            ("exact", "user", "alice", True),
-            ("path substring", "user", "jdoe", True),
-            ("absent", "user", "nobody", False),
-            ("too short", "host", "pc", False),
-            ("invalid type", "garbage_type", "alice", False),
-            ("placeholder", "user", "n/a", False),
-        )
-        for name, entity_type, value, expected in cases:
-            updates = {
-                "entities": [
-                    {
-                        "entity_type": entity_type,
-                        "name": value,
-                        "role": "actor_user",
-                        "evidence_ids": ["ev-1"],
-                    }
-                ]
-            }
-            with self.subTest(name=name):
-                filtered = filter_memory_updates(
-                    updates, {"ev-1"}, sample_rows=sample_rows
-                )
-                assert bool(filtered.get("entities")) is expected
 
 
 class TestExtractedFindingValidation(unittest.TestCase):

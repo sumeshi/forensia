@@ -5,17 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from forensia.core.session import (
-    ENTITY_ROLES,
-    ENTITY_TYPE_ALIASES,
-    Hypothesis,
-)
+from forensia.core.session import Hypothesis
 from forensia.core.timeutil import parse_epoch_seconds
 
 VALID_VERDICTS = {"confirmed", "refuted", "inconclusive", "newlead"}
 SMALL_CONFIDENCE_DELTA = 0.02
-_DURABLE_MEMORY_KEYS = {"facts", "timeline", "resolved_gaps"}
-_ENTITY_PLACEHOLDER_VALUES = {"", "-", "n/a", "na", "none", "null", "unknown"}
 
 
 @dataclass(slots=True)
@@ -25,7 +19,6 @@ class CheckResult:
     finding_updates: list[dict[str, Any]]
     suspicious_evidence: list[dict[str, Any]]
     new_hypotheses: list[Hypothesis]
-    memory_updates: dict[str, Any]
     report_text: str
     new_leads: int
     progress: bool  # True if something meaningfully changed
@@ -37,10 +30,11 @@ def parse_new_hypotheses(items: Any) -> list[Hypothesis]:
     hypotheses: list[Hypothesis] = []
     if not isinstance(items, list):
         return hypotheses
-    for item in items:
+    for index, item in enumerate(items, start=1):
         if not isinstance(item, dict):
             continue
         payload = dict(item)
+        payload.setdefault("id", f"candidate-{index:02d}")
         if str(payload.get("verdict") or "") not in {"confirmed", "refuted"}:
             payload["verdict"] = None
         if str(payload.get("status") or "") not in {"active", "confirmed", "refuted"}:
@@ -167,107 +161,6 @@ def _filter_evidence_references(
         payload = dict(item)
         payload["evidence_id"] = evidence_id
         filtered.append(payload)
-    return filtered
-
-
-def filter_memory_updates(
-    updates: Any,
-    observed_evidence_ids: set[str],
-    sample_rows: list[dict[str, Any]] | None = None,
-) -> dict[str, Any]:
-    """Filter memory updates to only include valid entities and observed evidence.
-
-    Durable memory keys (facts, timeline, resolved_gaps) require non-empty
-    evidence_ids. Entity entries are validated against ENTITY_TYPE_ALIASES,
-    ENTITY_ROLES, placeholder-value exclusion rules, and literal name presence
-    in sample rows.
-    """
-    entity_name_set: set[str] | None = None
-    entity_value_blob = ""
-    if sample_rows:
-        identity_cols = {
-            "user_name",
-            "target_user",
-            "computer",
-            "src_ip",
-            "process_name",
-            "service_name",
-            "executable_name",
-            "file_name",
-            "file_path",
-        }
-        entity_name_set = set()
-        blob_parts: list[str] = []
-        for row in sample_rows:
-            if not isinstance(row, dict):
-                continue
-            for col in identity_cols:
-                val = row.get(col)
-                if (
-                    val
-                    and isinstance(val, str)
-                    and val.strip().lower() not in _ENTITY_PLACEHOLDER_VALUES
-                ):
-                    entity_name_set.add(val.strip().casefold())
-                    blob_parts.append(val.casefold())
-        entity_value_blob = "\n".join(blob_parts)
-    if not isinstance(updates, dict):
-        return {}
-
-    filtered: dict[str, Any] = {}
-    for key, value in updates.items():
-        if not isinstance(value, list):
-            filtered[key] = value
-            continue
-
-        filtered_items: list[Any] = []
-        for item in value:
-            if not isinstance(item, dict):
-                filtered_items.append(item)
-                continue
-            payload = dict(item)
-            if "evidence_ids" in payload:
-                payload["evidence_ids"] = [
-                    evidence_id
-                    for evidence_id in (
-                        str(evidence_id).strip()
-                        for evidence_id in (payload.get("evidence_ids") or [])
-                    )
-                    if evidence_id and evidence_id in observed_evidence_ids
-                ]
-            if key in _DURABLE_MEMORY_KEYS and not payload.get("evidence_ids"):
-                continue
-            if key == "entities":
-                normalized_type = ENTITY_TYPE_ALIASES.get(
-                    str(payload.get("entity_type") or "").strip().lower()
-                )
-                if normalized_type is None:
-                    continue
-                normalized_name = str(payload.get("name") or "").strip()
-                if (
-                    not normalized_name
-                    or normalized_name.lower() in _ENTITY_PLACEHOLDER_VALUES
-                ):
-                    continue
-                normalized_role = (
-                    str(payload.get("role") or "unknown").strip().lower() or "unknown"
-                )
-                if normalized_role not in ENTITY_ROLES:
-                    normalized_role = "unknown"
-                payload["entity_type"] = normalized_type
-                payload["name"] = normalized_name
-                payload["role"] = normalized_role
-                if entity_name_set is not None:
-                    name_cf = normalized_name.casefold()
-                    # Accept exact value matches, or containment within observed
-                    # values (e.g. a user name inside a file_path) for names
-                    # long enough not to match by accident.
-                    if name_cf not in entity_name_set and not (
-                        len(name_cf) >= 3 and name_cf in entity_value_blob
-                    ):
-                        continue
-            filtered_items.append(payload)
-        filtered[key] = filtered_items
     return filtered
 
 

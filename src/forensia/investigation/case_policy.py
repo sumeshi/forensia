@@ -10,7 +10,7 @@ the whole run; a later edit never reopens admitted work — Case State remains
 the authority for accepted Objective/Gap/Task/Spec.
 
 State and resume: the applied body, its content hash, the designated source
-and the target roles are recorded in the existing ``investigation_steps``
+and the target roles are recorded in the existing ``trace.investigation_steps``
 payload (phase ``forensia-md``, one step per session, V2-05). No new table or
 column. Resume always re-applies the *recorded* revision; a differing current
 file is surfaced explicitly, and explicit adoption goes through the explicit
@@ -142,7 +142,7 @@ def load_recorded_policy(db: CaseDB) -> dict[str, Any] | None:
     """
     row = db.execute(
         """
-        SELECT output_json FROM investigation_steps
+        SELECT output_json FROM trace.investigation_steps
         WHERE phase = ?
         ORDER BY created_at DESC
         LIMIT 1
@@ -264,8 +264,11 @@ def collect_policy_progress_event(policy: Any) -> dict[str, Any] | None:
     from forensia.core.progress_event import progress_event
 
     return progress_event(
-        CASE_POLICY_STEP_PHASE,
-        "running",
+        "policy.revision_pinned",
+        "completed",
+        severity="warning",
+        stage=CASE_POLICY_STEP_PHASE,
+        reason="recorded_policy_remains_in_force",
         summary=str(policy.notice),
     )
 

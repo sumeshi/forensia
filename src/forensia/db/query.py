@@ -98,7 +98,7 @@ def summarize_query_result(
 def findings_snapshot(
     db: CaseDB, limit: int = 12, *, include_evidence: bool = False
 ) -> list[dict[str, Any]]:
-    """Fetch top findings ordered by confidence for prompts and memory sync."""
+    """Fetch top findings ordered by confidence for prompts and reports."""
     columns = "finding_id, title, severity, confidence, status, summary"
     if include_evidence:
         columns += ", evidence"

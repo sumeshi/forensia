@@ -11,130 +11,15 @@ from typing import Any
 
 import duckdb
 import sqlglot
+from sqlglot.optimizer.scope import Scope, traverse_scope
 
 from forensia.context.sql_schema import QUERY_TABLES
 from forensia.knowledge.resources import schema_dir
 
-ALLOWED_IDENTIFIER_REFERENCES = QUERY_TABLES | {
-    "evidence_id",
-    "artifact_id",
-    "dataset_id",
-    "source_ids",
-    "plugin",
-    "hive",
-    "key_path",
-    "value_name",
-    "timestamp_kind",
-    "raw_timestamp",
-    "source_file",
-    "channel",
-    "event_id",
-    "record_id",
-    "timestamp",
-    "computer",
-    "user_name",
-    "target_user",
-    "subject_user",
-    "src_ip",
-    "logon_type",
-    "process_name",
-    "command_line",
-    "service_name",
-    "message",
-    "raw_json",
-    "tags",
-    "severity",
-    "record_number",
-    "file_path",
-    "file_name",
-    "extension",
-    "is_directory",
-    "is_deleted",
-    "size",
-    "si_created",
-    "si_modified",
-    "si_accessed",
-    "si_mft_modified",
-    "fn_created",
-    "fn_modified",
-    "fn_accessed",
-    "fn_mft_modified",
-    "timeline_id",
-    "timestamp_type",
-    "description",
-    "finding_id",
-    "rule_id",
-    "title",
-    "summary",
-    "confidence",
-    "status",
-    "attack",
-    "evidence",
-    "ai_summary",
-    "missing_checks",
-    "created_at",
-    "review_id",
-    "verdict",
-    "report_text",
-    "confidence_adjustment",
-    "notes",
-    "session_id",
-    "started_at",
-    "finished_at",
-    "iterations",
-    "step_id",
-    "iteration",
-    "phase",
-    "input_json",
-    "output_json",
-    "hypothesis_id",
-    "origin",
-    "created_session",
-    "resolved_session",
-    "section_key",
-    "body",
-    "update_count",
-    "gaps",
-    "last_filled_session",
-    "last_filled_at",
-    "claim_id",
-    "claim_text",
-    "finding_ids",
-    "hypothesis_ids",
-    "evidence_ids",
-    "support_status",
-    "entry_id",
-    "query_id",
-    "path",
-    "source_kind",
-    "size",
-    "ingested_at",
-    "event_index",
-    "current_query",
-    "payload",
-    "fact_id",
-    "fact_type",
-    "fact_key",
-    "fact_value",
-    "source_query",
-    "source_section",
-    "block_heading",
-    "sql_hash",
-    "sql_text",
-    "result_json",
-    "executed_at",
-    "run_id",
-}
 _SQL_FENCE_RE = re.compile(r"```(?:sql)?\s*(.*?)```", re.DOTALL | re.IGNORECASE)
 FORBIDDEN_SQL = re.compile(
     r"\b(insert|update|delete|drop|alter|create|attach|detach|copy|pragma|truncate|merge|replace)\b",
     re.IGNORECASE,
-)
-TABLE_NAME_PATTERN = re.compile(
-    r"\b(?:from|join)\s+([a-zA-Z_][a-zA-Z0-9_]*)", re.IGNORECASE
-)
-CTE_NAME_PATTERN = re.compile(
-    r"(?:with|,)\s*([a-zA-Z_][a-zA-Z0-9_]*)\s+as\s*\(", re.IGNORECASE
 )
 LIMIT_PATTERN = re.compile(r"\blimit\s+(\d+)", re.IGNORECASE)
 
@@ -270,17 +155,31 @@ def validate_select_sql(sql: str) -> str:
         raise ValueError("Forbidden SQL keyword detected")
     _enforce_row_limit(normalized)
 
-    cte_names = {match.group(1) for match in CTE_NAME_PATTERN.finditer(normalized)}
-    table_names = {match.group(1) for match in TABLE_NAME_PATTERN.finditer(normalized)}
-    unknown_tables = sorted(
-        name
-        for name in table_names
-        if name not in ALLOWED_IDENTIFIER_REFERENCES and name not in cte_names
-    )
-    if unknown_tables:
-        raise ValueError(f"Unknown table(s) referenced: {', '.join(unknown_tables)}")
     try:
         tree = sqlglot.parse_one(normalized)
+    except sqlglot.errors.ParseError as exc:
+        raise ValueError("SQL could not be parsed") from exc
+    unknown_tables: set[str] = set()
+    allowed_tables = {name.casefold() for name in QUERY_TABLES}
+    for scope in traverse_scope(tree):
+        for _, (node, source) in scope.selected_sources.items():
+            if isinstance(source, Scope):
+                continue
+            if not isinstance(source, sqlglot.exp.Table):
+                raise ValueError("Unsupported table reference")
+            table = node if isinstance(node, sqlglot.exp.Table) else source
+            if table.catalog or table.db:
+                raise ValueError("Schema-qualified table references are not allowed")
+            if not isinstance(table.this, sqlglot.exp.Identifier):
+                raise ValueError("Table functions are not allowed")
+            name = table.name.casefold()
+            if name not in allowed_tables:
+                unknown_tables.add(name)
+    if unknown_tables:
+        raise ValueError(
+            f"Unknown table(s) referenced: {', '.join(sorted(unknown_tables))}"
+        )
+    try:
         for coalesce_node in tree.find_all(sqlglot.exp.Coalesce):
             arg_types = set()
             has_cast = False

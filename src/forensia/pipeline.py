@@ -16,11 +16,9 @@ Display independence contract:
   particular ``LLMServerUnavailableError``;
 - terminal display is the injected ``status`` callback (plain message text) —
   the kernel never imports a presentation library;
-- structured progress is recorded in the trace DB via the existing
-  ``db.progress`` owner (one row per emit, capped recent view); progress log
-  entries are stored once, in structured tag/level/message form, and any
-  string rendering is derived at display time; audit receipts
-  remain in the trace tables and are never replaced by the display view;
+- semantic progress events are appended to the trace DB through the existing
+  ``db.progress`` owner; events carry producer-selected kind, status, severity,
+  reason, and entity references without copying investigation snapshots;
 - SIGINT capture and stop application stay where they are today
   (``investigator.investigate`` owns the converter flag), and the session's
   terminal receipt is still persisted before fallible projections by the same
@@ -44,11 +42,11 @@ from forensia.config import (
     resolve_llm_config,
 )
 from forensia.core.case import Case, resolve_timezone
-from forensia.core.log import structure_progress_log
 from forensia.core.progress_event import progress_event
 from forensia.db.database import CaseDB
-from forensia.db.progress import clear_progress_events, record_progress_event
+from forensia.db.progress import record_progress_event
 from forensia.db.query import fetch_records
+from forensia.db.schema import TRACE_TABLES
 from forensia.evidence.ingest import ingest_all
 from forensia.evidence.invalidation import (
     find_replaced_source_ids,
@@ -106,32 +104,6 @@ class UsageError(ValueError):
 def _show(status: StatusCallback | None, message: str) -> None:
     if status is not None:
         status(message)
-
-
-def _count_records(db: CaseDB) -> dict[str, int]:
-    """Query row counts for all major case tables."""
-    row = db.execute(
-        """
-        SELECT
-            (SELECT COUNT(*) FROM evtx_events) AS evtx_rows,
-            (SELECT COUNT(*) FROM mft_entries) AS mft_entries,
-            (SELECT COUNT(*) FROM findings) AS findings,
-            (SELECT COUNT(*) FROM investigation_sessions) AS sessions,
-            (SELECT COUNT(*) FROM hypotheses) AS hypotheses,
-            (SELECT COUNT(*) FROM report_sections) AS report_sections,
-            (SELECT COUNT(*) FROM progress_events) AS progress_events
-        """
-    ).fetchone()
-    keys = [
-        "evtx_rows",
-        "mft_entries",
-        "findings",
-        "sessions",
-        "hypotheses",
-        "report_sections",
-        "progress_events",
-    ]
-    return {key: int(row[index] or 0) for index, key in enumerate(keys)}
 
 
 def _content_revision(paths: list[Path]) -> str:
@@ -267,49 +239,52 @@ def _sources_normalized(db: CaseDB) -> bool:
 
 
 def reset_case_tables(db: CaseDB) -> None:
-    """Clear normalized/derived state, retaining source registrations for rebuild."""
-    for table in (
-        "evtx_events",
-        "mft_entries",
-        "mft_timeline",
-        "prefetch_executions",
-        "prefetch_timeline",
-        "registry_artifacts",
-        "registry_timeline",
-        "case_timeline",
-        "findings",
-        "claims",
-        "section_facts",
-        "section_evidence",
-        "query_cache",
-        "section_runs",
-        "section_questions",
-        "ai_reviews",
-        "investigation_sessions",
-        "investigation_steps",
-        "hypothesis_reasoning",
-        "llm_provider_attempts",
-        "llm_logical_calls",
-        "llm_deterministic_ops",
-        "hypotheses",
-        "report_sections",
-        "progress_events",
-        "retrieval_events",
-        "evidence_coverage",
-        "investigation_state",
-        "report_gaps",
-        "investigation_tasks",
-        "hypothesis_relations",
-        "hypothesis_evidence",
-    ):
-        db.execute(f"DELETE FROM {table}")
+    """Clear derived state and its trace references, retaining source registrations."""
+    with db.transaction():
+        for table in (
+            "evtx_events",
+            "mft_entries",
+            "mft_timeline",
+            "prefetch_executions",
+            "prefetch_timeline",
+            "registry_artifacts",
+            "registry_timeline",
+            "case_timeline",
+            "findings",
+            "claims",
+            "section_facts",
+            "section_evidence",
+            "query_cache",
+            "section_runs",
+            "section_questions",
+            "ai_reviews",
+            "investigation_sessions",
+            "investigation_steps",
+            "hypothesis_reasoning",
+            "llm_provider_attempts",
+            "llm_logical_calls",
+            "llm_deterministic_ops",
+            "hypotheses",
+            "report_sections",
+            "progress_events",
+            "retrieval_events",
+            "evidence_coverage",
+            "investigation_state",
+            "report_gaps",
+            "investigation_tasks",
+            "hypothesis_relations",
+            "hypothesis_evidence",
+        ):
+            # An explicit rerun resets events with the entities they reference.
+            schema = "trace." if table in TRACE_TABLES else ""
+            db.execute(f"DELETE FROM {schema}{table}")
 
 
 def _prune_orphan_reviews(db: CaseDB) -> None:
     """Remove AI reviews whose referenced findings no longer exist."""
     db.execute(
         """
-        DELETE FROM ai_reviews
+        DELETE FROM trace.ai_reviews
         WHERE finding_id NOT IN (SELECT finding_id FROM findings)
           AND finding_id NOT LIKE 'hypothesis:%'
           AND finding_id NOT LIKE 'query:%'
@@ -326,25 +301,11 @@ def _normalize_counts_summary(counts: dict[str, int]) -> str:
     )
 
 
-def progress_pusher(db: CaseDB, initial_state: dict[str, Any]) -> Callable[..., None]:
-    """Return a closure that records progress events in the trace DB.
+def progress_pusher(db: CaseDB) -> Callable[[dict[str, Any]], int]:
+    """Persist one compact, producer-structured event without UI snapshots."""
 
-    Log entries are stored once, in structured ``tag``/``level``/``message``
-    form (``recent_log_entries``); the string form is derived from the entry
-    at render time. ``level`` is the producer's explicit decision
-    (unspecified messages stay neutral ``info``), never word-inferred.
-    """
-    state = dict(initial_state)
-
-    def push(message: str | None = None, **updates: Any) -> None:
-        explicit_log_level = updates.pop("log_level", None)
-        if message:
-            entry = structure_progress_log(message, level=explicit_log_level)
-            entries = [*state.get("recent_log_entries", []), entry]
-            state["recent_log_entries"] = entries[-20:]
-        state.update(updates)
-        payload = {**state, "counts": _count_records(db)}
-        record_progress_event(db, payload)
+    def push(event: dict[str, Any]) -> int:
+        return record_progress_event(db, event)
 
     return push
 
@@ -431,31 +392,6 @@ def resolve_forensia_policy_input(
     return CasePolicyInput(body=body, source=source, source_path=str(path))
 
 
-def _make_initial_progress_state(
-    model: str | None,
-    llm_base_url: str | None,
-    stage: str = "init",
-    summary: str = "Case initialized",
-) -> dict[str, Any]:
-    return progress_event(
-        stage,
-        "running",
-        iteration=0,
-        summary=summary,
-        current_query=None,
-        llm_model=model,
-        llm_base_url=llm_base_url,
-        hypotheses=[],
-        report_sections={
-            "items": [],
-            "current_section": None,
-            "focus_sections": [],
-            "total_gaps": 0,
-            "total_body_chars": 0,
-        },
-    )
-
-
 def _open_or_init_case(
     case_dir: str | Path,
     input_dir: str | None,
@@ -468,6 +404,20 @@ def _open_or_init_case(
         case = Case.open(case_dir)
         case.source_timezone = resolve_timezone(timezone, case)
         return case
+    existing_case_databases = [
+        path
+        for path in (
+            case_path / "db" / "case.duckdb",
+            case_path / "db" / "trace.duckdb",
+        )
+        if path.exists()
+    ]
+    if existing_case_databases:
+        paths = ", ".join(str(path) for path in existing_case_databases)
+        raise UsageError(
+            "Case manifest is missing but database files already exist; "
+            f"preserving them without initialization: {paths}"
+        )
     if input_dir is None:
         raise UsageError("New case requires an input_dir argument")
     tz_val = resolve_timezone(timezone, None)
@@ -483,12 +433,11 @@ def _rerun_reset(
     timezone: str,
     status: StatusCallback | None,
 ) -> Case:
-    """Reset case tables and runtime outputs for --rerun, preserving raw/ and memory."""
+    """Reset case tables and runtime outputs for --rerun, preserving raw/."""
     _show(status, "Resetting case tables for rerun (preserving raw/ for re-normalize)")
     with CaseDB(case) as db:
         reset_case_tables(db)
     case.clear_runtime_outputs(
-        preserve_memory=True,
         drop_database=False,
         preserve_raw=True,
     )
@@ -504,17 +453,20 @@ def _run_ingest_stage(
     case: Case,
     db: CaseDB,
     input_dir: str,
-    push_progress: Callable[..., None],
+    push_progress: Callable[[dict[str, Any]], int],
     status: StatusCallback | None,
 ) -> dict[str, Any]:
     """Ingest evidence files (EVTX, MFT, Prefetch) into the case."""
 
     def stage_status(message: str) -> None:
         _show(status, message)
-        push_progress(message, stage="ingest", status="running", summary=message)
 
     _show(status, f"Stage 1/4: ingest from {input_dir}")
-    push_progress(f"[ingest] scanning {input_dir}", stage="ingest", status="running")
+    push_progress(
+        progress_event(
+            "pipeline.ingest", "running", stage="ingest", summary="Scanning input files"
+        )
+    )
     counts = ingest_all(case, input_dir, db=db, progress_callback=stage_status)
     note = (
         f"new_files={counts['new_files']}, skipped_files={counts['skipped_files']}, "
@@ -522,7 +474,16 @@ def _run_ingest_stage(
         f"prefetch_files={counts['prefetch_files']}"
     )
     _show(status, f"Ingest complete: {note}")
-    push_progress(f"[ingest] {note}", stage="ingest", status="running", summary=note)
+    push_progress(
+        progress_event(
+            "pipeline.ingest",
+            "completed",
+            stage="ingest",
+            summary="Evidence ingest completed",
+            new_files=counts["new_files"],
+            skipped_files=counts["skipped_files"],
+        )
+    )
     return counts
 
 
@@ -531,7 +492,7 @@ def _run_normalize_stage(
     db: CaseDB,
     init: bool,
     ingest_counts: dict[str, Any],
-    push_progress: Callable[..., None],
+    push_progress: Callable[[dict[str, Any]], int],
     status: StatusCallback | None,
 ) -> bool:
     """Normalize raw evidence into structured DuckDB tables."""
@@ -549,13 +510,21 @@ def _run_normalize_stage(
         normalized_this_run = False
         _show(status, "Stage 2/4: normalize - source state is current, skipping")
         push_progress(
-            "[normalize] skipped (source status and parser revision are current)",
-            stage="normalize",
-            status="running",
+            progress_event(
+                "pipeline.normalize",
+                "skipped",
+                stage="normalize",
+                reason="source_state_current",
+                summary="Normalization skipped; sources and parser revision are current",
+            )
         )
     else:
         _show(status, "Stage 2/4: normalize into DuckDB")
-        push_progress("[normalize] starting", stage="normalize", status="running")
+        push_progress(
+            progress_event(
+                "pipeline.normalize", "running", stage="normalize", summary="Started"
+            )
+        )
         source_keys = ingest_counts.get("new_source_keys") or None
         if receipt is None or receipt[2] != parser_revision:
             source_keys = None
@@ -610,7 +579,13 @@ def _run_normalize_stage(
             f"Normalize complete: {note}, mft_timeline_rows={normalized['mft_timeline_rows']}",
         )
         push_progress(
-            f"[normalize] {note}", stage="normalize", status="running", summary=note
+            progress_event(
+                "pipeline.normalize",
+                "completed",
+                stage="normalize",
+                summary="Evidence normalization completed",
+                normalized_sources=normalized.get("sources", 0),
+            )
         )
     return normalized_this_run
 
@@ -620,7 +595,7 @@ def _run_analyze_stage(
     db: CaseDB,
     init: bool,
     normalized_this_run: bool,
-    push_progress: Callable[..., None],
+    push_progress: Callable[[dict[str, Any]], int],
     status: StatusCallback | None,
 ) -> int:
     """Run rule-based analysis to generate findings."""
@@ -647,9 +622,14 @@ def _run_analyze_stage(
             f"Stage 3/4: analyze - already done ({existing_findings} findings), skipping",
         )
         push_progress(
-            f"[analyze] skipped ({existing_findings} findings already exist)",
-            stage="analyze",
-            status="running",
+            progress_event(
+                "pipeline.analyze",
+                "skipped",
+                stage="analyze",
+                reason="analysis_receipt_current",
+                summary="Rule analysis skipped; current findings are retained",
+                finding_count=existing_findings,
+            )
         )
         return existing_findings
 
@@ -668,9 +648,13 @@ def _run_analyze_stage(
     try:
         _show(status, f"Stage 3/4: analyze ({len(rules)} common rules)")
         push_progress(
-            f"[analyze] common rules={len(rules)}",
-            stage="analyze",
-            status="running",
+            progress_event(
+                "pipeline.analyze",
+                "running",
+                stage="analyze",
+                summary="Rule analysis started",
+                rule_count=len(rules),
+            )
         )
         old_rule_ids = {
             str(row[0])
@@ -740,13 +724,41 @@ def _run_analyze_stage(
                     run_context=run_context,
                     feed_timeline=False,
                 )
+                if findings:
+                    finding_ids = [item.finding_id for item in findings]
+                    evidence_ids = list(
+                        dict.fromkeys(
+                            str(row["evidence_id"])
+                            for finding in findings
+                            for row in finding.evidence
+                            if row.get("evidence_id")
+                        )
+                    )
+                    push_progress(
+                        progress_event(
+                            "finding.created",
+                            "completed",
+                            stage="analyze",
+                            summary=f"Detection rule produced {len(findings)} findings",
+                            refs={
+                                "finding_ids": finding_ids[:20],
+                                "evidence_ids": evidence_ids[:20],
+                            },
+                            rule_id=rule.id,
+                            finding_count=len(findings),
+                        )
+                    )
                 match_count += len(findings)
             if match_count:
                 push_progress(
-                    f"[analyze] rule: {rule.id} matches={match_count}",
-                    stage="analyze",
-                    status="running",
-                    log_level="info",
+                    progress_event(
+                        "rule.completed",
+                        "completed",
+                        stage="analyze",
+                        summary="Detection rule completed",
+                        rule_id=rule.id,
+                        finding_count=match_count,
+                    )
                 )
             total_findings += match_count
             result["execution"] = {"status": "completed", "matches": match_count}
@@ -769,6 +781,18 @@ def _run_analyze_stage(
                 "failure": {"type": type(exc).__name__, "message": str(exc)},
                 "rules": rule_runs,
             },
+        )
+        push_progress(
+            progress_event(
+                "pipeline.analyze",
+                failure_status,
+                severity="error",
+                reason="rule_analysis_exception",
+                stage="analyze",
+                summary="Rule analysis did not complete",
+                rule_id=current_rule_id,
+                error_type=type(exc).__name__,
+            )
         )
         raise
     _record_stage_receipt(
@@ -795,11 +819,14 @@ def _run_analyze_stage(
     )
     _show(status, f"Analyze complete: findings={total_findings}")
     push_progress(
-        f"[analyze] done - findings={total_findings}",
-        stage="analyze",
-        status="running",
-        summary=f"findings={total_findings}",
-        log_level="success",
+        progress_event(
+            "pipeline.analyze",
+            "completed",
+            severity="success",
+            stage="analyze",
+            summary="Rule analysis completed",
+            finding_count=total_findings,
+        )
     )
     return total_findings
 
@@ -810,7 +837,7 @@ def _run_investigate_stage(
     llm_base_url: str | None,
     model: str | None,
     template_root: Path | None,
-    push_progress: Callable[..., None],
+    push_progress: Callable[[dict[str, Any]], int],
     status: StatusCallback | None,
     *,
     max_iter: int,
@@ -830,15 +857,24 @@ def _run_investigate_stage(
             "Stage 4/4: LLM not configured - skipping investigate (set LLM_BASE_URL and LLM_MODEL in .env)",
         )
         push_progress(
-            "[investigate] skipped - LLM not configured",
-            stage="investigate",
-            status="running",
+            progress_event(
+                "investigation.skipped",
+                "skipped",
+                stage="investigate",
+                reason="llm_not_configured",
+                summary="Investigation skipped because no LLM is configured",
+            )
         )
         return
 
     _show(status, f"Stage 4/4: investigate with model={model}")
     push_progress(
-        f"[investigate] starting - model={model}", stage="investigate", status="running"
+        progress_event(
+            "investigation.started",
+            "running",
+            stage="investigate",
+            summary="Investigation started",
+        )
     )
     try:
         result = asyncio.run(
@@ -858,17 +894,21 @@ def _run_investigate_stage(
                 forensia_policy=forensia_policy,
                 report_spec=report_spec,
                 report_only=report_only,
-                progress_callback=_forward_progress(push_progress),
             )
         )
     except LLMServerUnavailableError as exc:
         # Producer-decided severity: a raised exception here is a processing
         # failure, not evidence content, so it is classified explicitly.
         push_progress(
-            f"[investigate] aborted - LLM server unavailable ({exc})",
-            stage="investigate",
-            status="running",
-            log_level="error",
+            progress_event(
+                "investigation.failed",
+                "failed",
+                severity="error",
+                reason="llm_server_unavailable",
+                stage="investigate",
+                summary="Investigation could not reach the configured LLM",
+                error_type=type(exc).__name__,
+            )
         )
         _show(status, f"investigation aborted: LLM server unavailable ({exc})")
         raise
@@ -877,51 +917,35 @@ def _run_investigate_stage(
         f"Investigation complete: session={result['session_id']} status={result['status']}",
     )
     push_progress(
-        f"[investigate] done - session={result['session_id']} status={result['status']}",
-        stage="investigate",
-        status=result["status"],
-        iteration=result["iteration"],
-        summary=result["summary"],
-        hypotheses=result.get("hypotheses", []),
-        report_sections=result.get("report_sections", {}),
-        log_level="success",
-    )
-
-
-def _forward_progress(
-    push_progress: Callable[..., None],
-) -> Callable[[dict[str, Any]], None]:
-    """Adapt the investigator's payload dict to progress_pusher updates."""
-
-    def forward(payload: dict[str, Any]) -> None:
-        push_progress(
-            payload.get("summary"),
-            stage=payload.get("stage", "investigate"),
-            status=payload.get("status", "running"),
-            iteration=payload.get("iteration", 0),
-            current_query=payload.get("current_query"),
-            summary=payload.get("summary"),
-            hypotheses=payload.get("hypotheses", []),
-            report_sections=payload.get("report_sections", {}),
+        progress_event(
+            f"investigation.{result['status']}",
+            result["status"],
+            severity="success" if result["status"] == "completed" else "info",
+            stage="investigate",
+            iteration=result["iteration"],
+            summary=result["summary"],
+            session_id=result["session_id"],
         )
-
-    return forward
+    )
 
 
 def _run_report_stage(
     case: Case,
     db: CaseDB,
-    push_progress: Callable[..., None],
+    push_progress: Callable[[dict[str, Any]], int],
     html_output: str | Path | None = None,
 ) -> Path:
     """Render the final written report."""
     _report_md, report_path = render_written_report(case, db, html_output=html_output)
     push_progress(
-        f"[report] written: {report_path}",
-        stage="completed",
-        status="completed",
-        summary=f"Report: {report_path}",
-        log_level="success",
+        progress_event(
+            "report.rendered",
+            "completed",
+            severity="success",
+            stage="report",
+            summary="Report rendered",
+            output_path=str(report_path),
+        )
     )
     return report_path
 
@@ -931,7 +955,7 @@ def _run_evidence_stages(
     db: CaseDB,
     input_dir: str | None,
     rerun: bool,
-    push_progress: Callable[..., None],
+    push_progress: Callable[[dict[str, Any]], int],
     status: StatusCallback | None,
 ) -> None:
     """(Re)build evidence tables: ingest from input_dir, or re-normalize from raw/.
@@ -1070,12 +1094,15 @@ def run_investigation(
             forensia_md,
             recorded_policy_exists=load_recorded_policy(db) is not None,
         )
-        clear_progress_events(db)
-        push_progress = progress_pusher(
-            db,
-            _make_initial_progress_state(model, llm_base_url),
+        push_progress = progress_pusher(db)
+        push_progress(
+            progress_event(
+                "case.ready",
+                "completed",
+                stage="init",
+                summary="Case ready for investigation",
+            )
         )
-        push_progress("Case ready", stage="init", summary=f"Case: {case.path}")
 
         template_root = (
             resolve_template_dir(case, template_dir)
@@ -1155,6 +1182,7 @@ def run_report(
 
     html_output = Path(output) if output is not None else None
     with CaseDB(case) as db:
+        push_progress = progress_pusher(db)
         ensure_report_output_paths(
             case,
             (
@@ -1192,7 +1220,5 @@ def run_report(
                 report_only=True,
             )
         markdown_path = case.reports_dir / "report.md"
-        html_path = _run_report_stage(
-            case, db, lambda *_args, **_kwargs: None, html_output=html_output
-        )
+        html_path = _run_report_stage(case, db, push_progress, html_output=html_output)
         return markdown_path, html_path

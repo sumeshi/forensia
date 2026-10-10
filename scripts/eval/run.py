@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only evaluation of current Case and Trace databases.
+"""Read-only evaluation of the current case database.
 
 Run ``python scripts/eval/run.py CASE`` or pass ``BASELINE AFTER`` to include
 numeric deltas for measurements recorded in both current-schema cases. Reports
@@ -67,30 +67,20 @@ def _tree_stats(case_dir: Path) -> dict[str, Any]:
 
 
 def _check_schema(conn: duckdb.DuckDBPyConnection) -> None:
-    versions = {
-        catalog: conn.execute(
-            f'SELECT version FROM "{catalog}".forensia_schema'
-        ).fetchone()
-        for catalog in ("case", "trace")
-    }
-    if any(row != (SCHEMA_VERSION,) for row in versions.values()):
+    version = conn.execute("SELECT version FROM forensia_schema").fetchone()
+    if version != (SCHEMA_VERSION,):
         raise ValueError(
-            f"Unsupported Case/Trace schema pair: {versions}; expected version {SCHEMA_VERSION}"
+            f"Unsupported case schema: {version}; expected version {SCHEMA_VERSION}"
         )
 
 
 @contextmanager
-def _read_only_case_trace(case_dir: Path) -> Iterator[duckdb.DuckDBPyConnection]:
-    """Open and validate the current Case/Trace pair without permitting writes."""
-    core_path = case_dir / "db" / "case.duckdb"
-    trace_path = case_dir / "db" / "trace.duckdb"
-    if not core_path.is_file() or not trace_path.is_file():
-        raise FileNotFoundError(
-            f"Current Case/Trace database pair not found under {case_dir / 'db'}"
-        )
-    with duckdb.connect(str(core_path), read_only=True) as conn:
-        trace_sql_path = trace_path.as_posix().replace("'", "''")
-        conn.execute(f"ATTACH '{trace_sql_path}' AS trace (READ_ONLY)")
+def _read_only_case(case_dir: Path) -> Iterator[duckdb.DuckDBPyConnection]:
+    """Open and validate the unified case database without permitting writes."""
+    database_path = case_dir / "db" / "case.duckdb"
+    if not database_path.is_file():
+        raise FileNotFoundError(f"Case database not found under {case_dir / 'db'}")
+    with duckdb.connect(str(database_path), read_only=True) as conn:
         _check_schema(conn)
         yield conn
 
@@ -436,10 +426,10 @@ def _cycle_rows(conn: duckdb.DuckDBPyConnection) -> list[dict[str, Any]]:
 
 
 def extract_cycles(case_dir: Path) -> dict[str, Any]:
-    """Read only per-cycle Trace measurements from a current Case/Trace pair."""
+    """Read only per-cycle Trace measurements from the current case database."""
     case_dir = case_dir.resolve()
     try:
-        with _read_only_case_trace(case_dir) as conn:
+        with _read_only_case(case_dir) as conn:
             return {"cycles": _cycle_rows(conn), "reader_status": "complete"}
     except (
         duckdb.Error,
@@ -617,7 +607,7 @@ def _benign_link_rate(conn: duckdb.DuckDBPyConnection) -> dict[str, Any]:
 
 
 def extract_case(case_dir: Path) -> dict[str, Any]:
-    """Extract actual measurements from the current, read-only Case/Trace pair."""
+    """Extract actual measurements from the current read-only case database."""
     case_dir = case_dir.resolve()
     result: dict[str, Any] = {"case_dir": str(case_dir), "cycles": []}
     result["storage"] = (
@@ -628,17 +618,16 @@ def extract_case(case_dir: Path) -> dict[str, Any]:
             "case_bytes": _unknown("Case directory not found"),
         }
     )
-    core_path = case_dir / "db" / "case.duckdb"
-    trace_path = case_dir / "db" / "trace.duckdb"
-    if not core_path.is_file() or not trace_path.is_file():
+    database_path = case_dir / "db" / "case.duckdb"
+    if not database_path.is_file():
         result.update(
             reader_status="incomplete",
-            reason=f"Current Case/Trace database pair not found under {case_dir / 'db'}",
+            reason=f"Case database not found under {case_dir / 'db'}",
         )
         return result
 
     try:
-        with _read_only_case_trace(case_dir) as conn:
+        with _read_only_case(case_dir) as conn:
             result["case_counts"] = {
                 "findings": _measure(
                     int(conn.execute("SELECT COUNT(*) FROM findings").fetchone()[0])

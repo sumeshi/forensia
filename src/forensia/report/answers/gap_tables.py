@@ -106,7 +106,7 @@ def _hypothesis_rows(
                l.verdict AS latest_verdict,
                l.body AS latest_reasoning
         FROM hypotheses h
-        LEFT JOIN hypothesis_reasoning r ON r.hypothesis_id = h.hypothesis_id
+        LEFT JOIN trace.hypothesis_reasoning r ON r.hypothesis_id = h.hypothesis_id
         LEFT JOIN latest l ON l.hypothesis_id = h.hypothesis_id AND l.rn = 1
         {where}
         GROUP BY h.hypothesis_id, h.status, h.verdict, h.description, h.summary, l.verdict, l.body

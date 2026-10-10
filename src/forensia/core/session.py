@@ -7,49 +7,6 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from forensia.core.verdicts import assert_valid_verdict
 from forensia.core.verification import VerificationSpec
 
-ENTITY_TYPE_ALIASES = {
-    "host": "host",
-    "hostname": "host",
-    "computer": "host",
-    "user": "user",
-    "username": "user",
-    "account": "user",
-    "machine_account": "machine_account",
-    "computer_account": "machine_account",
-    "group": "group",
-    "security_group": "group",
-    "ip": "ip",
-    "src_ip": "ip",
-    "dst_ip": "ip",
-    "source_ip": "ip",
-    "destination_ip": "ip",
-    "ip_address": "ip",
-    "process": "process",
-    "new_process": "process",
-    "service": "service",
-    "service_name": "service",
-    "file": "file",
-    "path": "file",
-    "registry": "registry",
-    "unknown": "unknown",
-}
-
-ENTITY_ROLES = {
-    "actor_user",
-    "target_user",
-    "target_group",
-    "source_ip",
-    "source_host",
-    "source_account",
-    "destination_host",
-    "service_name",
-    "service_path",
-    "process_name",
-    "file_path",
-    "registry_key",
-    "unknown",
-}
-
 
 class LLMBudgetExceededError(RuntimeError):
     """Investigation stopped before starting a logical LLM call at its cap."""

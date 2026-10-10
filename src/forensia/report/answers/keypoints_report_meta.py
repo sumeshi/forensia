@@ -72,7 +72,7 @@ def hypothesis_latest_reasoning_cte(exclude_error_phase: bool = True) -> str:
                 SELECT *, ROW_NUMBER() OVER (
                     PARTITION BY hypothesis_id ORDER BY created_at DESC, entry_id DESC
                 ) AS rn
-                FROM hypothesis_reasoning{filter_sql}
+                FROM trace.hypothesis_reasoning{filter_sql}
             )
 """
 
@@ -177,7 +177,7 @@ REPORT_META_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
             db,
             """
             SELECT verdict, report_text
-            FROM ai_reviews
+            FROM trace.ai_reviews
             ORDER BY created_at DESC
             LIMIT 10
             """,

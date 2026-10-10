@@ -1,3 +1,1 @@
-"""Investigation loop: session driver, per-cycle plan->query->check, planner,
-hypothesis progress tracking, and memory synchronization.
-"""
+"""Investigation session driver, query planning, and hypothesis progress."""

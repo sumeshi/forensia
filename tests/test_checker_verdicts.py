@@ -19,7 +19,7 @@ def _llm_base_url() -> str:
 
 
 class CheckerVerdictTests(unittest.TestCase):
-    """Checker phased verdicts, demotion rules, and memory-update handling."""
+    """Checker verdicts, demotion rules, and follow-up hypotheses."""
 
     def tearDown(self) -> None:
         reload_settings()
@@ -74,16 +74,7 @@ class CheckerVerdictTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
-            responses = [
-                {"verdict": "refuted", "rationale": "No evidence found"},
-                {
-                    "memory_updates": {
-                        "refuted_hypotheses": [
-                            {"hypothesis_id": "H1", "reason": "No evidence"}
-                        ]
-                    }
-                },
-            ]
+            responses = [{"verdict": "refuted", "rationale": "No evidence found"}]
             with (
                 CaseDB(case) as db,
                 patch(
@@ -138,7 +129,6 @@ class CheckerVerdictTests(unittest.TestCase):
                         }
                     ]
                 },
-                {"memory_updates": {}},
             ]
             with (
                 CaseDB(case) as db,
@@ -174,191 +164,32 @@ class CheckerVerdictTests(unittest.TestCase):
 
         self.assertEqual("inconclusive", captured["result"].verdict)
 
-    def test_checker_phased_verdict_inconclusive_memory_updates(self) -> None:
+    def test_follow_up_hypotheses_come_from_verdict_call(self) -> None:
         captured = {}
 
         def _capture(*args, **kwargs):
             captured["result"] = kwargs["check_result"]
             return (0, False)
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(tmpdir)
-            responses = [
-                {"verdict": "inconclusive", "rationale": "Missing src_ip"},
+        response = {
+            "verdict": "newlead",
+            "rationale": "The result points to a separate execution path.",
+            "new_hypotheses": [
                 {
-                    "memory_updates": {
-                        "facts": [{"text": "fact", "evidence_ids": ["ev-1"]}],
-                        "resolved_gaps": [{"text": "gap", "evidence_ids": ["ev-2"]}],
-                        "overview": ["story"],
-                    }
-                },
-            ]
-            with (
-                CaseDB(case) as db,
-                patch(
-                    "forensia.llm.json_response.request_llm_json",
-                    side_effect=responses,
-                ),
-                patch(
-                    "forensia.investigation.verification.checker.apply_check_result",
-                    side_effect=_capture,
-                ),
-            ):
-                check_query_result(
-                    case=case,
-                    db=db,
-                    session_id="S-1",
-                    planned_query=PlannedQuery(
-                        query_id="Q1",
-                        hypothesis_id="H1",
-                        purpose="purpose",
-                        sql="SELECT 1",
-                    ),
-                    hypothesis=Hypothesis(id="H1", description="desc"),
-                    finding_candidates=[],
-                    result_summary={
-                        "row_count": 1,
-                        "sample_rows": [],
-                        "evidence_ids": ["ev-1"],
-                    },
-                    base_url=_llm_base_url(),
-                    model="test-model",
-                )
-
-        self.assertEqual("inconclusive", captured["result"].verdict)
-        self.assertEqual(
-            [{"text": "fact", "evidence_ids": ["ev-1"]}],
-            captured["result"].memory_updates.get("facts"),
-        )
-
-    def test_checker_phased_drops_durable_memory_updates_when_evidence_ids_empty(
-        self,
-    ) -> None:
-        captured = {}
-
-        def _capture(*args, **kwargs):
-            captured["result"] = kwargs["check_result"]
-            return (0, False)
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(tmpdir)
-            responses = [
-                {"verdict": "inconclusive", "rationale": "Insufficient data"},
-                {
-                    "memory_updates": {
-                        "facts": [{"text": "fact", "evidence_ids": ["ev-x"]}],
-                        "timeline": [
-                            {
-                                "timestamp": "2026-05-24T01:02:03Z",
-                                "description": "event",
-                                "evidence_ids": ["ev-y"],
-                            }
-                        ],
-                        "resolved_gaps": [{"text": "gap", "evidence_ids": []}],
-                        "tasks": [
-                            {"text": "still investigate", "kind": "internal_db_check"}
-                        ],
-                        "overview": ["keep storyline"],
-                    }
-                },
-            ]
-            with (
-                CaseDB(case) as db,
-                patch(
-                    "forensia.llm.json_response.request_llm_json",
-                    side_effect=responses,
-                ),
-                patch(
-                    "forensia.investigation.verification.checker.apply_check_result",
-                    side_effect=_capture,
-                ),
-            ):
-                check_query_result(
-                    case=case,
-                    db=db,
-                    session_id="S-1",
-                    planned_query=PlannedQuery(
-                        query_id="Q1",
-                        hypothesis_id="H1",
-                        purpose="purpose",
-                        sql="SELECT 1",
-                    ),
-                    hypothesis=Hypothesis(id="H1", description="desc"),
-                    finding_candidates=[],
-                    result_summary={
-                        "row_count": 1,
-                        "sample_rows": [],
-                        "evidence_ids": ["ev-1"],
-                    },
-                    base_url=_llm_base_url(),
-                    model="test-model",
-                )
-
-        self.assertEqual(
-            {
-                "facts": [],
-                "timeline": [],
-                "resolved_gaps": [],
-                "tasks": [{"text": "still investigate", "kind": "internal_db_check"}],
-                "overview": ["keep storyline"],
-            },
-            captured["result"].memory_updates,
-        )
-
-    def test_checker_phased_normalizes_entity_type_and_drops_invalid_entity_updates(
-        self,
-    ) -> None:
-        captured = {}
-
-        def _capture(*args, **kwargs):
-            captured["result"] = kwargs["check_result"]
-            return (0, False)
-
+                    "description": "Trace the execution path",
+                    "confirm_when": {"co_observed_event_ids": [4688]},
+                    "refute_when": {"event_absent": True},
+                }
+            ],
+        }
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             with (
                 CaseDB(case) as db,
                 patch(
                     "forensia.llm.json_response.request_llm_json",
-                    return_value={
-                        "query_id": "Q1",
-                        "verdict": "inconclusive",
-                        "memory_updates": {
-                            "entities": [
-                                {
-                                    "entity_type": "src_ip",
-                                    "name": "10.0.0.5",
-                                    "role": "source_ip",
-                                    "notes": "keep as ip",
-                                },
-                                {
-                                    "entity_type": "username",
-                                    "name": "alice",
-                                    "role": "actor_user",
-                                    "notes": "keep as user",
-                                },
-                                {
-                                    "entity_type": "machine_account",
-                                    "name": "INFORMANT-PC$",
-                                    "role": "source_account",
-                                    "notes": "keep as machine account",
-                                },
-                                {
-                                    "entity_type": "service_name",
-                                    "name": "-",
-                                    "role": "service_name",
-                                    "notes": "drop placeholder",
-                                },
-                                {
-                                    "entity_type": "device_group",
-                                    "name": "ops",
-                                    "notes": "drop",
-                                },
-                            ]
-                        },
-                        "report_text": "text",
-                    },
-                ),
+                    return_value=response,
+                ) as request,
                 patch(
                     "forensia.investigation.verification.checker.apply_check_result",
                     side_effect=_capture,
@@ -385,32 +216,21 @@ class CheckerVerdictTests(unittest.TestCase):
                     model="test-model",
                 )
 
+        self.assertEqual(1, request.call_count)
+        self.assertEqual("newlead", captured["result"].verdict)
         self.assertEqual(
-            {
-                "entities": [
-                    {
-                        "entity_type": "ip",
-                        "name": "10.0.0.5",
-                        "role": "source_ip",
-                        "notes": "keep as ip",
-                    },
-                    {
-                        "entity_type": "user",
-                        "name": "alice",
-                        "role": "actor_user",
-                        "notes": "keep as user",
-                    },
-                    {
-                        "entity_type": "machine_account",
-                        "name": "INFORMANT-PC$",
-                        "role": "source_account",
-                        "notes": "keep as machine account",
-                    },
-                ]
-            },
-            captured["result"].memory_updates,
+            ["Trace the execution path"],
+            [
+                hypothesis.description
+                for hypothesis in captured["result"].new_hypotheses
+            ],
         )
-
-
-if __name__ == "__main__":
-    unittest.main()
+        followup = captured["result"].new_hypotheses[0]
+        self.assertEqual("candidate-01", followup.id)
+        self.assertEqual(
+            [4688],
+            followup.verification_spec.support_conditions["co_observed_event_ids"],
+        )
+        self.assertEqual(
+            {"event_absent": True}, followup.verification_spec.refute_conditions
+        )

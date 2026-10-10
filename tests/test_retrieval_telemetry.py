@@ -24,7 +24,7 @@ from forensia.investigation.planner import _materialize_planned_query
 from forensia.investigation.verification.settlement import decide_settlement
 
 
-def test_retrieval_event_is_written_to_attached_trace_db(tmp_path) -> None:
+def test_retrieval_event_is_written_to_trace_schema(tmp_path) -> None:
     case = Case.init(tmp_path)
     with CaseDB(case) as db:
         record_retrieval_event(
@@ -32,12 +32,12 @@ def test_retrieval_event_is_written_to_attached_trace_db(tmp_path) -> None:
             session_id="S-1",
             scope_kind="hypothesis",
             scope_id="H-A",
-            phase="read_more",
-            source_kind="memory",
+            phase="hypothesis-plan",
+            source_kind="org_knowledge",
             query_terms=["event", "1102"],
             candidate_count=2,
-            selected_refs=["entities/host/A.md"],
-            rejected_refs=["scratch/H-B/tasks.md"],
+            selected_refs=["registry.md#overview"],
+            rejected_refs=[],
             selected_chars=321,
             budget=1024,
         )
@@ -45,15 +45,15 @@ def test_retrieval_event_is_written_to_attached_trace_db(tmp_path) -> None:
             """
             SELECT scope_id, query_terms, selected_refs, rejected_refs,
                    selected_chars, budget
-            FROM retrieval_events
+            FROM trace.retrieval_events
             """
         ).fetchone()
 
     assert row is not None
     assert row[0] == "H-A"
     assert json.loads(row[1]) == ["event", "1102"]
-    assert json.loads(row[2]) == ["entities/host/A.md"]
-    assert json.loads(row[3]) == ["scratch/H-B/tasks.md"]
+    assert json.loads(row[2]) == ["registry.md#overview"]
+    assert json.loads(row[3]) == []
     assert row[4:] == (321, 1024)
 
 
@@ -119,30 +119,6 @@ def test_empty_sql_receipt_is_not_negative_evidence_or_support(tmp_path) -> None
         ToolReceipt.model_validate(
             {**receipt.model_dump(), "result_refs": {"supporting": ["e-1"]}}
         )
-
-
-def test_memory_retrieval_evaluation_distinguishes_empty_from_rejected_scope() -> None:
-    memory_receipt = ToolReceipt(
-        receipt_id="memory-1",
-        call_id="memory-call-1",
-        phase="read_more",
-        tool_id="memory.read_more",
-        arguments={"paths": ["entities/host-A.md"]},
-        returned_count=0,
-        status="empty",
-    )
-    assert (
-        evaluate_retrieval(
-            memory_receipt, required_fields=["paths"], scope_status="valid"
-        ).outcome
-        == "needs-pivot"
-    )
-    assert (
-        evaluate_retrieval(
-            memory_receipt, required_fields=["paths"], scope_status="rejected"
-        ).outcome
-        == "invalid"
-    )
 
 
 def test_fallback_receipt_keeps_pre_limit_count_and_truncation() -> None:
@@ -226,6 +202,8 @@ def test_fallback_receipt_keeps_pre_limit_count_and_truncation() -> None:
 def test_runner_empty_sql_reaches_only_observable_refutation(
     tmp_path, state, sql, expected
 ):
+    from forensia.investigation.investigation_session import Ctx
+
     case = Case.init(tmp_path)
     with CaseDB(case) as db:
         # Other artifact families cannot veto or prove the EVTX lookup.
@@ -252,6 +230,7 @@ def test_runner_empty_sql_reaches_only_observable_refutation(
         )
         rs = SimpleNamespace(
             hypothesis=hypothesis,
+            ctx=Ctx(),
             state=SessionState(session_id="S-test"),
             db=db,
             session_id="S-test",
@@ -281,7 +260,7 @@ def test_runner_empty_sql_reaches_only_observable_refutation(
             assert rs.retrieval_evaluation.coverage_status == "available"
             assert si.absence_scope == "observable"
         payload = db.execute(
-            "SELECT output_json FROM investigation_steps WHERE phase = 'do'"
+            "SELECT output_json FROM trace.investigation_steps WHERE phase = 'do'"
         ).fetchone()[0]
         assert (
             json.loads(payload)["retrieval_evaluation"]

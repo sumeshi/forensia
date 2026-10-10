@@ -556,9 +556,14 @@ async def outage_wait_until_recovered(
         if progress_callback:
             progress_callback(
                 progress_event(
-                    "waiting_for_llm",
+                    "llm.outage_wait",
                     "running",
+                    severity="warning",
+                    reason="provider_unavailable",
+                    stage="waiting_for_llm",
                     summary=f"LLM server unavailable (waited {waited}s of {budget_s}s budget)",
+                    waited_seconds=waited,
+                    budget_seconds=budget_s,
                 )
             )
         try:

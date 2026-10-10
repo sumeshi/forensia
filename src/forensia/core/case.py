@@ -169,10 +169,6 @@ class Case:
         return self.path / "reports"
 
     @property
-    def memory_dir(self) -> Path:
-        return self.path / "memory"
-
-    @property
     def report_template_dir(self) -> Path:
         return self.path / "report_template"
 
@@ -189,10 +185,6 @@ class Case:
         return self.db_dir / "case.duckdb"
 
     @property
-    def trace_database_path(self) -> Path:
-        return self.db_dir / "trace.duckdb"
-
-    @property
     def timezone_info(self) -> str:
         """Return formatted timezone string for display."""
         tz = self.source_timezone or "UTC"
@@ -200,12 +192,10 @@ class Case:
 
     def clear_runtime_outputs(
         self,
-        preserve_memory: bool = True,
         drop_database: bool = True,
         preserve_raw: bool = False,
     ) -> None:
-        """Remove runtime outputs (raw, reports, DB, memory)
-        while optionally preserving memory, raw evidence, and/or the database.
+        """Remove runtime outputs, optionally preserving raw evidence and the DB.
 
         ``preserve_raw=True`` keeps the ingested JSONL under ``raw/``. This is the
         right choice for ``--rerun`` (re-run AI investigation without losing the
@@ -221,14 +211,8 @@ class Case:
             directory.mkdir(parents=True, exist_ok=True)
 
         if drop_database:
-            for database_path in (self.database_path, self.trace_database_path):
-                if database_path.exists():
-                    database_path.unlink()
-
-        if not preserve_memory:
-            if self.memory_dir.exists():
-                shutil.rmtree(self.memory_dir)
-            self.memory_dir.mkdir(parents=True, exist_ok=True)
+            if self.database_path.exists():
+                self.database_path.unlink()
 
     @classmethod
     def init(cls, path: str | Path, source_timezone: str = "UTC") -> Case:
@@ -239,7 +223,6 @@ class Case:
             case.raw_dir,
             case.db_dir,
             case.reports_dir,
-            case.memory_dir,
             case.report_template_dir,
         ):
             directory.mkdir(parents=True, exist_ok=True)
@@ -253,7 +236,6 @@ class Case:
                     "raw": str(case.raw_dir.relative_to(case.path)),
                     "db": str(case.db_dir.relative_to(case.path)),
                     "reports": str(case.reports_dir.relative_to(case.path)),
-                    "memory": str(case.memory_dir.relative_to(case.path)),
                     "report_template": str(
                         case.report_template_dir.relative_to(case.path)
                     ),

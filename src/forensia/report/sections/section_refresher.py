@@ -11,7 +11,6 @@ from typing import Any
 
 from forensia.core.case import Case
 from forensia.core.log import log as _log
-from forensia.core.memory import MemoryManager
 from forensia.core.progress_event import progress_event
 from forensia.core.session import LLMBudgetExceededError
 from forensia.db.database import CaseDB
@@ -31,7 +30,6 @@ from forensia.report.sections.section_assembly import (
     body_starts_with_heading,
     prepare_section_request,
 )
-from forensia.report.sections.section_block_context import memory_for_section
 from forensia.report.sections.section_exec import SectionBlockResult
 from forensia.report.sections.section_finalize import finalize_section
 from forensia.report.sections.section_quality import _verify_block_output, collect_gaps
@@ -126,18 +124,22 @@ def _sort_section_requests(requests: list[dict[str, Any]]) -> list[dict[str, Any
 def _emit_section_failure(
     progress_callback: Callable[[dict[str, Any]], None] | None,
     iteration: int,
+    session_id: str,
+    section_key: str,
     exc: Exception,
-    db: CaseDB,
-    focus_sections: list[str] | None,
 ) -> None:
     if progress_callback:
         progress_callback(
             progress_event(
-                "investigate/report-section-done",
-                "running",
+                "report.section",
+                "failed",
+                severity="error",
+                reason=f"exception:{type(exc).__name__}",
+                refs={"section_key": section_key},
+                stage="render",
                 iteration=iteration,
-                summary=f"[report] section failed: {exc}",
-                report_sections=build_report_status(db, focus_sections=focus_sections),
+                session_id=session_id,
+                summary="report section rendering failed",
             )
         )
 
@@ -208,7 +210,6 @@ class _SectionRenderCtx:
 
     request: dict[str, Any]
     db: CaseDB
-    memory: MemoryManager
     base_url: str
     model: str
     max_queries_per_section: int
@@ -254,7 +255,6 @@ async def _render_single_block(
         report_brief=request.get("report_brief") or {},
         base_url=ctx.base_url,
         model=ctx.model,
-        memory=memory_for_section(ctx.memory, structured_mode=is_structured_mode),
         max_queries_per_section=ctx.max_queries_per_section,
         evidence_keypoints=list(block.get("evidence_keypoints") or []),
         question_mode=is_structured_mode,
@@ -297,11 +297,11 @@ async def render_section_blocks(
     request: dict[str, Any],
     case: Case,
     db: CaseDB,
-    memory: MemoryManager,
     base_url: str,
     model: str,
     max_queries_per_section: int,
     iteration: int,
+    session_id: str,
     progress_callback: Callable[[dict[str, Any]], None] | None,
     focus_sections: list[str] | None,
 ) -> tuple[dict[str, Any], str]:
@@ -314,16 +314,13 @@ async def render_section_blocks(
     if progress_callback:
         progress_callback(
             progress_event(
-                "investigate/report-section",
+                "report.section",
                 "running",
+                stage="render",
                 iteration=iteration,
+                session_id=session_id,
                 summary=f"[report] {section_key} writing...",
-                current_report_section=section_key,
-                report_sections=build_report_status(
-                    db,
-                    current_section=section_key,
-                    focus_sections=focus_sections,
-                ),
+                refs={"section_key": section_key},
             )
         )
 
@@ -331,7 +328,6 @@ async def render_section_blocks(
     ctx = _SectionRenderCtx(
         request=request,
         db=db,
-        memory=memory,
         base_url=base_url,
         model=model,
         max_queries_per_section=max_queries_per_section,
@@ -389,14 +385,16 @@ def _persist_section_result(
         extra_gaps=request.get("block_gaps") or [],
     )
     if progress_callback:
-        status = build_report_status(db, focus_sections=focus_sections)
         progress_callback(
             progress_event(
-                "investigate/report-section-done",
-                "running",
+                "report.section",
+                "completed",
+                severity="success",
+                stage="render",
                 iteration=iteration,
+                session_id=session_id,
                 summary=f"[report] {section_key} done",
-                report_sections=status,
+                refs={"section_key": section_key},
             )
         )
     return body
@@ -431,9 +429,6 @@ async def async_refresh_report_sections(
     prior_filled = load_report_sections_map(db)
     ensure_universal_question_probes(case, db)
     report_brief = write_report_brief(case, db)
-    memory = MemoryManager(
-        case,
-    )
     requests = collect_section_requests(
         case, db, sections, prior_filled, report_brief, force_all=force_all
     )
@@ -445,11 +440,11 @@ async def async_refresh_report_sections(
                 request,
                 case,
                 db,
-                memory,
                 base_url,
                 model,
                 max_queries_per_section,
                 iteration,
+                session_id,
                 progress_callback,
                 focus_sections,
             )
@@ -460,7 +455,13 @@ async def async_refresh_report_sections(
             # the caller's wait-for-recovery logic can pause and retry.
             raise
         except Exception as exc:
-            _emit_section_failure(progress_callback, iteration, exc, db, focus_sections)
+            _emit_section_failure(
+                progress_callback,
+                iteration,
+                session_id,
+                str(request.get("section_key") or "unknown"),
+                exc,
+            )
             continue
         body = _persist_section_result(
             case,
@@ -477,6 +478,7 @@ async def async_refresh_report_sections(
     return _build_refresh_result(
         filled_sections=filled_sections,
         db=db,
+        session_id=session_id,
         focus_sections=focus_sections,
         iteration=iteration,
         updated=len(filled_sections),
@@ -489,6 +491,7 @@ def _build_refresh_result(
     *,
     filled_sections: dict[str, str],
     db: CaseDB,
+    session_id: str,
     focus_sections: list[str] | None,
     iteration: int,
     updated: int,
@@ -505,11 +508,13 @@ def _build_refresh_result(
     if progress_callback:
         progress_callback(
             progress_event(
-                "investigate/report-cycle-done",
-                "running",
+                "report.cycle",
+                "completed",
+                severity="success",
+                stage="render",
                 iteration=iteration,
+                session_id=session_id,
                 summary=summary.format(updated=updated, gap_count=len(all_gaps)),
-                report_sections=report_status,
             )
         )
     return {

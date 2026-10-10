@@ -80,11 +80,6 @@ class SectionFinalizeTests(unittest.TestCase):
                 "# Overview\n",
                 encoding="utf-8",
             )
-            case.memory_dir.joinpath("keypoints").mkdir(parents=True, exist_ok=True)
-            case.memory_dir.joinpath("keypoints", "KP-0001.md").write_text(
-                "# KP-0001\n\n- finding_id: F-1\n- title: Suspicious logon\n",
-                encoding="utf-8",
-            )
             with CaseDB(case) as db:
                 db.execute(
                     """
@@ -125,9 +120,7 @@ class SectionFinalizeTests(unittest.TestCase):
                 # Evidence resolution moved into section_agent; verify the default
                 # keypoint selection + resolver directly.
                 default_keypoints = default_keypoints_for_section("1_overview")
-                resolved = resolve_evidence_results(
-                    case, db, keypoints=default_keypoints
-                )
+                resolved = resolve_evidence_results(db, keypoints=default_keypoints)
 
             self.assertEqual("1_overview", request["section_key"])
             result_names = {item["keypoint"] for item in resolved}
@@ -164,9 +157,7 @@ class SectionFinalizeTests(unittest.TestCase):
                     report_brief={},
                 )
                 default_keypoints = default_keypoints_for_section("3_technical")
-                resolved = resolve_evidence_results(
-                    case, db, keypoints=default_keypoints
-                )
+                resolved = resolve_evidence_results(db, keypoints=default_keypoints)
 
             results = {item["keypoint"]: item for item in resolved}
             self.assertIn("host_execution_activity", results)

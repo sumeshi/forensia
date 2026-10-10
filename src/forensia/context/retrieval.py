@@ -143,14 +143,6 @@ def evaluate_retrieval(
         outcome = "unavailable"
     elif receipt.status == "partial":
         outcome = "partial"
-    elif (
-        receipt.tool_id == "memory.read_more"
-        and receipt.status == "empty"
-        and scope_status == "valid"
-    ):
-        # A validly scoped memory read that produced no context needs a
-        # different path; it is not evidence of absence.
-        outcome = "needs-pivot"
     elif receipt.returned_count == 0 and coverage_status != "available":
         outcome = "partial"
     else:
@@ -196,7 +188,7 @@ def record_retrieval_event(
     """Record what retrieval exposed; never feed observations into ranking."""
     db.execute(
         """
-        INSERT INTO retrieval_events (
+        INSERT INTO trace.retrieval_events (
             event_id, session_id, scope_kind, scope_id, phase, source_kind,
             query_terms, candidate_count, selected_refs, rejected_refs,
             selected_chars, budget, created_at

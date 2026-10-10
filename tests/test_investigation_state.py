@@ -8,7 +8,6 @@ import unittest
 from unittest import mock
 
 from forensia.core.case import Case
-from forensia.core.memory import MemoryManager
 from forensia.core.session import SessionState
 from forensia.db.database import CaseDB
 from forensia.db.investigation_state import (
@@ -19,7 +18,6 @@ from forensia.db.investigation_state import (
 )
 from forensia.investigation.report_gap import (
     inject_gap_hypotheses,
-    project_investigation_tasks,
 )
 
 
@@ -46,7 +44,7 @@ class InvestigationStateTests(unittest.TestCase):
                 self.assertEqual(state["status"], "active")
                 self.assertEqual(state["stop_reason_code"], "")
 
-    def test_session_persists_neutral_default_objective_and_projects_it_to_memory(
+    def test_session_persists_neutral_default_objective_in_case_db(
         self,
     ) -> None:
         from forensia.investigation import investigation_session
@@ -56,12 +54,11 @@ class InvestigationStateTests(unittest.TestCase):
             with (
                 CaseDB(case) as db,
                 mock.patch.object(investigation_session, "_seed_rule_hypotheses"),
-                mock.patch.object(investigation_session, "ctx_refresh_caches"),
                 mock.patch.object(
                     investigation_session, "build_report_status", return_value={}
                 ),
             ):
-                _state, _ctx, memory, _session_id = investigation_session._init_session(
+                _state, _ctx, _session_id = investigation_session._init_session(
                     case,
                     db,
                     case.report_template_dir,
@@ -71,9 +68,6 @@ class InvestigationStateTests(unittest.TestCase):
 
             objective = state["objective"]
             self.assertTrue(objective)
-            self.assertIn(
-                f"## Investigation Objective\n- {objective}\n", memory.load_overview()
-            )
 
     def test_candidate_projection_aggregates_before_limit_and_keeps_provenance(
         self,
@@ -303,10 +297,9 @@ class InvestigationStateTests(unittest.TestCase):
 class ReportGapsTests(unittest.TestCase):
     """Test report_gaps table."""
 
-    def test_prose_absence_keeps_gap_task_open_and_projected(self) -> None:
+    def test_prose_absence_keeps_gap_and_task_open_in_case_db(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
-            memory = MemoryManager(case)
             state = SessionState(session_id="S-1")
             with CaseDB(case) as db:
                 inject_gap_hypotheses(
@@ -314,25 +307,18 @@ class ReportGapsTests(unittest.TestCase):
                     state=state,
                     gaps=["External reputation lookup for 203.0.113.5"],
                     session_id="S-1",
-                    memory=memory,
                 )
                 self.assertEqual(
                     db.execute("SELECT status FROM investigation_tasks").fetchone()[0],
                     "open",
                 )
-                self.assertIn(
-                    "External reputation lookup",
-                    memory.tasks_memory_path.read_text(encoding="utf-8"),
-                )
                 # The request prose vanishing is a report-side edit, not a
-                # resolution: the Gap and its Task stay open and the Memory
-                # projection keeps listing the work (T05, GOAL 9.4).
+                # resolution: the Gap and its Task stay open in Case State.
                 inject_gap_hypotheses(
                     db=db,
                     state=state,
                     gaps=[],
                     session_id="S-1",
-                    memory=memory,
                 )
                 gap_row = db.execute(
                     "SELECT status, coverage_reason FROM report_gaps"
@@ -346,18 +332,8 @@ class ReportGapsTests(unittest.TestCase):
                     db.execute("SELECT reason FROM investigation_tasks").fetchone()[0],
                     "report_request_absent",
                 )
-                self.assertIn(
-                    "External reputation lookup",
-                    memory.tasks_memory_path.read_text(encoding="utf-8"),
-                )
-                # A real conclusion owner closing the Task removes it from the
-                # Memory projection.
+                # A real conclusion owner can close the Task.
                 db.execute(
                     "UPDATE investigation_tasks SET status = 'resolved', "
                     "updated_at = now()"
-                )
-                project_investigation_tasks(db, memory)
-                self.assertIn(
-                    "## Investigation Tasks\n- none",
-                    memory.tasks_memory_path.read_text(encoding="utf-8"),
                 )

@@ -459,7 +459,7 @@ def _execute_keypoint(
     cached = _load_cached_result(db, source_query)
     if cached is not None:
         return source_query, cached
-    resolved = _resolve_evidence_results(case, db, keypoints=[keypoint])
+    resolved = _resolve_evidence_results(db, keypoints=[keypoint])
     result = (
         resolved[0]
         if resolved

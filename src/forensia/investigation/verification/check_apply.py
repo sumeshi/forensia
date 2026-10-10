@@ -34,11 +34,11 @@ def _upsert_ai_review(
     raw_response: dict[str, Any],
 ) -> None:
     """Replace the ai_review record for a finding with a new one (delete + insert)."""
-    db.execute("DELETE FROM ai_reviews WHERE finding_id = ?", (finding_id,))
+    db.execute("DELETE FROM trace.ai_reviews WHERE finding_id = ?", (finding_id,))
     review_id = f"review-{finding_id}"
     db.execute(
         """
-        INSERT INTO ai_reviews (
+        INSERT INTO trace.ai_reviews (
             review_id, finding_id, verdict, report_text, missing_checks,
             confidence_adjustment, notes, raw_response, created_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)

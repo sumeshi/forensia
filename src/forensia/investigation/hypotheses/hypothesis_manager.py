@@ -60,6 +60,29 @@ def merge_active_hypotheses(
     *,
     alias_map_out: dict[str, str] | None = None,
 ) -> list[Hypothesis]:
+    """Merge hypotheses atomically for callers without an open transaction."""
+    with db.transaction():
+        return _merge_active_hypotheses_in_transaction(
+            db,
+            current,
+            updates,
+            resolved,
+            session_id,
+            origin,
+            alias_map_out=alias_map_out,
+        )
+
+
+def _merge_active_hypotheses_in_transaction(
+    db: CaseDB,
+    current: list[Hypothesis],
+    updates: list[Hypothesis],
+    resolved: list[Hypothesis],
+    session_id: str,
+    origin: str,
+    *,
+    alias_map_out: dict[str, str] | None = None,
+) -> list[Hypothesis]:
     """Merge incoming hypotheses into the active set with dedup, aliasing, and an active cap."""
     resolved_ids = {item.id for item in resolved}
     by_id = {item.id: item for item in current if item.id not in resolved_ids}
@@ -108,10 +131,9 @@ def merge_active_hypotheses(
             if merged.verification_spec != resolved_existing.verification_spec:
                 # Keep the claim identity and old EvidenceLinks, but reopen
                 # the hypothesis: its prior verdict did not assess this Spec.
-                with db.transaction():
-                    _reopen_hypothesis_after_spec_change(
-                        db, merged, origin=origin, session_id=session_id
-                    )
+                _reopen_hypothesis_after_spec_change(
+                    db, merged, origin=origin, session_id=session_id
+                )
                 resolved[:] = [entry for entry in resolved if entry.id != merged.id]
                 resolved_ids.discard(merged.id)
                 by_id[merged.id] = merged
@@ -188,10 +210,9 @@ def merge_active_hypotheses(
                     # The link currentness check compares its captured Spec
                     # fingerprint with this new canonical Spec. Keep history;
                     # force a fresh assessment under the updated contract.
-                    with db.transaction():
-                        _reopen_hypothesis_after_spec_change(
-                            db, merged, origin=origin, session_id=session_id
-                        )
+                    _reopen_hypothesis_after_spec_change(
+                        db, merged, origin=origin, session_id=session_id
+                    )
                     reopened = True
             alias_map[item.id] = merged.id
             by_id[merged.id] = merged
@@ -425,6 +446,28 @@ def resolve_hypothesis(
     session_id: str,
     sample_rows: list[dict[str, Any]] | None = None,
 ) -> None:
+    """Resolve a hypothesis atomically for callers without an open transaction."""
+    with db.transaction():
+        _resolve_hypothesis_in_transaction(
+            db,
+            state,
+            hypothesis_id,
+            verdict,
+            summary,
+            session_id,
+            sample_rows=sample_rows,
+        )
+
+
+def _resolve_hypothesis_in_transaction(
+    db: CaseDB,
+    state: SessionState,
+    hypothesis_id: str,
+    verdict: str,
+    summary: str,
+    session_id: str,
+    sample_rows: list[dict[str, Any]] | None = None,
+) -> None:
     """Mark a hypothesis as confirmed or refuted, generate follow-ups, and mark stale sections.
 
     R8-01: Enforces DB invariants:
@@ -609,7 +652,7 @@ def resolve_hypothesis(
                 f"follow_up rejected: '{follow_up.description[:80]}' reason={reason}",
             )
             continue
-        state.active_hypotheses = merge_active_hypotheses(
+        state.active_hypotheses = _merge_active_hypotheses_in_transaction(
             db=db,
             current=state.active_hypotheses,
             updates=[follow_up],

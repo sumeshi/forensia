@@ -1,10 +1,9 @@
-"""Prompt builders for the investigation loop (query, SQL, verdict, memory)."""
+"""Prompt builders for the investigation loop."""
 
 from __future__ import annotations
 
 import json
 import logging
-import re
 from collections.abc import Callable
 from typing import Any
 
@@ -28,7 +27,6 @@ from forensia.knowledge.coverage import disclosure_tables_for_spec
 from forensia.knowledge.retrieval import knowledge_terms_for_hypothesis, select_snippets
 from forensia.llm.schemas import (
     FINDING_EXTRACTOR_SCHEMA,
-    MEMORY_UPDATER_SCHEMA,
     VERDICT_REVIEW_SCHEMA,
     gap_identifier_schema,
     hypothesis_drafter_schema,
@@ -124,7 +122,7 @@ def render_prior_attempts(recent_history: list[dict[str, Any]], limit: int = 5) 
     """Render hypothesis attempt history as a compact structured block.
 
     Accepts both HistoryEntry dumps (query_id / verdict / summary /
-    evidence_ids / template_id / purpose) and hypothesis_reasoning rows
+    evidence_ids / template_id / purpose) and trace.hypothesis_reasoning rows
     (phase / verdict / query_id / body). Fields absent from a row are
     omitted — nothing is fabricated. Free text is demoted to a
     120-char note; the structured fields carry the signal.
@@ -168,59 +166,6 @@ def render_prior_attempts(recent_history: list[dict[str, Any]], limit: int = 5) 
     return block + "\n</PRIOR_ATTEMPTS>\n"
 
 
-def render_work_context(snapshot: Any | None) -> str:
-    """Render the deterministic per-attempt case context (V2-07, GOAL §10.1).
-
-    Returns one ``<WORK_CONTEXT source="case_db">`` block built from a
-    ``work_judgment.WorkContextSnapshot`` — current work/spec with readiness,
-    unmet Spec conditions, assessed support/contradiction grouped by
-    derivation root with original refs, and open requirements.  Each entry
-    carries the DB original (root/evidence/assessment/query refs), so the
-    block is a projection that can be re-derived from the same original, not
-    a re-summarized Memory digest.  Returns "" when no snapshot exists
-    (e.g. no DB in pure prompt-builder calls).
-    """
-    if snapshot is None:
-        return ""
-    lines = ['<WORK_CONTEXT source="case_db">']
-    lines.append(f"current work: {snapshot.hypothesis_id} (status={snapshot.status})")
-    ready = [c for c in snapshot.capabilities if c not in snapshot.unready_capabilities]
-    cap_parts: list[str] = []
-    if ready:
-        cap_parts.append("ready: " + ", ".join(ready))
-    if snapshot.unready_capabilities:
-        cap_parts.append("not ready: " + ", ".join(snapshot.unready_capabilities))
-    if cap_parts:
-        lines.append("required capabilities: " + "; ".join(cap_parts))
-    if snapshot.unmet_conditions:
-        lines.append(
-            "unmet spec conditions (no current assessment matched): "
-            + "; ".join(snapshot.unmet_conditions)
-        )
-    if snapshot.support_roots:
-        lines.append("current support (derivation roots, case_db originals):")
-        lines.extend("  - " + unit for unit in snapshot.support_roots)
-    else:
-        lines.append("current support: (none)")
-    if snapshot.contradiction_roots:
-        lines.append("unresolved contradiction (derivation roots):")
-        lines.extend("  - " + unit for unit in snapshot.contradiction_roots)
-    if snapshot.reevaluation_required:
-        lines.append(
-            "requires re-evaluation (identity no longer verifies; historical "
-            "only, never current support):"
-        )
-        lines.extend("  - " + unit for unit in snapshot.reevaluation_required)
-    if snapshot.requirements:
-        lines.append("open requirements: " + "; ".join(snapshot.requirements))
-    lines.append(
-        "Expand refs via Case State and Trace "
-        "(investigation_steps receipts, hypothesis_reasoning), not by describing them."
-    )
-    lines.append("</WORK_CONTEXT>")
-    return "\n".join(lines) + "\n"
-
-
 _load_benign_context_rules = load_benign_context_rules
 
 
@@ -240,20 +185,6 @@ def _hypothesis_prompt_projection(
         projected["required_entities"] = payload.get("required_entities") or []
         projected["verification_spec"] = payload.get("verification_spec") or {}
     return projected
-
-
-def _planner_context_projection(context: str) -> str:
-    """Remove high-cardinality trace IDs from memory text sent to the planner.
-
-    The complete keypoint cards remain durable and available to the UI.  The
-    count, summary, representative finding and evidence IDs remain in prompt
-    context; opaque theme member IDs do not help select the next query.
-    """
-    return re.sub(
-        r"(?ms)^## Theme Finding IDs\s*\n.*?(?=^## |\Z)",
-        "",
-        context or "",
-    )
 
 
 _PROMPT_ROW_NOISE_FIELDS = {
@@ -346,11 +277,7 @@ def build_query_intent_messages(
     """Build messages for the query_intent_planner phase.
 
     Decides WHAT data to fetch for this hypothesis, not HOW.
-    Uses read_more expansion for memory context.
-    ``work_context_md`` is the deterministic per-attempt case projection
-    (``render_work_context``); it is DB-derived and renders before the
-    Memory ``extra_context_md`` so DB originals are never masked by
-    re-summarized Markdown memory (V2-07).
+    ``work_context_md`` is the bounded Case/Trace working-state projection.
 
     Disclosure (V2-08): one spec/phase/artifact pathway selects everything
     that appears here — ``schema_tables`` cards (spec capability families'
@@ -446,8 +373,7 @@ def build_query_intent_messages(
         f"schema: {schema_context}\n"
         "</INPUT_SCHEMA>\n"
         "<OUTPUT_SCHEMA>\n"
-        "Return exactly one of these JSON objects:\n"
-        '{"action": {"type": "memory.read_more", "paths": ["exact scoped memory paths"]}}\n'
+        "Return exactly one bounded SQL query action:\n"
         'Raw SQL example: {"action": {"type": "sql.query", "intent": "inspect matching evidence", '
         '"target_table": "evtx_events", "template_id": null, "params": {}, '
         '"sql": "SELECT evidence_id FROM evtx_events LIMIT 20", "filters_required": [], '
@@ -455,7 +381,7 @@ def build_query_intent_messages(
         "Template path: use the same sql.query fields, copy a template_id exactly from the supplied <TEMPLATE_CATALOG>, set its params, and set sql to an empty string."
         "</OUTPUT_SCHEMA>\n"
         "<RULES>\n"
-        "Choose exactly one action. Use memory.read_more only when additional scoped context is required; after that expansion, choose sql.query and never request memory again. The memory action MUST contain at least one exact relative path. The sql.query action MUST include a complete intent, known target_table, and exactly one execution path: for a template, copy an executable ID from <TEMPLATE_CATALOG>, set params, and set sql to an empty string; for raw SQL, set template_id to null and provide a bounded SELECT. If the catalog contains no applicable template, use raw SQL. RECIPE_INDEX IDs are never valid template_id values. Do not emit unknown actions, free-form tools, or an empty/ambiguous action.\n"
+        "The sql.query action MUST include a complete intent, known target_table, and exactly one execution path: for a template, copy an executable ID from <TEMPLATE_CATALOG>, set params, and set sql to an empty string; for raw SQL, set template_id to null and provide a bounded SELECT. If the catalog contains no applicable template, use raw SQL. RECIPE_INDEX IDs are never valid template_id values. Do not emit unknown actions, free-form tools, or an empty/ambiguous action.\n"
         "If EXECUTION_ERROR is present, you MUST change the query — at minimum change the table list, the WHERE clause, or eliminate the failing JOIN. Never repeat the same SQL that caused an execution error.\n"
         "If prior_check_feedback names specific missing event_ids or evidence types, the new SQL MUST include those event_ids or evidence types. Never ignore prior check feedback.\n"
         "</RULES>"
@@ -469,7 +395,7 @@ def build_query_intent_messages(
     user = (
         f"{work_context_md}"
         f"peer_active_hypotheses: {json.dumps(peer_hypotheses, ensure_ascii=False, default=str)}\n"
-        f"extra_context:\n{_planner_context_projection(extra_context_md)}\n"
+        f"extra_context:\n{extra_context_md}\n"
         f"prior_check_feedback:\n{prior_check_feedback or '(no prior checks)'}\n"
     )
     if confirmed_findings_block:
@@ -555,18 +481,20 @@ def build_verdict_review_messages(
     system = (
         f"{_dfir_playbook('check', event_ids=_pb_ids, tables=playbook_tables, sections=_sections_for_hypothesis(hypothesis, (result_summary or {}).get('sample_rows')), db=db, session_id=session_id)}\n"
         f"{_time_range_guidance(time_range)}"
-        "<TASK>You are a verdict_reviewer. Classify the SQL result against the hypothesis as confirmed, refuted, or inconclusive.</TASK>\n"
+        "<TASK>You are a verdict_reviewer. Classify the SQL result as confirmed, refuted, inconclusive, or newlead.</TASK>\n"
         "<OUTPUT_SCHEMA>\n"
         "{\n"
         '  "verdict": "confirmed | refuted | inconclusive",\n'
         '  "rationale": "string — concise reason (< 200 chars)",\n'
         '  "confidence": 0.0-1.0,\n'
-        '  "missing_questions": ["specific event_id, table, or evidence type that would resolve the hypothesis (required when verdict=inconclusive, MUST be non-empty in that case)"]\n'
+        '  "missing_questions": ["specific event_id, table, or evidence type that would resolve the hypothesis (required when verdict=inconclusive, MUST be non-empty in that case)"],\n'
+        '  "new_hypotheses": [{"description": "...", "required_entities": ["..."], "confirm_when": {}, "refute_when": {}, "source_rule_ids": ["..."]}] (up to 3; id optional)\n'
         "}\n"
         "</OUTPUT_SCHEMA>\n"
         "<RULES>\n"
         f"{fallback_notice}"
         "When verdict=inconclusive, missing_questions MUST contain at least 1 specific item naming the missing evidence (e.g. 'event_id 4663', 'mft_entries WHERE file_path LIKE %.docx%', 'browser executable in prefetch_executions'). Do NOT leave it empty.\n"
+        "When verdict=newlead, include at most 3 concrete follow-up hypotheses with testable confirm_when conditions and useful refute_when conditions. Omit id unless you have a valid H-NNN id; otherwise the host assigns one. Otherwise omit new_hypotheses.\n"
         "</RULES>"
     )
     user = (
@@ -617,67 +545,6 @@ def build_finding_extractor_messages(
         {"role": "system", "content": system},
         {"role": "user", "content": user},
     ], FINDING_EXTRACTOR_SCHEMA
-
-
-def build_memory_updater_messages(
-    hypothesis,
-    verdict: str,
-    rationale: str,
-    time_range: dict[str, str] | None = None,
-    result_summary: dict | None = None,
-) -> tuple[list[dict[str, str]], dict]:
-    """role: memory_updater.
-    Goal: propose durable memory writes (facts, timeline anchors, entity cards, etc.).
-    """
-    evidence_block = ""
-    if result_summary:
-        prompt_result_summary = _result_summary_prompt_projection(result_summary)
-        evidence_block = (
-            f"\nevidence_rows: {json.dumps(prompt_result_summary.get('sample_rows') or [], default=str, ensure_ascii=False)[:3000]}\n"
-            f"observed_evidence_ids: {result_summary.get('evidence_ids')}\n"
-        )
-
-    system = (
-        f"{_time_range_guidance(time_range)}"
-        "<TASK>You are a memory_updater. Propose durable memory writes based on the investigation result.</TASK>\n"
-        "<OUTPUT_SCHEMA>\n"
-        "{\n"
-        '  "memory_updates": {\n'
-        '    "facts": [{"text": "string", "evidence_ids": ["evtx-...", "mft-..."], "claim_type": "observation|interpretation"}],\n'
-        '    "timeline": [{"timestamp": "ISO 8601", "description": "string", "evidence_ids": ["..."]}],\n'
-        '    "tasks": [{"text": "string", "kind": "followup | verification | gap"}],\n'
-        '    "overview": ["short single-line summary"],\n'
-        '    "refuted_hypotheses": [{"hypothesis_id": "H-001", "description": "...", "reason": "..."}],\n'
-        '    "resolved_gaps": [{"text": "string", "evidence_ids": ["..."]}],\n'
-        '    "entities": [{"entity_type": "user | host | ip | process | service | file | registry | group | machine_account", "name": "string — the entity identifier", "role": "attacker | victim | actor_candidate | observed_user | suspicious_user | newly_created_user | machine_account | unknown", "notes": "1-2 sentences explaining why this entity matters in the case"}]\n'
-        "  },\n"
-        '  "new_hypotheses": [{"description": "...", "required_entities": ["..."]}]\n'
-        "}\n"
-        "</OUTPUT_SCHEMA>\n"
-        "<RULES>\n"
-        "Omit any sub-key whose array would be empty — never emit empty arrays. Every fact/timeline/resolved_gap entry MUST cite at least one evidence_id observed in the SQL result; entries without evidence_ids are dropped.\n"
-        "Each fact MUST be labeled claim_type.\n"
-        "observation: states only what the rows show (who/what/when/where).\n"
-        "interpretation: states what it might mean (attack, staging, exfiltration...).\n"
-        "An interpretation MUST reference at least one observation fact in its text.\n"
-        "ALWAYS register an `entities` entry for every distinct user, host, IP, process, or service that the verdict rationale attributes a role to — this is what populates the Top Entities panel. Use the entity_type / role enums above; freeform values are dropped.\n"
-        "Use ONLY evidence_ids from observed_evidence_ids. Use ONLY entity names that literally appear as values in evidence_rows (user_name, target_user, computer, src_ip, process_name, service_name, executable_name, file_name, file_path). Never invent descriptive names like 'Source IP Address'.\n"
-        "Examples (entity shapes only):\n"
-        '  {"entity_type": "user", "name": "alice", "role": "victim", "notes": "Lost session token after 4624 logon from 10.0.0.5 at 03:14 UTC."}\n'
-        '  {"entity_type": "host", "name": "WIN10-DC01", "role": "actor_candidate", "notes": "Source of repeated 4625 failures then a successful 4624 logon within 5 minutes."}\n'
-        '  {"entity_type": "ip", "name": "10.0.0.5", "role": "attacker", "notes": "Originating IP for 30+ failed Kerberos pre-auth attempts (4771)."}\n'
-        "</RULES>"
-    )
-    user = (
-        f"hypothesis: {hypothesis.description if hasattr(hypothesis, 'description') else hypothesis}\n"
-        f"verdict: {verdict}\n"
-        f"rationale: {rationale}\n"
-        f"{evidence_block}"
-    )
-    return [
-        {"role": "system", "content": system},
-        {"role": "user", "content": user},
-    ], MEMORY_UPDATER_SCHEMA
 
 
 def build_gap_identifier_messages(

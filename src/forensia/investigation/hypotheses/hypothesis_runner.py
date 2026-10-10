@@ -12,7 +12,7 @@ from forensia.context.case_profile import CaseEvidenceProfile, observed_event_id
 from forensia.context.retrieval import evaluate_retrieval
 from forensia.core.case import Case
 from forensia.core.log import log as _log
-from forensia.core.memory import MemoryManager
+from forensia.core.progress_event import progress_event
 from forensia.core.session import (
     HistoryEntry,
     Hypothesis,
@@ -29,9 +29,9 @@ from forensia.investigation.hypotheses.execution import (
 )
 from forensia.investigation.hypotheses.hypothesis_manager import (
     _guess_related_sections,
+    _merge_active_hypotheses_in_transaction,
+    _resolve_hypothesis_in_transaction,
     admit_new_hypothesis,
-    merge_active_hypotheses,
-    resolve_hypothesis,
 )
 from forensia.investigation.hypotheses.hypothesis_store import _upsert_hypothesis
 from forensia.investigation.hypotheses.relations import insert_relation
@@ -41,9 +41,7 @@ from forensia.investigation.investigation_session import (
     _save_step,
     append_hypothesis_reasoning,
     append_settlement_feedback,
-    ctx_refresh_caches,
 )
-from forensia.investigation.memory_sync import apply_memory_updates
 from forensia.investigation.planner import (
     persist_hypothesis_plan_result,
     plan_hypothesis_query,
@@ -146,7 +144,6 @@ class _HypothesisRunState:
     hypothesis: Hypothesis
     state: SessionState
     ctx: Ctx
-    memory: MemoryManager
     db: CaseDB
     base_url: str
     model: str
@@ -174,8 +171,8 @@ class _HypothesisRunState:
 
 
 async def _phase_plan(rs: _HypothesisRunState) -> str:
-    hypothesis, state, ctx = rs.hypothesis, rs.state, rs.ctx
-    memory, db, case = rs.memory, rs.db, rs.case
+    hypothesis, state = rs.hypothesis, rs.state
+    db, case = rs.db, rs.case
     base_url, model, plan_cycle = rs.base_url, rs.model, rs.plan_cycle
     session_id = rs.session_id
     query_index, llm_status_fn = rs.query_index, rs.llm_status_fn
@@ -188,9 +185,7 @@ async def _phase_plan(rs: _HypothesisRunState) -> str:
             _outage_progress_callback=rs.ctx.progress_callback,
             state=state,
             hypothesis=hypothesis,
-            memory=memory,
             db=db,
-            default_context_md=ctx.memory_plan,
             status_callback=llm_status_fn or (lambda msg: _log("LLM", msg)),
             query_index=query_index,
             time_range=case.time_range,
@@ -232,7 +227,7 @@ def _phase_execute(rs: _HypothesisRunState) -> str:
     hypothesis, state, db = rs.hypothesis, rs.state, rs.db
     session_id, plan_cycle = rs.session_id, rs.plan_cycle
     query_index, emit_fn = rs.query_index, rs.emit_fn
-    focus_sections, hypothesis_plan = rs.focus_sections, rs.hypothesis_plan
+    hypothesis_plan = rs.hypothesis_plan
     tracker = rs.tracker
     planned_query = hypothesis_plan.query
     reasoning_entry_id = append_hypothesis_reasoning(
@@ -253,8 +248,10 @@ def _phase_execute(rs: _HypothesisRunState) -> str:
             "investigate/do",
             f"[do] {planned_query.query_id}: {planned_query.purpose}",
             iteration=plan_cycle,
-            report_kw={"focus_sections": focus_sections},
-            current_query=planned_query.query_id,
+            kind="query.planned",
+            status="completed",
+            reason="focus_hypothesis_query_planned",
+            query_id=planned_query.query_id,
             hypothesis_id=hypothesis.id,
             reasoning_entry_id=reasoning_entry_id,
         )
@@ -312,13 +309,6 @@ def _phase_execute(rs: _HypothesisRunState) -> str:
             f"SQL execution error — {planned_query.query_id}: {err_msg}",
             level="error",
         )
-        if emit_fn:
-            emit_fn(
-                "investigate/do",
-                f"[do] SQL execution error — {planned_query.query_id}: {err_msg}",
-                iteration=plan_cycle,
-                hypothesis_id=hypothesis.id,
-            )
         append_hypothesis_reasoning(
             db=db,
             hypothesis_id=hypothesis.id,
@@ -333,6 +323,24 @@ def _phase_execute(rs: _HypothesisRunState) -> str:
             "sql": planned_query.sql,
             "error": err_msg[:500],
         }
+        if rs.ctx.progress_callback:
+            rs.ctx.progress_callback(
+                progress_event(
+                    "investigation.search",
+                    "failed",
+                    severity="error",
+                    reason="sql_execution_error",
+                    refs={
+                        "hypothesis_id": hypothesis.id,
+                        "query_id": planned_query.query_id,
+                        "receipt_id": receipt.receipt_id,
+                    },
+                    stage="execute",
+                    iteration=plan_cycle,
+                    session_id=session_id,
+                    summary="evidence query failed during execution",
+                )
+            )
         return "continue"
     result_summary = summarize_query_result(rows)
     if fallback_info is not None:
@@ -380,6 +388,23 @@ def _phase_execute(rs: _HypothesisRunState) -> str:
     rs.rows = rows
     rs.fallback_info = fallback_info
     rs.result_summary = result_summary
+    if rs.ctx.progress_callback:
+        rs.ctx.progress_callback(
+            progress_event(
+                "investigation.search",
+                "completed",
+                severity="success",
+                refs={
+                    "hypothesis_id": hypothesis.id,
+                    "query_id": planned_query.query_id,
+                    "receipt_id": receipt.receipt_id,
+                },
+                stage="execute",
+                iteration=plan_cycle,
+                session_id=session_id,
+                summary=f"evidence query returned {len(rows)} rows",
+            )
+        )
     return "ok"
 
 
@@ -393,7 +418,7 @@ async def _phase_check(rs: _HypothesisRunState) -> str:
     candidates, planned_query = rs.candidates, rs.planned_query
     result_summary, fallback_info = rs.result_summary, rs.fallback_info
     rows = rs.rows or []
-    emit_fn, focus_sections = rs.emit_fn, rs.focus_sections
+    emit_fn = rs.emit_fn
     try:
         check_result = check_query_result(
             case=case,
@@ -460,8 +485,10 @@ async def _phase_check(rs: _HypothesisRunState) -> str:
             "investigate/check",
             f"[check] {hypothesis.id}: verdict={check_result.verdict} query={planned_query.query_id}",
             iteration=plan_cycle,
-            report_kw={"focus_sections": focus_sections},
-            current_query=planned_query.query_id,
+            kind="hypothesis.check_completed",
+            status="completed",
+            reason=check_result.verdict,
+            query_id=planned_query.query_id,
             hypothesis_id=hypothesis.id,
             reasoning_entry_id=reasoning_entry_id,
         )
@@ -521,6 +548,24 @@ async def _phase_check(rs: _HypothesisRunState) -> str:
                 # independent sufficiency groups.
                 finding_ids_by_evidence=finding_ids_by_evidence,
             )
+            if rs.ctx.progress_callback:
+                rs.ctx.progress_callback(
+                    progress_event(
+                        "investigation.assessment",
+                        "completed",
+                        severity="success",
+                        refs={
+                            "hypothesis_id": hypothesis.id,
+                            "query_id": planned_query.query_id,
+                            "assessment_id": assessment.assessment_id,
+                            "evidence_ids": evidence_ids[:8],
+                        },
+                        stage="assess",
+                        iteration=plan_cycle,
+                        session_id=session_id,
+                        summary=f"assessed {len(evidence_ids)} evidence items as {role}",
+                    )
+                )
         elif rows:
             # Rows were observed but could not be turned into an admissible
             # EvidenceLink (retrieval not adequate, or no evidence_id could be
@@ -540,6 +585,25 @@ async def _phase_check(rs: _HypothesisRunState) -> str:
                 observed_rows=len(rows or []),
                 created_session=session_id,
             )
+            if rs.ctx.progress_callback:
+                rs.ctx.progress_callback(
+                    progress_event(
+                        "investigation.assessment",
+                        "skipped",
+                        severity="warning",
+                        reason="retrieval_not_adequate"
+                        if not retrieval_adequate
+                        else "no_linkable_evidence_id",
+                        refs={
+                            "hypothesis_id": hypothesis.id,
+                            "query_id": planned_query.query_id,
+                        },
+                        stage="assess",
+                        iteration=plan_cycle,
+                        session_id=session_id,
+                        summary="observed rows did not produce eligible evidence links",
+                    )
+                )
     return "ok"
 
 
@@ -634,18 +698,18 @@ def _build_settlement_input(rs: _HypothesisRunState) -> SettlementInput:
 
 
 def _phase_apply_verdict(rs: _HypothesisRunState) -> None:
-    """Hypothesis settlement and memory reflection for the check verdict.
+    """Hypothesis settlement and Case/Trace state updates for the check verdict.
 
     R8-01: For confirmed verdicts, ALL settlement must go through the unified
     ``settle_hypothesis`` gate.  The sufficiency guard is run for
     non-settlement paths (inconclusive/newlead) to persist sufficiency metadata.
     """
     check_result, state, db = rs.check_result, rs.state, rs.db
-    session_id, hypothesis, memory = rs.session_id, rs.hypothesis, rs.memory
+    session_id, hypothesis = rs.session_id, rs.hypothesis
     planned_query, rows = rs.planned_query, rs.rows
     ctx = rs.ctx
     plan_cycle, query_index = rs.plan_cycle, rs.query_index
-    emit_fn, focus_sections = rs.emit_fn, rs.focus_sections
+    emit_fn = rs.emit_fn
     state.history = state.history[-50:]
 
     _apply_sufficiency_guard(rs)
@@ -673,6 +737,23 @@ def _phase_apply_verdict(rs: _HypothesisRunState) -> None:
             pre_settlement_verdict,
             decision,
         )
+        if ctx.progress_callback:
+            ctx.progress_callback(
+                progress_event(
+                    "investigation.settlement",
+                    "completed",
+                    severity="success" if decision.allowed else "warning",
+                    reason=str(decision.reason or ""),
+                    refs={
+                        "hypothesis_id": hypothesis.id,
+                        "query_id": planned_query.query_id if planned_query else "",
+                    },
+                    stage="settlement",
+                    iteration=plan_cycle,
+                    session_id=session_id,
+                    summary=f"settlement retained verdict {decision.verdict}",
+                )
+            )
         if not decision.allowed:
             _log("SETTLEMENT", f"{hypothesis.id} confirmed BLOCKED: {decision.reason}")
 
@@ -689,14 +770,41 @@ def _phase_apply_verdict(rs: _HypothesisRunState) -> None:
                 )
         if admitted:
             previous_ids = {item.id for item in state.active_hypotheses}
-            state.active_hypotheses = merge_active_hypotheses(
+            aliases: dict[str, str] = {}
+            state.active_hypotheses = _merge_active_hypotheses_in_transaction(
                 db=db,
                 current=state.active_hypotheses,
                 updates=admitted,
                 resolved=state.resolved_hypotheses,
                 session_id=session_id,
                 origin="check_new",
+                alias_map_out=aliases,
             )
+            active_ids = {item.id for item in state.active_hypotheses}
+            admitted_ids = sorted(
+                {
+                    canonical_id
+                    for item in admitted
+                    if (canonical_id := aliases.get(item.id)) in active_ids
+                }
+            )
+            if admitted_ids and ctx.progress_callback:
+                ctx.progress_callback(
+                    progress_event(
+                        "investigation.work_added",
+                        "completed",
+                        severity="info",
+                        reason="checker_followup_hypotheses_admitted",
+                        refs={
+                            "parent_hypothesis_id": hypothesis.id,
+                            "hypothesis_ids": admitted_ids[:8],
+                        },
+                        stage="admit",
+                        iteration=plan_cycle,
+                        session_id=session_id,
+                        summary=f"admitted {len(admitted_ids)} follow-up hypotheses",
+                    )
+                )
             for child in state.active_hypotheses:
                 if child.id in previous_ids or child.id == hypothesis.id:
                     continue
@@ -724,16 +832,15 @@ def _phase_apply_verdict(rs: _HypothesisRunState) -> None:
                     created_session=session_id,
                 )
     if final_verdict in {"confirmed", "refuted", "untestable"}:
-        with db.transaction():
-            resolve_hypothesis(
-                db=db,
-                state=state,
-                hypothesis_id=hypothesis.id,
-                verdict=final_verdict,
-                summary=check_result.report_text,
-                session_id=session_id,
-                sample_rows=rows,
-            )
+        _resolve_hypothesis_in_transaction(
+            db=db,
+            state=state,
+            hypothesis_id=hypothesis.id,
+            verdict=final_verdict,
+            summary=check_result.report_text,
+            session_id=session_id,
+            sample_rows=rows,
+        )
         _log(
             "RESOLVE",
             f"{hypothesis.id} — {final_verdict} (resolved={len(state.resolved_hypotheses)})",
@@ -759,35 +866,6 @@ def _phase_apply_verdict(rs: _HypothesisRunState) -> None:
             origin="check_new",
             session_id=session_id,
         )
-    apply_memory_updates(
-        memory=memory,
-        active_hypotheses=state.active_hypotheses,
-        resolved_hypotheses=state.resolved_hypotheses,
-        check_output={
-            **check_result.raw_response,
-            "memory_updates": check_result.memory_updates,
-            "suspicious_evidence": check_result.suspicious_evidence,
-        },
-        current_hypothesis_id=hypothesis.id,
-        db=db,
-        query_id=planned_query.query_id,
-        hypothesis_description=hypothesis.description,
-    )
-    # R3-09: Collapse refuted-template overview lines into counter
-    memory.collapse_refuted_overview_lines()
-    if final_verdict == "confirmed":
-        memory.promote_hypothesis_scratch(hypothesis.id)
-    elif final_verdict == "refuted":
-        memory.archive_hypothesis_scratch(hypothesis.id)
-    elif final_verdict == "untestable":
-        memory.archive_untestable_hypothesis_scratch(hypothesis.id)
-    ctx_refresh_caches(
-        ctx,
-        memory,
-        hypothesis=hypothesis,
-        db=db,
-        session_id=session_id,
-    )
     _save_step(
         db=db,
         session_id=session_id,
@@ -810,7 +888,11 @@ def _phase_apply_verdict(rs: _HypothesisRunState) -> None:
             "investigate/act",
             f"[act] {hypothesis.id}: verdict={final_verdict} resolved={len(state.resolved_hypotheses)}",
             iteration=plan_cycle,
-            report_kw={"focus_sections": focus_sections},
+            kind="hypothesis.verdict_applied",
+            status="completed",
+            reason=final_verdict,
+            hypothesis_id=hypothesis.id,
+            query_id=planned_query.query_id if planned_query else None,
         )
 
 
@@ -871,13 +953,38 @@ def _phase_auto_resolve(rs: _HypothesisRunState) -> str:
     )
 
     with db.transaction():
-        resolve_hypothesis(
+        _resolve_hypothesis_in_transaction(
             db=db,
             state=state,
             hypothesis_id=hypothesis.id,
             verdict=decision.verdict,
             summary=decision.reason,
             session_id=session_id,
+        )
+        _save_step(
+            db=db,
+            session_id=session_id,
+            iteration=rs.plan_cycle,
+            phase="act",
+            hypothesis_id=hypothesis.id,
+            input_json={
+                "hypothesis_id": hypothesis.id,
+                "query_id": rs.planned_query.query_id if rs.planned_query else None,
+            },
+            output_json={
+                "verdict": decision.verdict,
+                "active_hypotheses": [
+                    item.model_dump() for item in state.active_hypotheses
+                ],
+                "resolved_hypotheses": [
+                    item.model_dump() for item in state.resolved_hypotheses
+                ],
+            },
+            suffix=(
+                f"{rs.planned_query.query_id}-{rs.query_index:02d}"
+                if rs.planned_query
+                else None
+            ),
         )
     rs.cycle_progress = True
     return "break"
@@ -887,7 +994,6 @@ async def _investigate_one_hypothesis(
     hypothesis: Hypothesis,
     state: SessionState,
     ctx: Ctx,
-    memory: MemoryManager,
     db: CaseDB,
     base_url: str,
     model: str,
@@ -900,12 +1006,11 @@ async def _investigate_one_hypothesis(
     llm_status_fn: Callable[[str], None] | None = None,
     case_profile: CaseEvidenceProfile | None = None,
 ) -> tuple[bool, SessionState, dict[str, str]]:
-    """Investigate a single hypothesis with full emit/save/memory lifecycle."""
+    """Investigate a single hypothesis with full emit/save lifecycle."""
     rs = _HypothesisRunState(
         hypothesis=hypothesis,
         state=state,
         ctx=ctx,
-        memory=memory,
         db=db,
         base_url=base_url,
         model=model,
@@ -928,6 +1033,21 @@ async def _investigate_one_hypothesis(
             break
         if flow == "continue":
             if planner_retry_allowed(state, hypothesis, rs.planner_retry_granted):
+                if emit_fn:
+                    emit_fn(
+                        "investigate/plan",
+                        f"[plan] retrying {hypothesis.id} after planner validation failure",
+                        iteration=plan_cycle,
+                        kind="hypothesis.plan_retry",
+                        status="running",
+                        severity="warning",
+                        reason="planner_retry_granted",
+                        hypothesis_id=hypothesis.id,
+                        step_id=(
+                            f"{session_id}-{plan_cycle:02d}-plan-hypothesis-"
+                            f"{hypothesis.id}-{query_index:02d}"
+                        ),
+                    )
                 limit += 1
                 rs.planner_retry_granted = True
             continue
@@ -935,7 +1055,8 @@ async def _investigate_one_hypothesis(
             continue
         if await _phase_check(rs) == "continue":
             continue
-        _phase_apply_verdict(rs)
+        with db.transaction():
+            _phase_apply_verdict(rs)
         if rs.check_result.verdict in {"confirmed", "refuted", "untestable"}:
             break
         _phase_track_progress(rs)

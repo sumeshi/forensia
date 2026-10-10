@@ -18,7 +18,6 @@ from forensia.investigation.verification.check_normalize import (
     _normalize_finding_updates,
     _normalize_verdict,
     _parse_timestamp,
-    filter_memory_updates,
     validate_extracted_findings,
 )
 from forensia.knowledge.catalog import (
@@ -587,11 +586,6 @@ def guardrail_check_payload(
             observed_evidence_ids,
         ),
         "new_hypotheses": parsed.get("new_hypotheses"),
-        "memory_updates": filter_memory_updates(
-            parsed.get("memory_updates"),
-            observed_evidence_ids,
-            sample_rows=result_summary.get("sample_rows"),
-        ),
         "report_text": parsed.get("report_text") or "",
         "extracted_findings": validate_extracted_findings(
             parsed.get("extracted_findings"),

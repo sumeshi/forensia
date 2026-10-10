@@ -36,7 +36,7 @@ from forensia.db.database import CaseDB
 
 # Active telemetry for the current run. The investigation session installs an
 # LLMTelemetry instance here so that every LLM call site (including direct
-# chat_completion calls from memory/compaction) is instrumented without
+# chat_completion calls from compaction) is instrumented without
 # threading the object through every signature.
 _ACTIVE_TELEMETRY: ContextVar[LLMTelemetry | None] = ContextVar(
     "active_llm_telemetry", default=None
@@ -168,7 +168,7 @@ class LLMTelemetry:
         target_session_id = session_id or self.session_id
         insert = (
             """
-            INSERT INTO llm_logical_calls (
+            INSERT INTO trace.llm_logical_calls (
                 logical_call_id, session_id, parent_logical_call_id, phase,
                 iteration, hypothesis_id, section_id, action_id,
                 request_fingerprint, status, created_at
@@ -191,7 +191,7 @@ class LLMTelemetry:
             with self._logical_call_lock:
                 used = int(
                     self.db.execute(
-                        "SELECT COUNT(*) FROM llm_logical_calls WHERE session_id = ?",
+                        "SELECT COUNT(*) FROM trace.llm_logical_calls WHERE session_id = ?",
                         (target_session_id,),
                     ).fetchone()[0]
                     or 0
@@ -205,7 +205,7 @@ class LLMTelemetry:
 
     def close_logical_call(self, *, logical_call_id: str, status: RecordStatus) -> None:
         self.db.execute(
-            "UPDATE llm_logical_calls SET status = ? WHERE logical_call_id = ?",
+            "UPDATE trace.llm_logical_calls SET status = ? WHERE logical_call_id = ?",
             (status, logical_call_id),
         )
 
@@ -245,7 +245,7 @@ class LLMTelemetry:
         self._last_attempt_by_call[logical_call_id] = attempt_id
         self.db.execute(
             """
-            INSERT INTO llm_provider_attempts (
+            INSERT INTO trace.llm_provider_attempts (
                 attempt_id, logical_call_id, parent_attempt_id, session_id, phase,
                 retry_ordinal, endpoint, provider, model, schema_mode,
                 request_fingerprint, configured_output_limit,
@@ -297,7 +297,7 @@ class LLMTelemetry:
         if attempt_id is None:
             return
         self.db.execute(
-            "UPDATE llm_provider_attempts SET response_body = ? WHERE attempt_id = ?",
+            "UPDATE trace.llm_provider_attempts SET response_body = ? WHERE attempt_id = ?",
             (response_body, attempt_id),
         )
 
@@ -337,7 +337,7 @@ class LLMTelemetry:
 
         self.db.execute(
             """
-            UPDATE llm_provider_attempts SET
+            UPDATE trace.llm_provider_attempts SET
                 end_time = ?,
                 duration_ms = ?,
                 http_status = ?,
@@ -401,13 +401,14 @@ class LLMTelemetry:
 
     def mark_duplicate(self, *, attempt_id: str, duplicate_of: str) -> None:
         self.db.execute(
-            "UPDATE llm_provider_attempts SET duplicate_of = ? WHERE attempt_id = ?",
+            "UPDATE trace.llm_provider_attempts SET duplicate_of = ? WHERE attempt_id = ?",
             (duplicate_of, attempt_id),
         )
 
     def get_attempt(self, attempt_id: str) -> dict[str, Any] | None:
         cur = self.db.execute(
-            "SELECT * FROM llm_provider_attempts WHERE attempt_id = ?", (attempt_id,)
+            "SELECT * FROM trace.llm_provider_attempts WHERE attempt_id = ?",
+            (attempt_id,),
         )
         row = cur.fetchone()
         if row is None:
@@ -431,7 +432,7 @@ class LLMTelemetry:
         op_id = f"do-{uuid.uuid4().hex[:20]}"
         self.db.execute(
             """
-            INSERT INTO llm_deterministic_ops (
+            INSERT INTO trace.llm_deterministic_ops (
                 op_id, session_id, phase, hypothesis_id, section_id,
                 op_type, target, duration_ms, note, created_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -455,7 +456,7 @@ class LLMTelemetry:
     def session_aggregates(self, session_id: str | None = None) -> dict[str, Any]:
         sid = session_id or self.session_id
         logical = self.db.execute(
-            "SELECT COUNT(*) FROM llm_logical_calls WHERE session_id = ?", (sid,)
+            "SELECT COUNT(*) FROM trace.llm_logical_calls WHERE session_id = ?", (sid,)
         ).fetchone()[0]
         row = self.db.execute(
             """
@@ -474,12 +475,13 @@ class LLMTelemetry:
                 SUM(CASE WHEN output_tokens_source = 'provider_actual' THEN 1 ELSE 0 END),
                 SUM(CASE WHEN input_tokens_source = 'local_estimate' THEN 1 ELSE 0 END),
                 SUM(CASE WHEN output_tokens_source = 'local_estimate' THEN 1 ELSE 0 END)
-            FROM llm_provider_attempts WHERE session_id = ?
+            FROM trace.llm_provider_attempts WHERE session_id = ?
             """,
             (sid,),
         ).fetchone()
         det = self.db.execute(
-            "SELECT COUNT(*) FROM llm_deterministic_ops WHERE session_id = ?", (sid,)
+            "SELECT COUNT(*) FROM trace.llm_deterministic_ops WHERE session_id = ?",
+            (sid,),
         ).fetchone()[0]
         return {
             "session_id": sid,

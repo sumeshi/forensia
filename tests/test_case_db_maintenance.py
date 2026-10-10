@@ -13,7 +13,9 @@ from forensia.config import (
     resolve_llm_config,
 )
 from forensia.core.case import Case
+from forensia.core.progress_event import progress_event
 from forensia.db.database import CaseDB
+from forensia.db.progress import record_progress_event
 from forensia.pipeline import (
     progress_pusher,
     reset_case_tables,
@@ -39,7 +41,7 @@ class CaseDbMaintenanceTests(unittest.TestCase):
                     "INSERT INTO evtx_events (evidence_id, event_id) VALUES ('E1', 4624)"
                 )
                 db.execute(
-                    "INSERT INTO hypothesis_reasoning (entry_id, body) VALUES ('R1', 'prior attempt')"
+                    "INSERT INTO trace.hypothesis_reasoning (entry_id, body) VALUES ('R1', 'prior attempt')"
                 )
             with CaseDB(case) as reopened:
                 self.assertEqual(
@@ -51,18 +53,26 @@ class CaseDbMaintenanceTests(unittest.TestCase):
                 self.assertEqual(
                     ("R1", "prior attempt"),
                     reopened.execute(
-                        "SELECT entry_id, body FROM hypothesis_reasoning"
+                        "SELECT entry_id, body FROM trace.hypothesis_reasoning"
                     ).fetchone(),
                 )
+                self.assertEqual(
+                    [("main",)],
+                    reopened.execute(
+                        "SELECT table_schema FROM information_schema.tables "
+                        "WHERE table_name = 'forensia_schema'"
+                    ).fetchall(),
+                )
+            self.assertTrue(case.database_path.is_file())
+            self.assertFalse((case.db_dir / "trace.duckdb").exists())
 
     def test_unsupported_schema_is_rejected_without_changing_original_databases(
         self,
     ) -> None:
         for invalid in (
             "unversioned",
-            "core_version",
-            "trace_version",
-            "missing_trace",
+            "unsupported_version",
+            "legacy_split",
         ):
             with self.subTest(invalid=invalid), tempfile.TemporaryDirectory() as tmpdir:
                 case = Case.init(tmpdir)
@@ -72,30 +82,23 @@ class CaseDbMaintenanceTests(unittest.TestCase):
                         conn.execute(
                             "CREATE TABLE original_evidence AS SELECT 'keep me' AS value"
                         )
-                    with duckdb.connect(str(case.trace_database_path)) as conn:
-                        conn.execute(
-                            "CREATE TABLE original_trace AS SELECT 'keep trace' AS value"
-                        )
                 else:
                     with CaseDB(case):
                         pass
-                    if invalid == "missing_trace":
-                        case.trace_database_path.unlink()
-                    else:
-                        path = (
-                            case.database_path
-                            if invalid == "core_version"
-                            else case.trace_database_path
-                        )
-                        with duckdb.connect(str(path)) as conn:
+                    if invalid == "unsupported_version":
+                        with duckdb.connect(str(case.database_path)) as conn:
                             conn.execute("UPDATE forensia_schema SET version = -1")
+                    else:
+                        with duckdb.connect(str(case.db_dir / "trace.duckdb")):
+                            pass
                 originals = {
                     path: hashlib.sha256(path.read_bytes()).hexdigest()
-                    for path in (case.database_path, case.trace_database_path)
+                    for path in (case.database_path, case.db_dir / "trace.duckdb")
                     if path.exists()
                 }
                 with self.assertRaisesRegex(
-                    ValueError, "Unsupported case schema|Incomplete case database pair"
+                    ValueError,
+                    "Unsupported case schema|Unsupported split case databases",
                 ):
                     CaseDB(case)
                 self.assertEqual(
@@ -106,60 +109,85 @@ class CaseDbMaintenanceTests(unittest.TestCase):
                     },
                 )
                 self.assertEqual(
-                    invalid != "missing_trace", case.trace_database_path.exists()
+                    invalid == "legacy_split", (case.db_dir / "trace.duckdb").exists()
                 )
 
-    def test_progress_pusher_records_structured_log_entries(self) -> None:
+    def test_read_only_case_db_does_not_initialize_or_write(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case(Path(tmpdir) / "missing")
+            with self.assertRaises(FileNotFoundError):
+                CaseDB(case, read_only=True)
+            self.assertFalse(case.database_path.exists())
+            self.assertFalse(case.db_dir.exists())
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                with db.transaction():
+                    db.execute(
+                        "INSERT INTO trace.hypothesis_reasoning (entry_id, body) "
+                        "VALUES ('R1', 'committed only if transaction succeeds')"
+                    )
+            with CaseDB(case, read_only=True) as db:
+                with self.assertRaises(PermissionError):
+                    with db.transaction():
+                        pass
+                with self.assertRaises(duckdb.InvalidInputException):
+                    db.execute(
+                        "INSERT INTO trace.hypothesis_reasoning (entry_id) VALUES ('R2')"
+                    )
+                self.assertEqual(
+                    1,
+                    db.execute(
+                        "SELECT COUNT(*) FROM trace.hypothesis_reasoning"
+                    ).fetchone()[0],
+                )
+
+    def test_trace_and_case_updates_share_transaction_rollback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                with self.assertRaises(RuntimeError):
+                    with db.transaction():
+                        db.execute("INSERT INTO findings (finding_id) VALUES ('F1')")
+                        db.execute(
+                            "INSERT INTO trace.hypothesis_reasoning (entry_id) VALUES ('R1')"
+                        )
+                        raise RuntimeError("abort both writes")
+                self.assertEqual(
+                    0, db.execute("SELECT COUNT(*) FROM findings").fetchone()[0]
+                )
+                self.assertEqual(
+                    0,
+                    db.execute(
+                        "SELECT COUNT(*) FROM trace.hypothesis_reasoning"
+                    ).fetchone()[0],
+                )
+
+    def test_progress_pusher_persists_compact_semantic_events(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             with (
                 CaseDB(case) as db,
                 patch("forensia.pipeline.record_progress_event") as record_progress,
             ):
-                push = progress_pusher(
-                    db,
-                    {
-                        "stage": "investigate",
-                        "status": "running",
-                        "iteration": 0,
-                        "summary": "start",
-                        "recent_log_entries": [],
-                    },
-                )
-                push("[review] unresolved rewrite", stage="investigate")
+                push = progress_pusher(db)
                 push(
-                    "[analyze] rule: windows-security-4625-failed-logon",
-                    stage="analyze",
-                    log_level="info",
-                )
-                push(
-                    "[report] written: report.md",
-                    stage="completed",
-                    log_level="success",
+                    progress_event(
+                        "finding.created",
+                        "completed",
+                        severity="success",
+                        refs={"finding_ids": ["F-1"]},
+                        summary="Detection rule matched",
+                        rule_id="R-1",
+                    )
                 )
 
-            payloads = [call.args[1] for call in record_progress.call_args_list]
-            # Single structured storage; no legacy string-array dual list.
-            for payload in payloads:
-                self.assertNotIn("recent_logs", payload)
-            entry = payloads[0]["recent_log_entries"][-1]
-            self.assertEqual(
-                {"tag": "REVIEW", "level": "info", "message": "unresolved rewrite"},
-                entry,
-            )
-            rule_entry = payloads[1]["recent_log_entries"][-1]
-            self.assertEqual("info", rule_entry["level"])
-            self.assertTrue(
-                rule_entry["message"].endswith("windows-security-4625-failed-logon")
-            )
-            self.assertEqual(
-                {
-                    "tag": "REPORT",
-                    "level": "success",
-                    "message": "written: report.md",
-                },
-                payloads[2]["recent_log_entries"][-1],
-            )
+            event = record_progress.call_args.args[1]
+            self.assertEqual("finding.created", event["kind"])
+            self.assertEqual({"finding_ids": ["F-1"]}, event["refs"])
+            self.assertEqual({"rule_id": "R-1"}, event["attributes"])
+            self.assertNotIn("counts", event)
+            self.assertNotIn("recent_log_entries", event)
+            self.assertNotIn("hypotheses", event)
 
     def test_reset_clears_derived_state_and_preserves_source_registrations(
         self,
@@ -227,20 +255,29 @@ class CaseDbMaintenanceTests(unittest.TestCase):
                 )
                 db.execute(
                     """
-                    INSERT INTO hypothesis_reasoning (
+                    INSERT INTO trace.hypothesis_reasoning (
                         entry_id, hypothesis_id, session_id, iteration, phase, verdict, query_id, body, created_at
                     ) VALUES ('HR-1', 'H-1', 'S-1', 1, 'check', 'confirmed', 'Q-1', 'body', now())
                     """
                 )
                 db.execute(
                     """
-                    INSERT INTO retrieval_events (
+                    INSERT INTO trace.retrieval_events (
                         event_id, session_id, scope_kind, scope_id, phase, source_kind,
                         query_terms, candidate_count, selected_refs, rejected_refs,
                         selected_chars, budget, created_at
                     ) VALUES ('RE-1', 'S-1', 'hypothesis', 'H-1', 'index', 'memory',
                               '[]', 1, '[]', '[]', 0, 1024, now())
                     """
+                )
+                record_progress_event(
+                    db,
+                    progress_event(
+                        "investigation.completed",
+                        "completed",
+                        session_id="S-1",
+                        summary="prior run receipt",
+                    ),
                 )
 
                 rebuild_tables = (
@@ -252,14 +289,20 @@ class CaseDbMaintenanceTests(unittest.TestCase):
                     ("llm_deterministic_ops", "op_id"),
                 )
                 for table, key in rebuild_tables:
-                    db.execute(f"INSERT INTO {table} ({key}) VALUES ('reset-target')")
+                    schema = "trace." if table.startswith("llm_") else ""
+                    db.execute(
+                        f"INSERT INTO {schema}{table} ({key}) VALUES ('reset-target')"
+                    )
 
                 reset_case_tables(db)
 
                 for table, _key in rebuild_tables:
+                    schema = "trace." if table.startswith("llm_") else ""
                     self.assertEqual(
                         0,
-                        db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0],
+                        db.execute(f"SELECT COUNT(*) FROM {schema}{table}").fetchone()[
+                            0
+                        ],
                         table,
                     )
 
@@ -291,12 +334,21 @@ class CaseDbMaintenanceTests(unittest.TestCase):
                 )
                 self.assertEqual(
                     0,
-                    db.execute("SELECT COUNT(*) FROM hypothesis_reasoning").fetchone()[
-                        0
-                    ],
+                    db.execute(
+                        "SELECT COUNT(*) FROM trace.hypothesis_reasoning"
+                    ).fetchone()[0],
                 )
                 self.assertEqual(
-                    0, db.execute("SELECT COUNT(*) FROM retrieval_events").fetchone()[0]
+                    0,
+                    db.execute(
+                        "SELECT COUNT(*) FROM trace.retrieval_events"
+                    ).fetchone()[0],
+                )
+                self.assertEqual(
+                    0,
+                    db.execute("SELECT COUNT(*) FROM trace.progress_events").fetchone()[
+                        0
+                    ],
                 )
 
     def test_run_renders_report_once_via_render_written_report(self) -> None:

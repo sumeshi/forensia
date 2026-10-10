@@ -10,13 +10,11 @@ from forensia.config import (
     resolve_llm_config,
 )
 from forensia.core.case import Case
-from forensia.core.memory import MemoryManager
 from forensia.core.session import HistoryEntry, Hypothesis, SessionState
 from forensia.db.database import CaseDB
 from forensia.investigation.planner import (
     normalize_query_intent_action,
     plan_hypothesis_query,
-    request_with_optional_context,
     validate_select_sql,
 )
 from forensia.investigation.progress import query_fingerprint
@@ -29,19 +27,6 @@ def _llm_base_url() -> str:
 
 class PlannerRetryTests(unittest.TestCase):
     """Query planning, SQL templates/validation, retry, and fingerprint behavior."""
-
-    def _memory(self) -> MemoryManager:
-        temp = tempfile.TemporaryDirectory()
-        self.addCleanup(temp.cleanup)
-        memory = MemoryManager(Case.init(temp.name))
-        memory.facts_path.write_text("# facts.md\n\n- fact", encoding="utf-8")
-        (memory.base_dir / "tasks.md").write_text(
-            "# tasks.md\n\n- question", encoding="utf-8"
-        )
-        (memory.details_dir / "extra.md").write_text(
-            "# compact extra", encoding="utf-8"
-        )
-        return memory
 
     def tearDown(self) -> None:
         reload_settings()
@@ -94,7 +79,6 @@ class PlannerRetryTests(unittest.TestCase):
             result = plan_hypothesis_query(
                 state=state,
                 hypothesis=hypothesis,
-                memory=self._memory(),
                 base_url=_llm_base_url(),
                 model="test-model",
             )
@@ -121,7 +105,6 @@ class PlannerRetryTests(unittest.TestCase):
             result = plan_hypothesis_query(
                 state=state,
                 hypothesis=hypothesis,
-                memory=self._memory(),
                 base_url=_llm_base_url(),
                 model="test-model",
             )
@@ -132,7 +115,7 @@ class PlannerRetryTests(unittest.TestCase):
         self.assertEqual(response, result.raw_response)
 
     def test_plan_prompt_carries_the_deterministic_case_work_context(self) -> None:
-        """V2-07: the planner prompt carries one DB-derived <WORK_CONTEXT>.
+        """The planner reconstructs bounded Case/Trace state after reopen.
 
         The assessed support of the current hypothesis is delivered from the
         Case originals (hypothesis_evidence + currentness), and the same
@@ -177,7 +160,6 @@ class PlannerRetryTests(unittest.TestCase):
                 plan_hypothesis_query(
                     state=state,
                     hypothesis=hypothesis,
-                    memory=self._memory(),
                     base_url=_llm_base_url(),
                     model="test-model",
                     db=db,
@@ -196,6 +178,34 @@ class PlannerRetryTests(unittest.TestCase):
                     "VALUES ('H-workctx', 'inspect events', 'active', now(), now(), ?)",
                     [_json.dumps(spec)],
                 )
+                db.execute(
+                    "INSERT INTO hypotheses (hypothesis_id, description, status, "
+                    "created_at, updated_at, verification_spec) "
+                    "VALUES ('H-other', 'unrelated active work', 'active', now(), now(), ?)",
+                    [_json.dumps({"spec_version": "1"})],
+                )
+                db.execute(
+                    "INSERT INTO report_gaps "
+                    "(gap_id, description, kind, status, hypothesis_id, task_id) "
+                    "VALUES ('G-workctx', 'Confirm the event chain', 'internal_db_check', "
+                    "'open', 'H-workctx', 'T-workctx'), "
+                    "('G-other', 'Unrelated gap', 'internal_db_check', 'open', "
+                    "'H-other', 'T-other')"
+                )
+                db.execute(
+                    "INSERT INTO investigation_tasks "
+                    "(task_id, kind, description, status, gap_id, hypothesis_id) "
+                    "VALUES ('T-workctx', 'verification', 'Check event chain', 'open', "
+                    "'G-workctx', 'H-workctx'), ('T-other', 'verification', "
+                    "'Unrelated task', 'open', 'G-other', 'H-other')"
+                )
+                db.execute(
+                    "INSERT INTO trace.hypothesis_reasoning "
+                    "(entry_id, hypothesis_id, session_id, iteration, phase, "
+                    "query_id, body, created_at) VALUES "
+                    "('HR-workctx', 'H-workctx', 'old-session', 1, 'check', "
+                    "'Q-prior', 'previous SQL attempt', now())"
+                )
                 create_hypothesis_evidence_link(
                     db,
                     hypothesis_id="H-workctx",
@@ -205,29 +215,33 @@ class PlannerRetryTests(unittest.TestCase):
                     assessment_id="EA-wctx",
                     matched_conditions=("co_observed_event_ids",),
                 )
+            with CaseDB(Case.init(tmpdir)) as db:
                 first = plan(db)[0]
                 block_first = self._extract_work_context(first)
+            with CaseDB(Case.init(tmpdir)) as db:
                 second = plan(db)[0]
                 self.assertEqual(block_first, self._extract_work_context(second))
 
-        self.assertEqual(1, block_first.count('<WORK_CONTEXT source="case_db">'))
-        self.assertIn("current work: H-workctx (status=active)", block_first)
-        self.assertIn("evidence=evtx-wctx", block_first)
+        self.assertEqual(1, block_first.count("<WORKING_STATE source=case_trace>"))
+        self.assertIn("current hypothesis=H-workctx status=active", block_first)
+        self.assertIn("current support=evidence=evtx-wctx", block_first)
         self.assertNotIn("root=declared:evtx-wctx", block_first)
         self.assertIn("assessment=EA-wctx", block_first)
         self.assertIn("query=Q-wctx", block_first)
-        # The declared condition is shown as unmet: the assessed link is
-        # delivered from DB, not disguised as checker prose.
-        self.assertIn(
-            "unmet spec conditions (no current assessment matched)", block_first
-        )
+        self.assertIn("open gap=G-workctx", block_first)
+        self.assertIn("open task=T-workctx", block_first)
+        self.assertNotIn("G-other", block_first)
+        self.assertNotIn("T-other", block_first)
+        self.assertIn("Q-prior", "\n".join(m["content"] for m in first))
+        # The unmatched declared condition remains visible after DB reopen.
+        self.assertIn('unmet condition=same_entities=["src_ip"]', block_first)
 
     @staticmethod
     def _extract_work_context(messages: list[dict[str, str]]) -> str:
-        """Pull the <WORK_CONTEXT> block out of the two-message prompt."""
+        """Pull the <WORKING_STATE> block out of the two-message prompt."""
         user = messages[-1]["content"]
-        start = user.index("<WORK_CONTEXT")
-        return user[start : user.index("</WORK_CONTEXT>") + len("</WORK_CONTEXT>")]
+        start = user.index("<WORKING_STATE")
+        return user[start : user.index("</WORKING_STATE>") + len("</WORKING_STATE>")]
 
     def test_plan_disclosure_follows_the_spec_capability_correspondence(self) -> None:
         """V2-08: one spec/capability correspondence drives plan disclosure.
@@ -270,7 +284,6 @@ class PlannerRetryTests(unittest.TestCase):
                 return plan_hypothesis_query(
                     state=state,
                     hypothesis=hypothesis,
-                    memory=self._memory(),
                     base_url=_llm_base_url(),
                     model="test-model",
                     db=db,
@@ -313,7 +326,7 @@ class PlannerRetryTests(unittest.TestCase):
                 # existing Trace retrieval events (this session only).
                 rows = db.execute(
                     "SELECT source_kind, selected_refs, selected_chars "
-                    "FROM retrieval_events WHERE session_id = 'session-disclosure'"
+                    "FROM trace.retrieval_events WHERE session_id = 'session-disclosure'"
                 ).fetchall()
                 kinds = {str(row[0]) for row in rows}
                 self.assertIn("org_knowledge", kinds)
@@ -442,7 +455,6 @@ class PlannerRetryTests(unittest.TestCase):
             result = plan_hypothesis_query(
                 state=state,
                 hypothesis=hypothesis,
-                memory=self._memory(),
                 base_url=_llm_base_url(),
                 model="test-model",
             )
@@ -477,7 +489,6 @@ class PlannerRetryTests(unittest.TestCase):
             plan_hypothesis_query(
                 state=other_state,
                 hypothesis=Hypothesis(id="H-other", description="other question"),
-                memory=self._memory(),
                 base_url=_llm_base_url(),
                 model="test-model",
             )
@@ -513,7 +524,6 @@ class PlannerRetryTests(unittest.TestCase):
                 result = plan_hypothesis_query(
                     state=SessionState(session_id="session-action", iteration=1),
                     hypothesis=Hypothesis(id="H-action", description="inspect events"),
-                    memory=self._memory(),
                     base_url=_llm_base_url(),
                     model="test-model",
                 )
@@ -579,37 +589,6 @@ class PlannerRetryTests(unittest.TestCase):
         )
         self.assertNotIn("q_failed_logon_by_ip_window", system)
 
-    def test_repeated_memory_action_is_ineligible_after_expansion(self) -> None:
-        state = SessionState(session_id="session-action", iteration=1)
-        hypothesis = Hypothesis(id="H-action", description="test hypothesis")
-        responses = [
-            {
-                "action": {
-                    "type": "memory.read_more",
-                    "paths": ["details/extra.md"],
-                }
-            },
-            {
-                "action": {
-                    "type": "memory.read_more",
-                    "paths": ["facts.md"],
-                }
-            },
-        ]
-        with patch(
-            "forensia.llm.json_response.request_llm_json", side_effect=responses
-        ) as request:
-            result = plan_hypothesis_query(
-                state=state,
-                hypothesis=hypothesis,
-                memory=self._memory(),
-                base_url=_llm_base_url(),
-                model="test-model",
-            )
-        self.assertIsNone(result.query)
-        self.assertIn("not eligible", result.stop_reason or "")
-        self.assertEqual(2, request.call_count)
-
     def test_query_intent_exposes_current_and_peer_active_hypotheses(self) -> None:
         current = Hypothesis(id="H-A", description="gap alpha current question")
         other = Hypothesis(id="H-B", description="gap beta peer hypothesis")
@@ -641,7 +620,6 @@ class PlannerRetryTests(unittest.TestCase):
             plan_hypothesis_query(
                 state=state,
                 hypothesis=current,
-                memory=self._memory(),
                 base_url=_llm_base_url(),
                 model="test-model",
             )
@@ -675,7 +653,6 @@ class PlannerRetryTests(unittest.TestCase):
             result = plan_hypothesis_query(
                 state=state,
                 hypothesis=hypothesis,
-                memory=self._memory(),
                 base_url=_llm_base_url(),
                 model="test-model",
             )
@@ -718,7 +695,6 @@ class PlannerRetryTests(unittest.TestCase):
                 result = plan_hypothesis_query(
                     state=state,
                     hypothesis=hypothesis,
-                    memory=self._memory(),
                     base_url=_llm_base_url(),
                     model="test-model",
                     db=db,
@@ -752,21 +728,21 @@ class PlannerRetryTests(unittest.TestCase):
             with CaseDB(case) as db:
                 db.execute(
                     """
-                    INSERT INTO hypothesis_reasoning (
+                    INSERT INTO trace.hypothesis_reasoning (
                         entry_id, hypothesis_id, session_id, iteration, phase, verdict, query_id, body, created_at
                     ) VALUES ('HR-1', 'H1', 'S-1', 1, 'check', 'inconclusive', 'Q-old', 'already tested', now())
                     """
                 )
                 db.execute(
                     """
-                    INSERT INTO hypothesis_reasoning (
+                    INSERT INTO trace.hypothesis_reasoning (
                         entry_id, hypothesis_id, session_id, iteration, phase, verdict, query_id, body, created_at
                     ) VALUES ('HR-2', 'H1', 'S-1', 1, 'sufficiency', 'inconclusive', 'Q-old', 'missing required capability', now())
                     """
                 )
                 db.execute(
                     """
-                    INSERT INTO hypothesis_reasoning (
+                    INSERT INTO trace.hypothesis_reasoning (
                         entry_id, hypothesis_id, session_id, iteration, phase, verdict, query_id, body, created_at
                     ) VALUES ('HR-3', 'H1', 'S-1', 1, 'settlement', 'inconclusive', 'Q-old', 'host settlement gate blocked confirmation', now())
                     """
@@ -778,7 +754,6 @@ class PlannerRetryTests(unittest.TestCase):
                     plan_hypothesis_query(
                         state=state,
                         hypothesis=hypothesis,
-                        memory=self._memory(),
                         base_url=_llm_base_url(),
                         model="test-model",
                         db=db,
@@ -829,7 +804,7 @@ class PlannerRetryTests(unittest.TestCase):
             with CaseDB(case) as db:
                 db.execute(
                     """
-                    INSERT INTO hypothesis_reasoning (
+                    INSERT INTO trace.hypothesis_reasoning (
                         entry_id, hypothesis_id, session_id, iteration, phase, verdict, query_id, body, created_at
                     ) VALUES ('HR-1', 'H1', 'S-1', 1, 'check', 'inconclusive', 'Q-local', 'duplicate row', now())
                     """
@@ -841,7 +816,6 @@ class PlannerRetryTests(unittest.TestCase):
                     plan_hypothesis_query(
                         state=state,
                         hypothesis=hypothesis,
-                        memory=self._memory(),
                         base_url=_llm_base_url(),
                         model="test-model",
                         db=db,
@@ -855,103 +829,6 @@ class PlannerRetryTests(unittest.TestCase):
         # the same query_id must merge with the local history entry, not
         # appear as a second attempt.
         self.assertEqual(1, first_call_system.count("query_id=Q-local"))
-
-    def test_request_with_optional_context_starts_with_default_memory(self) -> None:
-        seen: list[str] = []
-
-        def builder(extra_context: str) -> list[dict[str, str]]:
-            seen.append(extra_context)
-            return [{"role": "user", "content": extra_context}]
-
-        with patch(
-            "forensia.llm.json_response.request_llm_json",
-            return_value={
-                "action": {
-                    "type": "sql.query",
-                    "intent": "inspect events",
-                    "target_table": "evtx_events",
-                    "sql": "SELECT event_id FROM evtx_events LIMIT 1",
-                }
-            },
-        ):
-            request_with_optional_context(
-                memory=self._memory(),
-                messages_builder=builder,
-                base_url=_llm_base_url(),
-                model="test-model",
-            )
-
-        self.assertEqual(1, len(seen))
-        self.assertIn("facts.md", seen[0])
-        self.assertIn("tasks.md", seen[0])
-
-    def test_request_with_optional_context_uses_compact_context_for_read_more(
-        self,
-    ) -> None:
-        memory = self._memory()
-        seen: list[str] = []
-        with (
-            patch(
-                "forensia.llm.json_response.request_llm_json",
-                side_effect=[
-                    {
-                        "action": {
-                            "type": "memory.read_more",
-                            "paths": ["details/extra.md"],
-                        }
-                    },
-                    {
-                        "action": {
-                            "type": "sql.query",
-                            "intent": "inspect events",
-                            "target_table": "evtx_events",
-                            "sql": "SELECT event_id FROM evtx_events LIMIT 1",
-                        }
-                    },
-                ],
-            ),
-        ):
-            request_with_optional_context(
-                memory=memory,
-                messages_builder=lambda extra: (
-                    seen.append(extra) or [{"role": "user", "content": extra}]
-                ),
-                base_url=_llm_base_url(),
-                model="test-model",
-            )
-
-        self.assertEqual(2, len(seen))
-        self.assertIn(seen[0], seen[1])
-        self.assertIn("# compact extra", seen[1])
-
-    def test_request_with_optional_context_enforces_hypothesis_scope(self) -> None:
-        case_dir = tempfile.TemporaryDirectory()
-        self.addCleanup(case_dir.cleanup)
-        memory = MemoryManager(Case.init(case_dir.name))
-        events: list[dict] = []
-        with patch(
-            "forensia.llm.json_response.request_llm_json",
-            return_value={
-                "action": {
-                    "type": "memory.read_more",
-                    "paths": ["scratch/H-B/tasks.md"],
-                }
-            },
-        ) as request:
-            result = request_with_optional_context(
-                memory=memory,
-                messages_builder=lambda extra: [{"role": "user", "content": extra}],
-                base_url=_llm_base_url(),
-                model="test-model",
-                hypothesis_id="H-A",
-                retrieval_callback=events.append,
-            )
-
-        self.assertEqual([], result.read_more)
-        self.assertEqual(1, request.call_count)
-        self.assertEqual(["scratch/H-B/tasks.md"], events[0]["rejected_refs"])
-        self.assertEqual("rejected", events[0]["scope_status"])
-        self.assertEqual("invalid", events[0]["retrieval_evaluation"]["outcome"])
 
     def test_query_fingerprint_normalizes_equivalent_ast_forms(self) -> None:
         left = query_fingerprint(
@@ -1027,7 +904,6 @@ class PlannerRetryTests(unittest.TestCase):
             result = plan_hypothesis_query(
                 state=state,
                 hypothesis=hypothesis,
-                memory=self._memory(),
                 base_url=_llm_base_url(),
                 model="test-model",
             )

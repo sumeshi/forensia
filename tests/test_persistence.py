@@ -13,7 +13,6 @@ from forensia.config import (
     resolve_llm_config,
 )
 from forensia.core.case import Case
-from forensia.core.memory import MemoryManager
 from forensia.core.session import Hypothesis, PlannedQuery, SessionState
 from forensia.core.verification import VerificationSpec
 from forensia.db.database import CaseDB
@@ -61,7 +60,7 @@ class PersistenceTests(unittest.TestCase):
         return resolve_llm_config()[0] or "http://test-llm.invalid"
 
     def test_case_connections_for_one_case_are_serialized(self) -> None:
-        """Parallel Web reads must not concurrently ATTACH the same trace DB."""
+        """Parallel Web reads must share the serialized CaseDB connection safely."""
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             first_open = threading.Event()
@@ -153,7 +152,7 @@ class PersistenceTests(unittest.TestCase):
                     body="look for 4625 burst",
                 )
                 count = db.execute(
-                    "SELECT COUNT(*) FROM hypothesis_reasoning WHERE hypothesis_id = 'H-1'"
+                    "SELECT COUNT(*) FROM trace.hypothesis_reasoning WHERE hypothesis_id = 'H-1'"
                 ).fetchone()[0]
 
             self.assertEqual(first, second)
@@ -545,10 +544,9 @@ class PersistenceTests(unittest.TestCase):
                 gap_rows,
             )
 
-    def test_external_or_human_gaps_do_not_become_hypotheses(self) -> None:
+    def test_external_or_human_gaps_remain_case_tasks(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
-            memory = MemoryManager(case)
             with CaseDB(case) as db:
                 state = SessionState(session_id="session-test")
                 added = inject_gap_hypotheses(
@@ -556,7 +554,6 @@ class PersistenceTests(unittest.TestCase):
                     state,
                     ["Check src_ip ownership", "Manager interview needed"],
                     session_id="session-test",
-                    memory=memory,
                 )
                 row_count = db.execute("SELECT COUNT(*) FROM hypotheses").fetchone()[0]
 
@@ -568,10 +565,6 @@ class PersistenceTests(unittest.TestCase):
             )
             self.assertEqual(0, added)
             self.assertEqual(0, row_count)
-            self.assertIn(
-                "ownership",
-                memory.tasks_memory_path.read_text(encoding="utf-8").lower(),
-            )
 
     def test_gap_classification_supports_english_external_and_human_keywords(
         self,
@@ -665,7 +658,6 @@ class PersistenceTests(unittest.TestCase):
                 finding_updates=[],
                 suspicious_evidence=[],
                 new_hypotheses=[],
-                memory_updates={},
                 report_text="confirmed",
                 new_leads=0,
                 progress=False,

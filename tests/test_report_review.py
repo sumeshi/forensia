@@ -11,7 +11,6 @@ from unittest.mock import patch
 from forensia.context.case_profile import build_case_profile, observed_event_ids
 from forensia.context.sql_templates import validate_select_sql
 from forensia.core.case import Case
-from forensia.core.memory import MemoryManager
 from forensia.db.database import CaseDB
 from forensia.knowledge.catalog import _load_yaml, catalog_exe_globs, matches_exe_globs
 from forensia.report.answers.keypoints_report_meta import _report_sections_with_gaps
@@ -176,7 +175,7 @@ class ReportInputGuardContracts(unittest.TestCase):
                     [section.section_key for section in first.sections],
                 )
                 db.execute(
-                    "INSERT INTO investigation_steps (step_id, phase, output_json, created_at) "
+                    "INSERT INTO trace.investigation_steps (step_id, phase, output_json, created_at) "
                     "VALUES ('a', 'report-input', ?, TIMESTAMP '2026-01-01')",
                     (json.dumps(first.record),),
                 )
@@ -202,7 +201,7 @@ class ReportInputGuardContracts(unittest.TestCase):
                     ["01_timeline"], [s.section_key for s in reloaded.sections]
                 )
                 db.execute(
-                    "INSERT INTO investigation_steps (step_id, phase, output_json, created_at) "
+                    "INSERT INTO trace.investigation_steps (step_id, phase, output_json, created_at) "
                     "VALUES ('b', 'report-input', ?, TIMESTAMP '2026-01-02')",
                     (json.dumps(reloaded.record),),
                 )
@@ -271,21 +270,3 @@ class SharedPolicyContracts(unittest.TestCase):
         self.assertTrue(matches_exe_globs("CCLEANER64.EXE", globs))
         self.assertTrue(matches_exe_globs("Eraser.exe", globs))
         self.assertFalse(matches_exe_globs("notepad.exe", globs))
-
-    def test_timeline_regeneration_is_idempotent(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(tmpdir)
-            memory = MemoryManager(case)
-            with CaseDB(case) as db:
-                db.execute(
-                    """
-                    INSERT INTO case_timeline (
-                        entry_id, timestamp, source, ref_id, host, summary, evidence_id
-                    ) VALUES (
-                        'tl-1', '2025-01-01 10:00:00', 'finding', 'F-1',
-                        'PC-01', 'test entry', 'evtx-1'
-                    )
-                    """
-                )
-                self.assertTrue(memory.regenerate_timeline_from_db(db))
-                self.assertFalse(memory.regenerate_timeline_from_db(db))

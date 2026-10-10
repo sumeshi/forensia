@@ -14,7 +14,6 @@ from forensia.db.database import CaseDB
 from forensia.investigation.prompts import (
     _load_benign_context_rules,
     build_finding_extractor_messages,
-    build_memory_updater_messages,
     build_verdict_review_messages,
 )
 from forensia.investigation.verification.check_apply import (
@@ -145,34 +144,6 @@ def _extract_confirmed_findings(
     return finding_parsed.get("findings") or []
 
 
-def _propose_memory_updates(
-    *,
-    verdict: str,
-    hypothesis: Hypothesis | None,
-    result_summary: dict[str, Any],
-    rationale: str,
-    time_range: dict[str, str] | None,
-    model: str,
-    base_url: str,
-    status_callback: Callable[[str], None] | None,
-) -> dict[str, Any]:
-    memory_messages, memory_schema = build_memory_updater_messages(
-        hypothesis=hypothesis,
-        verdict=verdict,
-        rationale=rationale,
-        result_summary=result_summary,
-        time_range=time_range or {},
-    )
-    return _request_check_json(
-        phase="check-memory-update",
-        messages=memory_messages,
-        schema=memory_schema,
-        model=model,
-        base_url=base_url,
-        status_callback=status_callback,
-    )
-
-
 def _build_guarded_check_result(
     *,
     planned_query: PlannedQuery,
@@ -181,7 +152,6 @@ def _build_guarded_check_result(
     fallback_info: dict | None,
     verdict: str,
     verdict_parsed: dict[str, Any],
-    memory_parsed: dict[str, Any],
     extracted_findings: list[dict[str, Any]],
 ) -> tuple[CheckResult, dict[str, Any]]:
     merged = {
@@ -190,8 +160,7 @@ def _build_guarded_check_result(
         "rationale": verdict_parsed.get("rationale", ""),
         "finding_updates": [],
         "suspicious_evidence": [],
-        "new_hypotheses": memory_parsed.get("new_hypotheses") or [],
-        "memory_updates": memory_parsed.get("memory_updates") or {},
+        "new_hypotheses": verdict_parsed.get("new_hypotheses") or [],
         "report_text": verdict_parsed.get("rationale", "") or "",
         "missing_checks": [],
         "notes": "",
@@ -206,7 +175,6 @@ def _build_guarded_check_result(
         finding_updates=guarded.get("finding_updates") or [],
         suspicious_evidence=guarded.get("suspicious_evidence") or [],
         new_hypotheses=parse_new_hypotheses(guarded.get("new_hypotheses")),
-        memory_updates=guarded.get("memory_updates") or {},
         report_text=str(guarded.get("report_text") or ""),
         new_leads=0,
         progress=False,
@@ -229,11 +197,10 @@ def check_query_result(
     time_range: dict[str, str] | None = None,
     fallback_info: dict | None = None,
 ) -> CheckResult:
-    """Run the LLM-based query result check: verdict + memory + suspicious evidence.
+    """Run the LLM-based query result check and persist its guarded result.
 
-    Uses phased checking (separate LLM calls for verdict, memory, and
-    suspicious evidence). Applies guardrails via guardrail_check_payload
-    and persists results via apply_check_result.
+    Confirmed results get a separate finding extraction call. Applies
+    guardrails via guardrail_check_payload and persists via apply_check_result.
     """
     benign_rules = _load_benign_context_rules()
     benign_annotations = (
@@ -264,16 +231,6 @@ def check_query_result(
         base_url=base_url,
         status_callback=status_callback,
     )
-    memory_parsed = _propose_memory_updates(
-        verdict=verdict,
-        hypothesis=hypothesis,
-        result_summary=result_summary,
-        rationale=verdict_parsed.get("rationale", ""),
-        time_range=time_range or {},
-        model=model,
-        base_url=base_url,
-        status_callback=status_callback,
-    )
     result, _merged = _build_guarded_check_result(
         planned_query=planned_query,
         finding_candidates=finding_candidates,
@@ -281,7 +238,6 @@ def check_query_result(
         fallback_info=fallback_info,
         verdict=verdict,
         verdict_parsed=verdict_parsed,
-        memory_parsed=memory_parsed,
         extracted_findings=extracted_findings,
     )
     result.new_leads, result.progress = apply_check_result(

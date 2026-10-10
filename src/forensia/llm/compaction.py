@@ -235,7 +235,7 @@ def llm_compact(
 # "regeneratable" labels.  What the reduction preserves (critical refs) is
 # stated inside the block, and the durable expansion path is the same one
 # that existed before the reduction: the Case/Trace records (investigation
-# steps, receipts, memory files) addressed by the surviving tokens.  A block
+# steps and receipts) addressed by the surviving tokens.  A block
 # produced by this compaction is never condensed again.
 
 _COMPACTED_MARKER_RE = re.compile(r"<COMPACTED_CONTEXT\b[^>]*>")

@@ -91,6 +91,6 @@ def test_repeated_invalid_response_closes_owned_logical_call(tmp_path) -> None:
             reset_active_telemetry(token)
 
         assert db.execute(
-            "SELECT status FROM llm_logical_calls WHERE session_id = ?",
+            "SELECT status FROM trace.llm_logical_calls WHERE session_id = ?",
             ("invalid-json",),
         ).fetchall() == [("failed",)]

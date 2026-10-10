@@ -9,13 +9,14 @@
 # content identity of the row backing a link at assessment time (R03/T04).
 # Read-time currentness compares it with the live row so an in-place content
 # change of the same evidence_id is not silently refilled as support.
+# Version 8: Case and Trace share one database, with Trace tables in the trace schema.
 # Version 2: hypotheses dropped the parallel declaration columns
 # (confirm_when/refute_when/evidence_requirements); the canonical
 # verification_spec JSON is the only stored condition representation.
 # Case databases with a different version are rejected before any
 # persistent DDL/DML (see db/database._check_schema_version); existing
 # cases are preserved and their artifacts are re-ingested into new cases.
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 CORE_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS evtx_events (
@@ -504,6 +505,8 @@ CREATE INDEX IF NOT EXISTS idx_hypothesis_evidence_evidence ON hypothesis_eviden
 """
 
 TRACE_SCHEMA_SQL = """
+CREATE SCHEMA IF NOT EXISTS trace;
+
 CREATE TABLE IF NOT EXISTS trace.ai_reviews (
     review_id VARCHAR,
     finding_id VARCHAR,
@@ -579,10 +582,14 @@ CREATE INDEX IF NOT EXISTS retrieval_events_by_scope
 
 CREATE TABLE IF NOT EXISTS trace.progress_events (
     event_index BIGINT PRIMARY KEY,
+    session_id VARCHAR,
+    kind VARCHAR,
+    severity VARCHAR,
+    reason VARCHAR,
+    refs JSON,
     stage VARCHAR,
     status VARCHAR,
     iteration INTEGER,
-    current_query VARCHAR,
     summary VARCHAR,
     payload JSON,
     created_at TIMESTAMP

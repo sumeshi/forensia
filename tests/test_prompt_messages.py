@@ -237,7 +237,9 @@ class PriorAttemptsBlockTests(unittest.TestCase):
         # The raw JSON dump of history must be gone.
         self.assertNotIn("recent_history:", system)
 
-    def test_investigation_prompts_project_repeated_and_raw_context(self) -> None:
+    def test_investigation_prompts_project_history_without_markdown_memory(
+        self,
+    ) -> None:
         from forensia.investigation.prompts import (
             build_query_intent_messages,
             build_verdict_review_messages,
@@ -259,20 +261,14 @@ class PriorAttemptsBlockTests(unittest.TestCase):
                     hypothesis,
                     Hypothesis(id="H-002", description="peer hypothesis"),
                 ],
-                extra_context_md=(
-                    "# KP-1\n\n- theme_finding_count: 2\n\n"
-                    "## Theme Finding IDs\n- opaque-1\n- opaque-2\n\n"
-                    "## Evidence IDs\n- ev-1\n"
-                ),
             )
         combined = "\n".join(message["content"] for message in plan_messages)
         self.assertEqual(1, combined.count("UNIQUE-CURRENT-HYPOTHESIS"))
         self.assertNotIn("confirm_when", combined)
         self.assertIn("verification_spec", combined)
         self.assertIn("peer hypothesis", combined)
-        self.assertNotIn("opaque-1", combined)
-        self.assertIn("theme_finding_count: 2", combined)
-        self.assertIn("## Evidence IDs", combined)
+        self.assertNotIn("<WORK_CONTEXT", combined)
+        self.assertNotIn("Theme Finding IDs", combined)
 
         raw_json = (
             '{"event":{"provider":"microsoft-windows-eventsystem","code":4625},'
@@ -655,7 +651,7 @@ class IndexedContextTests(unittest.TestCase):
         self.assertNotIn("RECIPE_INDEX", text)
         self.assertIn("<SELECTED_SCHEMA_CARDS>", text)
         row = self.db.execute(
-            "SELECT source_kind, selected_refs FROM retrieval_events"
+            "SELECT source_kind, selected_refs FROM trace.retrieval_events"
         ).fetchone()
         self.assertIsNotNone(row)
         self.assertEqual("schema_hints", row[0])

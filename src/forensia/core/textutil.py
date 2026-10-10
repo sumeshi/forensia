@@ -37,7 +37,7 @@ def token_set_similarity(a: str, b: str) -> float:
     """Compute token-set overlap ratio between two strings.
 
     Returns len(a_tokens & b_tokens) / max(len(a_tokens), len(b_tokens)).
-    Used for overview dedup in investigator's _apply_memory_updates.
+    Kept for callers that compare free-text summaries.
     """
     tokens_a = set(a.lower().split())
     tokens_b = set(b.lower().split())

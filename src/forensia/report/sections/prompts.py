@@ -363,7 +363,6 @@ def build_section_agent_plan_messages(
     prior_runs: list[dict[str, Any]],
     reusable_facts: list[dict[str, Any]],
     reusable_evidence: list[dict[str, Any]],
-    memory_context_md: str = "",
     time_range: dict[str, str] | None = None,
     evidence_keypoints: list[str] | None = None,
     prior_section_keypoints: list[str] | None = None,
@@ -471,7 +470,7 @@ Output: {"action": "keypoint", "keypoint": "overview_hosts", "purpose": "List ho
         f"{_dfir_playbook('section_agent_plan', event_ids=plan_event_ids, tables=_sa_tables, sections=plan_playbook_sections, db=db, session_id=session_id)}\n"
         f"{_time_range_guidance(time_range)}"
         "<TASK>You are a DFIR section-planning agent. Decide next evidence-gathering action for report block.</TASK>\n"
-        "<INPUT_SCHEMA>section_key, block_heading, template_block, structured_memory_context, findings_snapshot, keypoint_catalog, query_template_catalog, prior_runs</INPUT_SCHEMA>\n"
+        "<INPUT_SCHEMA>section_key, block_heading, template_block, findings_snapshot, keypoint_catalog, query_template_catalog, prior_runs</INPUT_SCHEMA>\n"
         f"{schema_notes_block}"
         "<TIME_RULES>\nIMPORTANT: The case data may be from a DIFFERENT YEAR than the current date. "
         "DO NOT use datetime('now') or CURRENT_TIMESTAMP in SQL queries — these refer to the current system time, not the case time. "
@@ -509,7 +508,6 @@ Output: {"action": "keypoint", "keypoint": "overview_hosts", "purpose": "List ho
         f"section_title: {section_title}\n"
         f"block_heading: {block_heading}\n\n"
         f"template_block:\n{template_body}\n\n"
-        f"structured_memory_context:\n{memory_context_md}\n\n"
         f"report_brief: {plan_brief}\n\n"
         f"publication_constraints: {publication_guidance or 'none'}\n\n"
         f"previous_sections: {truncate_context_sections(context_sections)}\n\n"
@@ -554,7 +552,6 @@ def build_section_agent_check_messages(
     prior_runs: list[dict[str, Any]],
     reusable_facts: list[dict[str, Any]],
     reusable_evidence: list[dict[str, Any]],
-    memory_context_md: str = "",
     time_range: dict[str, str] | None = None,
     question_spec: dict[str, Any] | None = None,
     db: CaseDB | None = None,
@@ -611,7 +608,7 @@ Output: {"verdict": "block_contradicted", "status": "not_found", "rationale": "N
         f"{_dfir_playbook('section_agent_check', event_ids=_sac_ids)}\n"
         f"{_time_range_guidance(time_range)}"
         "<TASK>You are a DFIR section-check agent. Judge if collected evidence suffices to write the report block.</TASK>\n"
-        "<INPUT_SCHEMA>collected_results, latest_result, reusable_section_facts, reusable_section_evidence, structured_memory_context, template_block</INPUT_SCHEMA>\n"
+        "<INPUT_SCHEMA>collected_results, latest_result, reusable_section_facts, reusable_section_evidence, template_block</INPUT_SCHEMA>\n"
         "<OUTPUT_SCHEMA>\n"
         "{\n"
         '  "verdict": "block_supported|block_needs_more|block_contradicted",\n'
@@ -640,7 +637,6 @@ Output: {"verdict": "block_contradicted", "status": "not_found", "rationale": "N
         f"block_heading: {block_heading}\n\n"
         f"template_block:\n{template_body}\n\n"
         f"semantic_question_spec: {question_spec or {}}\n\n"
-        f"structured_memory_context:\n{memory_context_md}\n\n"
         f"reusable_section_facts: {prompt_reusable_facts[:12]}\n\n"
         f"reusable_section_evidence: {prompt_reusable_evidence[:20]}\n\n"
         f"latest_result: {prompt_latest_result}\n\n"

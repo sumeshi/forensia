@@ -59,7 +59,6 @@ class QuestionAnswerTests(unittest.TestCase):
                     ),
                 )
                 results = resolve_evidence_results(
-                    case,
                     db,
                     keypoints=[
                         "structured_cloud_artifacts",

@@ -65,7 +65,7 @@ def test_deterministic_op_is_not_counted_as_llm_attempt(telemetry) -> None:
     assert agg["provider_attempt_count"] == 0
     assert agg["deterministic_op_count"] == 1
     rows = telemetry.db.execute(
-        "SELECT op_type, target FROM llm_deterministic_ops"
+        "SELECT op_type, target FROM trace.llm_deterministic_ops"
     ).fetchall()
     assert rows[0] == ("render", "appendix-24")
 
@@ -75,7 +75,7 @@ def test_logical_call_inherits_hypothesis_scope(telemetry) -> None:
         logical_call_id = telemetry.begin_logical_call(phase="hypothesis_plan")
 
     row = telemetry.db.execute(
-        "SELECT hypothesis_id, iteration FROM llm_logical_calls "
+        "SELECT hypothesis_id, iteration FROM trace.llm_logical_calls "
         "WHERE logical_call_id = ?",
         (logical_call_id,),
     ).fetchone()
@@ -122,7 +122,7 @@ def test_logical_call_cap_counts_failed_calls_and_blocks_before_transport(
         set_active_telemetry(None)
     assert client.calls == llm_client._LLM_HTTP_RETRY_MAX
     assert db.execute(
-        "SELECT status FROM llm_logical_calls WHERE session_id = 'S-CAP'"
+        "SELECT status FROM trace.llm_logical_calls WHERE session_id = 'S-CAP'"
     ).fetchall() == [("failed",)]
     assert tel.session_aggregates()["logical_call_count"] == 1
 
@@ -151,10 +151,10 @@ def test_unexpected_transport_error_finalizes_attempt_and_call(tmp_path) -> None
     finally:
         set_active_telemetry(None)
     assert db.execute(
-        "SELECT status, exception_class FROM llm_provider_attempts WHERE session_id = 'S-UNEXPECTED'"
+        "SELECT status, exception_class FROM trace.llm_provider_attempts WHERE session_id = 'S-UNEXPECTED'"
     ).fetchall() == [("transport_error", "ValueError")]
     assert db.execute(
-        "SELECT status FROM llm_logical_calls WHERE session_id = 'S-UNEXPECTED'"
+        "SELECT status FROM trace.llm_logical_calls WHERE session_id = 'S-UNEXPECTED'"
     ).fetchall() == [("failed",)]
 
 
@@ -178,7 +178,7 @@ def test_json_plan_and_repair_share_one_budgeted_logical_call(tmp_path) -> None:
     finally:
         set_active_telemetry(None)
     assert db.execute(
-        "SELECT phase, status FROM llm_logical_calls WHERE session_id = 'S-REPAIR'"
+        "SELECT phase, status FROM trace.llm_logical_calls WHERE session_id = 'S-REPAIR'"
     ).fetchall() == [("request_llm_json", "success")]
     assert tel.session_aggregates()["logical_call_count"] == 1
 
@@ -214,7 +214,7 @@ def test_nested_context_compaction_budget_exhaustion_propagates(tmp_path) -> Non
     finally:
         set_active_telemetry(None)
     assert db.execute(
-        "SELECT status FROM llm_logical_calls WHERE session_id = 'S-COMPACT'"
+        "SELECT status FROM trace.llm_logical_calls WHERE session_id = 'S-COMPACT'"
     ).fetchall() == [("failed",)]
 
 
@@ -320,7 +320,7 @@ def test_client_creates_attempt_receipts_for_retry_then_success(
 
     rows = db.execute(
         "SELECT status, http_status, retry_ordinal, request_body, response_body "
-        "FROM llm_provider_attempts ORDER BY retry_ordinal"
+        "FROM trace.llm_provider_attempts ORDER BY retry_ordinal"
     ).fetchall()
     # one failed 500 attempt + one success attempt
     assert rows[0][0] == "provider_error" and rows[0][1] == 500
@@ -360,7 +360,7 @@ def test_client_creates_timeout_attempt_receipt(tmp_path, monkeypatch) -> None:
     set_active_telemetry(None)
 
     rows = db.execute(
-        "SELECT status, error_type, deadline_fired FROM llm_provider_attempts"
+        "SELECT status, error_type, deadline_fired FROM trace.llm_provider_attempts"
     ).fetchall()
     assert rows[0][0] == "timeout"
     assert rows[0][1] == "timeout"
@@ -382,7 +382,7 @@ def _truncated_response() -> httpx.Response:
 
 def _assert_truncation_receipt(db: CaseDB, session_id: str) -> None:
     calls = db.execute(
-        "SELECT status FROM llm_logical_calls WHERE session_id = ?", (session_id,)
+        "SELECT status FROM trace.llm_logical_calls WHERE session_id = ?", (session_id,)
     ).fetchall()
     assert calls == [("failed",)]
     row = db.execute(
@@ -390,7 +390,7 @@ def _assert_truncation_receipt(db: CaseDB, session_id: str) -> None:
         SELECT status, error_type, parse_status, finish_reason, truncated,
                accepted, discarded_reason, error_body_summary, response_fingerprint,
                request_body, response_body
-        FROM llm_provider_attempts WHERE session_id = ?
+        FROM trace.llm_provider_attempts WHERE session_id = ?
         """,
         (session_id,),
     ).fetchone()

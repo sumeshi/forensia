@@ -18,11 +18,11 @@ from forensia.context.case_profile import (
 )
 from forensia.core.case import Case
 from forensia.core.log import log as _log
-from forensia.core.memory import MemoryManager
 from forensia.core.progress_event import progress_event
 from forensia.core.session import SessionState
 from forensia.db.database import CaseDB
 from forensia.db.investigation_state import save_stop_reason
+from forensia.db.progress import record_progress_event
 from forensia.investigation.case_policy import (
     CasePolicyInput,
     collect_policy_progress_event,
@@ -37,13 +37,11 @@ from forensia.investigation.investigation_session import (
     _finding_snapshot,
     _init_session,
     persist_session_terminal_receipt,
-    sync_keypoint_cards,
     touch_session_heartbeat,
 )
 from forensia.investigation.report_gap import (
     evaluation_snapshot,
     inject_gap_hypotheses,
-    project_investigation_tasks,
     report_cycle_progress,
 )
 from forensia.investigation.work_judgment import open_work_refs
@@ -105,7 +103,6 @@ async def _run_report_phase(
     focus_sections: list[str],
     report_max_queries_per_section: int,
     state: SessionState,
-    memory: MemoryManager,
 ) -> tuple[dict[str, Any], str]:
     """Run the report refresh phase.
 
@@ -149,10 +146,14 @@ async def _run_report_phase(
         if progress_callback:
             progress_callback(
                 progress_event(
-                    "investigate/report-cycle-done",
-                    "running",
+                    "report.cycle",
+                    "failed",
+                    severity="error",
+                    reason=f"exception:{type(exc).__name__}",
+                    stage="render",
                     iteration=plan_cycle,
-                    summary=f"[REPORT] refresh failed: {error_label}",
+                    session_id=session_id,
+                    summary="report section refresh failed",
                 )
             )
         try:
@@ -172,7 +173,7 @@ async def _run_report_phase(
         state=state,
         gaps=report_result["gaps"],
         session_id=session_id,
-        memory=memory,
+        progress_callback=progress_callback,
     )
     # Gap/Task/Hypothesis admission mutates Case State after section refresh;
     # rebuild the status after that mutation, while retaining the section body
@@ -188,12 +189,9 @@ def _classify_active_hypotheses_on_stop(
     db: CaseDB,
     active_hypotheses: list,
     stop_reason: str,
-    memory: MemoryManager | None = None,
 ) -> dict[str, int]:
     """Backward-compatible entry point for the authoritative transition."""
     counts = classify_active_hypotheses_on_stop(db, active_hypotheses, stop_reason)
-    if memory is not None:
-        project_investigation_tasks(db, memory)
     return counts
 
 
@@ -260,7 +258,7 @@ def _planner_only_terminal_reason(db: CaseDB, session_id: str) -> str | None:
         SELECT
             SUM(CASE WHEN phase = 'plan-hypothesis' THEN 1 ELSE 0 END) AS plan_steps,
             SUM(CASE WHEN phase IN ('do', 'check') THEN 1 ELSE 0 END) AS do_check_steps
-        FROM investigation_steps
+        FROM trace.investigation_steps
         WHERE session_id = ?
         """,
         (session_id,),
@@ -270,7 +268,7 @@ def _planner_only_terminal_reason(db: CaseDB, session_id: str) -> str | None:
     failure = db.execute(
         """
         SELECT COUNT(*)
-        FROM hypothesis_reasoning
+        FROM trace.hypothesis_reasoning
         WHERE session_id = ?
           AND body LIKE '[planner-validation]%'
         """,
@@ -293,7 +291,6 @@ class _InvestigateEnv:
     model: str
     state: Any
     ctx: Any
-    memory: MemoryManager
     session_id: str
     report_sections: list[SectionSource]
     case_profile: CaseEvidenceProfile
@@ -333,7 +330,6 @@ async def _run_investigation_loop(env: _InvestigateEnv) -> tuple[str, int, str]:
     for plan_cycle in range(1, env.max_iter + 1):
         env.state.iteration = plan_cycle
         env.state.findings_snapshot = _finding_snapshot(env.db)
-        sync_keypoint_cards(env.memory, env.state.findings_snapshot)
         _log(
             "PLAN",
             f"Cycle {plan_cycle}/{env.max_iter} — broad planning (active={len(env.state.active_hypotheses)} resolved={len(env.state.resolved_hypotheses)})",
@@ -355,7 +351,6 @@ async def _run_investigation_loop(env: _InvestigateEnv) -> tuple[str, int, str]:
             session_id=env.session_id,
             base_url=env.base_url,
             model=env.model,
-            memory=env.memory,
             progress_callback=env.progress_callback,
             max_queries_per_hypothesis=env.max_queries_per_hypothesis,
             plan_cycle=plan_cycle,
@@ -381,12 +376,10 @@ async def _run_investigation_loop(env: _InvestigateEnv) -> tuple[str, int, str]:
             focus_sections=focus_sections,
             report_max_queries_per_section=env.report_max_queries_per_section,
             state=env.state,
-            memory=env.memory,
         )
         if refresh_status.startswith("failed"):
             report_refresh_failures += 1
         env.ctx.report_status = report_after
-        env.memory.regenerate_timeline_from_db(env.db)
         refresh_evidence_coverage(env.db)
         # Compare at the commit point: the cycle's own Coverage refresh and
         # Gap/Task admissions are visible to the comparison in the same cycle
@@ -423,7 +416,6 @@ async def _run_investigation_loop(env: _InvestigateEnv) -> tuple[str, int, str]:
                     env.db,
                     env.state.active_hypotheses,
                     stop_reason_code,
-                    env.memory,
                 )
             return terminal_status, report_refresh_failures, stop_reason_code
     planner_only_reason = (
@@ -432,7 +424,7 @@ async def _run_investigation_loop(env: _InvestigateEnv) -> tuple[str, int, str]:
         else _planner_only_terminal_reason(env.db, env.session_id)
     )
     _classify_active_hypotheses_on_stop(
-        env.db, env.state.active_hypotheses, "max_iterations", env.memory
+        env.db, env.state.active_hypotheses, "max_iterations"
     )
     return "stopped", report_refresh_failures, planner_only_reason or "max_iterations"
 
@@ -459,7 +451,6 @@ async def _final_report_refresh(env: _InvestigateEnv) -> int:
             force_all=True,
         )
         render_written_report(env.case, env.db)
-        env.memory.regenerate_timeline_from_db(env.db)
         return 0
     except LLMBudgetExceededError:
         raise
@@ -528,13 +519,21 @@ async def investigate(
     report_decision = decide_report_sources(case, db, template_root, report_spec)
     report_sections = report_decision.sections
     case_profile = _prepare_case_profile(case, db)
-    state, ctx, memory, session_id = _init_session(
+
+    def publish_progress(payload: dict[str, Any]) -> None:
+        """Persist producer events before notifying an optional observer."""
+        record_progress_event(db, payload)
+        if progress_callback:
+            progress_callback(payload)
+
+    state, ctx, session_id = _init_session(
         case,
         db,
         template_root,
         report_only=report_only,
         forensia_policy=forensia_policy,
         report_input_record=report_decision.record,
+        progress_callback=publish_progress,
     )
     owner_id = ctx.owner_id
     if not owner_id:
@@ -545,6 +544,7 @@ async def investigate(
     def session_progress(payload: dict[str, Any]) -> None:
         """Publish progress and refresh the session lease at bounded cadence."""
         nonlocal last_heartbeat, last_stage
+        payload.setdefault("session_id", session_id)
         now = time.monotonic()
         stage = str(payload.get("stage") or "running")
         reason = str(payload.get("summary") or "") or None
@@ -562,8 +562,7 @@ async def investigate(
             )
             last_heartbeat = now
             last_stage = stage
-        if progress_callback:
-            progress_callback(payload)
+        publish_progress(payload)
 
     ctx.progress_callback = session_progress
     env = _InvestigateEnv(
@@ -573,7 +572,6 @@ async def investigate(
         model=model,
         state=state,
         ctx=ctx,
-        memory=memory,
         session_id=session_id,
         report_sections=report_sections,
         case_profile=case_profile,
@@ -644,25 +642,45 @@ async def investigate(
     finally:
         finished_at = datetime.now(UTC).replace(tzinfo=None)
         # Persist the terminal session receipt before fallible projections.  A
-        # Memory or audit-summary write must not leave a completed DB session
+        # Audit-summary write must not leave a completed DB session
         # looking permanently active.
         try:
+            terminal_reason = format_stop_reason(
+                status,
+                stop_reason_code,
+                stop_summary(db, len(state.active_hypotheses)),
+            )
             persist_session_terminal_receipt(
                 db,
                 session_id,
                 status,
-                terminal_reason=format_stop_reason(
-                    status,
-                    stop_reason_code,
-                    stop_summary(db, len(state.active_hypotheses)),
-                ),
+                terminal_reason=terminal_reason,
                 finished_at=finished_at,
                 owner_id=owner_id,
             )
             db.execute(
-                "UPDATE investigation_sessions SET iterations = ? "
+                "UPDATE trace.investigation_sessions SET iterations = ? "
                 "WHERE session_id = ? AND owner_id = ?",
                 (state.iteration, session_id, owner_id),
+            )
+            session_progress(
+                progress_event(
+                    "investigation.terminal",
+                    status,
+                    severity=(
+                        "success"
+                        if status == "completed"
+                        else "error"
+                        if status == "failed"
+                        else "warning"
+                    ),
+                    reason=stop_reason_code or "work_complete",
+                    refs={"session_id": session_id},
+                    stage="terminal",
+                    iteration=state.iteration,
+                    session_id=session_id,
+                    summary=terminal_reason,
+                )
             )
         except Exception as exc:
             _log("FINALIZE", f"session receipt failed: {exc}", level="error")
@@ -682,10 +700,6 @@ async def investigate(
                 f"investigation state projection failed: {exc}",
                 level="error",
             )
-        try:
-            memory.regenerate_timeline_from_db(db)
-        except Exception as exc:
-            _log("FINALIZE", f"Memory timeline projection failed: {exc}", level="error")
         try:
             await close_llm_clients(client_scope_id)
         except Exception as exc:

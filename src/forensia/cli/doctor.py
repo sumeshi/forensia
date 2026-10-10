@@ -59,7 +59,7 @@ def _case_storage() -> None:
             )
         with CaseDB(case) as db:
             if db.execute(
-                "SELECT phase FROM investigation_steps WHERE step_id = 'doctor'"
+                "SELECT phase FROM trace.investigation_steps WHERE step_id = 'doctor'"
             ).fetchone() != ("health",):
                 raise RuntimeError("Trace persistence readback failed")
             db.execute("SELECT COUNT(*) FROM evidence_sources").fetchone()

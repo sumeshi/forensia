@@ -14,7 +14,6 @@ from forensia.context.case_profile import (
 from forensia.context.investigation_candidates import build_investigation_candidates
 from forensia.core.case import Case
 from forensia.core.log import log as _log
-from forensia.core.memory import MemoryManager
 from forensia.core.progress_event import progress_event
 from forensia.core.session import Hypothesis, LLMBudgetExceededError, SessionState
 from forensia.db.database import CaseDB
@@ -28,16 +27,13 @@ from forensia.investigation.hypotheses.hypothesis_manager import (
 from forensia.investigation.hypotheses.hypothesis_runner import (
     _investigate_one_hypothesis,
 )
-from forensia.investigation.hypotheses.hypothesis_store import _all_hypotheses
 from forensia.investigation.hypotheses.seeding import (
     _scan_report_keypoints,
 )
 from forensia.investigation.investigation_session import (
     Ctx,
     _call_with_outage_recovery,
-    _ctx_get_report_status,
     _save_step,
-    ctx_refresh_caches,
 )
 from forensia.investigation.planner import _compute_uncovered_keypoints
 from forensia.investigation.prompts import (
@@ -167,7 +163,7 @@ async def _identify_broad_plan_gaps(
         }
     )
     prior_gap_attempts = ctx.db.execute(
-        "SELECT input_json, output_json FROM investigation_steps "
+        "SELECT input_json, output_json FROM trace.investigation_steps "
         "WHERE phase = 'plan-broad-gap-selection'"
     ).fetchall()
     matching_gap_attempts: list[tuple[str | None, dict[str, Any]]] = []
@@ -357,7 +353,7 @@ def _candidate_input_fingerprint(
 def _prior_candidate_attempts(db: CaseDB) -> dict[str, list[dict[str, Any]]]:
     attempts: dict[str, list[dict[str, Any]]] = {}
     rows = db.execute(
-        "SELECT input_json, output_json FROM investigation_steps "
+        "SELECT input_json, output_json FROM trace.investigation_steps "
         "WHERE phase = 'plan-broad-candidate' ORDER BY created_at, step_id"
     ).fetchall()
     for input_json, output_json in rows:
@@ -389,7 +385,7 @@ def _remaining_broad_plan_calls(db: CaseDB, session_id: str, cap: int) -> int:
         return cap
     used = int(
         db.execute(
-            "SELECT COUNT(*) FROM llm_logical_calls WHERE session_id = ?",
+            "SELECT COUNT(*) FROM trace.llm_logical_calls WHERE session_id = ?",
             [session_id],
         ).fetchone()[0]
         or 0
@@ -601,6 +597,17 @@ async def _draft_and_admit_candidate(
                     "attempt_number": attempt_number,
                 }
             )
+            if ctx.emit_fn:
+                ctx.emit_fn(
+                    "investigate/admit",
+                    "Broad-plan hypothesis draft was rejected",
+                    iteration=ctx.plan_cycle,
+                    kind="hypothesis.admission_skipped",
+                    status="skipped",
+                    severity="warning",
+                    reason=str(reason),
+                    candidate_ref=candidate_ref,
+                )
             return hypothesis, {
                 "candidate_ref": candidate_ref,
                 "status": "admission_rejected",
@@ -665,6 +672,18 @@ async def _draft_and_admit_candidate(
                 "attempt_number": attempt_number,
             }
         )
+        if ctx.emit_fn:
+            ctx.emit_fn(
+                "investigate/admit",
+                f"Admitted hypothesis {merged.id} from broad-plan candidate",
+                iteration=ctx.plan_cycle,
+                kind="hypothesis.admitted",
+                status="completed",
+                severity="success",
+                reason="broad_plan_candidate_admitted",
+                hypothesis_id=merged.id,
+                candidate_ref=candidate_ref,
+            )
         return hypothesis, {
             "candidate_ref": candidate_ref,
             "status": "admitted",
@@ -812,6 +831,10 @@ def _emit_broad_plan_result(
             f"[plan] drafts={len(drafted_hypotheses)} candidates={candidate_count} "
             f"unassessed={unassessed_count} active={len(ctx.state.active_hypotheses)}",
             iteration=ctx.plan_cycle,
+            kind="investigation.plan.completed",
+            status="completed",
+            severity="success",
+            reason="no_remaining_candidates" if stop_flag else "planning_complete",
         )
 
 
@@ -987,7 +1010,15 @@ async def _run_broad_plan_step(
         err_msg = f"LLM failed: {exc}"
         _log("PLAN_BROAD", err_msg, level="error")
         if emit_fn:
-            emit_fn("investigate/plan", err_msg, iteration=plan_cycle)
+            emit_fn(
+                "investigate/plan",
+                err_msg,
+                iteration=plan_cycle,
+                kind="investigation.plan_failed",
+                status="failed",
+                severity="error",
+                reason="http_status_error",
+            )
         return False
     except (httpx.ConnectError, httpx.TimeoutException) as exc:
         save_terminal_plan(exc)
@@ -999,7 +1030,15 @@ async def _run_broad_plan_step(
         err_msg = f"LLM request timed out; broad planning skipped: {exc}"
         _log("PLAN_BROAD", err_msg, level="error")
         if emit_fn:
-            emit_fn("investigate/plan", err_msg, iteration=plan_cycle)
+            emit_fn(
+                "investigate/plan",
+                err_msg,
+                iteration=plan_cycle,
+                kind="investigation.plan_failed",
+                status="failed",
+                severity="error",
+                reason="llm_request_timeout",
+            )
         return False
     except (LLMServerUnavailableError, LLMBudgetExceededError) as exc:
         save_terminal_plan(exc)
@@ -1009,7 +1048,15 @@ async def _run_broad_plan_step(
         err_msg = f"LLM failed: {exc}"
         _log("PLAN_BROAD", err_msg, level="error")
         if emit_fn:
-            emit_fn("investigate/plan", err_msg, iteration=plan_cycle)
+            emit_fn(
+                "investigate/plan",
+                err_msg,
+                iteration=plan_cycle,
+                kind="investigation.plan_failed",
+                status="failed",
+                severity="error",
+                reason="llm_call_failed",
+            )
         return False
     except BaseException as exc:
         save_terminal_plan(exc)
@@ -1025,7 +1072,6 @@ async def _run_cycle_body(
     session_id: str,
     base_url: str,
     model: str,
-    memory: MemoryManager,
     progress_callback: Callable[[dict[str, Any]], None] | None,
     max_queries_per_hypothesis: int,
     plan_cycle: int,
@@ -1042,28 +1088,63 @@ async def _run_cycle_body(
         stage: str,
         summary: str,
         *,
-        report_kw: dict | None = None,
         iteration: int | None = None,
+        kind: str,
+        status: str = "running",
+        severity: str = "info",
+        reason: str | None = None,
         **extras: Any,
     ) -> None:
         if not progress_callback:
             return
+        refs = {
+            key: value
+            for key, value in {
+                "hypothesis_id": extras.get("hypothesis_id")
+                or state.focus_hypothesis_id,
+                "query_id": extras.get("query_id"),
+                "reasoning_entry_id": extras.get("reasoning_entry_id"),
+                "step_id": extras.get("step_id"),
+            }.items()
+            if value
+        }
         progress_callback(
             progress_event(
-                stage,
-                "running",
+                kind,
+                status,
+                severity=severity,
+                reason=reason,
+                stage=stage,
                 iteration=state.iteration if iteration is None else iteration,
                 summary=summary,
-                focus_hypothesis_id=state.focus_hypothesis_id,
-                hypotheses=[h.model_dump() for h in _all_hypotheses(state)],
-                report_sections=_ctx_get_report_status(ctx, db, **(report_kw or {})),
-                **extras,
+                session_id=session_id,
+                refs=refs,
+                **{
+                    key: value
+                    for key, value in extras.items()
+                    if key
+                    in {
+                        "candidate_ref",
+                        "score",
+                        "leading_factor",
+                        "draft_count",
+                        "candidate_count",
+                        "unassessed_count",
+                        "error_type",
+                    }
+                },
             )
         )
 
     def llm_status(message: str) -> None:
         _log("LLM", message)
-        _emit("investigate/llm", message, iteration=state.iteration)
+        _emit(
+            "investigate/llm",
+            message,
+            iteration=state.iteration,
+            kind="llm.request_status",
+            reason="provider_status_update",
+        )
 
     broad_plan_stop = False
     cycle_progress = False
@@ -1139,33 +1220,65 @@ async def _run_cycle_body(
             for result in selection_results
             if result.eligible and result.hypothesis_id in active_by_id
         ]
+        for result in selection_results:
+            leading_factor = max(
+                result.components, key=lambda item: item.weighted, default=None
+            )
+            reason = (
+                result.block_reason
+                if not result.eligible
+                else leading_factor.name
+                if leading_factor
+                else "eligible"
+            )
+            _emit(
+                "investigate/select",
+                (
+                    f"hypothesis {result.hypothesis_id} selected for focus "
+                    f"(score={result.total_score:.1f}; "
+                    f"factor={leading_factor.name if leading_factor else 'eligible'})"
+                    if result.eligible
+                    else f"hypothesis {result.hypothesis_id} not selected: {reason}"
+                ),
+                iteration=plan_cycle,
+                kind="hypothesis.selected"
+                if result.eligible
+                else "hypothesis.selection_skipped",
+                status="completed" if result.eligible else "skipped",
+                severity="info" if result.eligible else "warning",
+                reason="selected_by_priority_score" if result.eligible else reason,
+                hypothesis_id=result.hypothesis_id,
+                score=result.total_score,
+                leading_factor=(
+                    {
+                        "name": leading_factor.name,
+                        "reason": leading_factor.reason,
+                    }
+                    if leading_factor
+                    else None
+                ),
+            )
         for hypothesis in focus_hypotheses:
             if ctx.interrupted:
                 break
             state.focus_hypothesis_id = hypothesis.id
             state.focus_depth = 0
-            with telemetry_scope(hypothesis_id=hypothesis.id, iteration=plan_cycle):
-                ctx_refresh_caches(
-                    ctx,
-                    memory,
-                    hypothesis=hypothesis,
-                    db=db,
-                    session_id=session_id,
-                )
             focus_sections = _guess_related_sections(hypothesis.description)
             _log("HYPOTHESIS", f"{hypothesis.id} — {hypothesis.description}")
             _emit(
                 "investigate/hypothesis",
                 f"[hypothesis] {hypothesis.id}: {hypothesis.description}",
                 iteration=plan_cycle,
-                report_kw={"focus_sections": focus_sections},
+                kind="hypothesis.investigation_started",
+                status="running",
+                reason="focus_hypothesis_selected",
+                hypothesis_id=hypothesis.id,
             )
             with telemetry_scope(hypothesis_id=hypothesis.id, iteration=plan_cycle):
                 progress, state, sections = await _investigate_one_hypothesis(
                     hypothesis=hypothesis,
                     state=state,
                     ctx=ctx,
-                    memory=memory,
                     db=db,
                     base_url=base_url,
                     model=model,

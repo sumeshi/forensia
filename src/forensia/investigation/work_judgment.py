@@ -454,7 +454,7 @@ class WorkContextSnapshot:
     row (current work), the shared work judgment (unmet requirements with
     owners), and ``hypothesis_evidence`` with the read-time currentness
     predicate (assessed support/contradiction grouped by derivation root) —
-    so the same originals and work yield the same context, without a Memory,
+    so the same originals and work yield the same context, without a cached digest,
     LLM digest, or cache layer in between. Units carry original refs
     (derivation root, evidence id, assessment id, query id), never
     re-summarized prose.

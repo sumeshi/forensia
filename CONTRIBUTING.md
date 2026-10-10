@@ -14,7 +14,7 @@ LLM接続は`.env`で設定します。`LLM_BASE_URL`は`/v1`を含まないサ�
 
 ## 開発版のCLIと設定
 
-READMEの起動例に続けて、以下のコマンドを使います。ソースチェックアウトでは`forensia`の前に`uv run`を付けてください。オプションの一覧は`uv run forensia investigate --help`と`uv run forensia report --help`、環境変数は[.env.example](.env.example)と[config.py](src/forensia/config.py)を参照します。
+現在は調査エンジンと状態管理の整理段階で、Runtime・attach・完成版TUIへの移行は未完了です。以下は移行中のCLIです。ソースチェックアウトでは`forensia`の前に`uv run`を付けてください。オプションの一覧は`uv run forensia investigate --help`と`uv run forensia report --help`、環境変数は[.env.example](.env.example)と[config.py](src/forensia/config.py)を参照します。
 
 ```bash
 # 新規ケースを開始する、または追加の入力を取り込んで調査する。
@@ -57,7 +57,7 @@ forensia report --help
 
 再開の判定には、Traceのステージreceiptと、有効なsourceの正規化状態を使います。パーサー実装や依存関係が変われば正規化を、ルール定義やケースの抑制設定が変われば分析を再実行します。sourceの状態が欠落または失敗している場合、正規化の完了条件を満たしません。
 
-`--rerun`は、対応するスキーマのケース内で調査をやり直す機能です。正規化済みの状態、調査・報告書の状態、入力採用receiptを消去し、有効なsource登録、rawレコード、Memoryを保持します。現在のスキーマバージョンは**7**です。非対応のスキーマは移行せず拒否し、`--rerun`でも更新できません。このバージョンではparserのrawレコード契約も変わったため、以前のケースから移行する場合は新しいケースを作り、取得済みの原本を再取込みしてください。
+`--rerun`は、対応するスキーマのケース内で調査をやり直す機能です。正規化済みの状態、調査・報告書の状態、入力採用receipt、イベント履歴を消去し、有効なsource登録とrawレコードを保持します。スキーマのバージョンは[schema.py](src/forensia/db/schema.py)を参照してください。非対応のスキーマや旧split DB形式は、書込み前に拒否し、`--rerun`でも更新できません。古いケースは保全し、新しいケースに取得済みの原本を再取込みしてください。
 
 ## Markdown入力
 
@@ -180,15 +180,17 @@ Knowledgeは参考資料であり、証拠やツールの実行許可ではあ�
 | [llm/](src/forensia/llm/) | 制約付きのモデル通信、応答契約、request縮約、call/attempt telemetry |
 | [scripts/sigma/](scripts/sigma/)、[scripts/eval/](scripts/eval/)、[scripts/debug/](scripts/debug/) | 開発用の変換・検証、評価fixtureとツール、parser診断 |
 
-依存検査は `core/db → evidence → knowledge → llm/context → report → investigation → cli/pipeline` の方向を保証します。各層は下位層を利用できます。report生成から調査のadmissionやsettlementを呼びません。domain固有のプロンプトはそれぞれのdomainが所有し、共有projectionは調査判断を行いません。Memoryのファイル操作は`core/memory.py`が所有し、reportのsection・run・answer storeは`report/`以下でそれぞれのテーブルを所有します。
+依存検査は `core/db → evidence → knowledge → llm/context → report → investigation → cli/pipeline` の方向を保証します。各層は下位層を利用できます。report生成から調査のadmissionやsettlementを呼びません。domain固有のプロンプトはそれぞれのdomainが所有し、共有projectionは調査判断を行いません。[working_state.py](src/forensia/investigation/working_state.py)はCase/Traceから調査用の文脈を構成し、reportのsection・run・answer storeは`report/`以下でそれぞれのテーブルを所有します。
 
 状態を追加する前に、既存の書込み責務を確認してください。別のagenda、planner、cache、status modelを追加するより、その責務を拡張します。同じ不変条件を守り、同程度の品質が得られるなら、独立した状態、同期経路、モデル呼出しが少ない構成を優先します。[scripts/check_imports.py](scripts/check_imports.py)は依存方向を検査します。互換性のない永続化の変更では、全consumerと現在のスキーマバージョンを一緒に更新します。自動migration/backfillやaliasの維持は行いません。古いケースデータは保全し、必要なら新しいディレクトリへ原本を再取込みしてください。
 
 ## 永続化と検証の契約
 
-証拠とCase Stateは`db/case.duckdb`、実行履歴は`db/trace.duckdb`に保存します。ケースを保存・コピーするときは両方を保持してください。CaseDBがTraceをattachし、同じ接続から参照します。Traceには更新されるライフサイクル行と冪等なstep書込みがあり、progressには保持件数の上限があります。
+Evidence、Case State、Trace Stateは`db/case.duckdb`に保存します。EvidenceとCase Stateは`main`、Trace Stateは`trace`スキーマに配置します。関連する更新は同一トランザクションで管理します。Traceには更新されるライフサイクル行と冪等なstep書込みがあり、調査イベントは時系列で追加します。イベントには種類、状態、severity、理由、関連IDを記録し、詳細な検索結果やモデル入出力は元のTrace記録を参照します。表示の再構成にはイベントのcursorを使います。
 
-`memory/`にはDBから生成する情報に加え、人が書いたメモも含まれます。ケースを保全するときはMemoryも残してください。`raw/`はパーサー出力のJSONLであり、取得した原本は別途保存します。通常のFinding保存先はDBです。
+Working Stateは作業ごとにDBから直接構成し、生成したMarkdownを再読込みしません。旧ケースの`memory/`には人のメモが含まれ得るため、ケースの保全時にはそのまま残してください。`raw/`はパーサー出力のJSONLであり、取得した原本は別途保存します。通常のFinding保存先はDBです。
+
+Phase 1の表示試作は`uv run python scripts/v2_tui_preview.py ./case001`で確認できます。終了済みの現行ケースをread-onlyで開き、Headerと保存済みイベントを表示します。Promptは表示のみで、Runtimeへの接続や操作はまだありません。実行中のwriterがあるケースは開けません。
 
 細かな列、応答形式、判定条件は、次の実行可能な契約を正本にします。
 

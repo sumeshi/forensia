@@ -1,4 +1,4 @@
-"""Hypothesis persistence: load, upsert, reasoning rows, memory render."""
+"""Hypothesis persistence: load, upsert, and reasoning rows."""
 
 from __future__ import annotations
 
@@ -20,45 +20,13 @@ def _recent_reasoning_rows(
         db,
         """
         SELECT phase, verdict, query_id, body, created_at
-        FROM hypothesis_reasoning
+        FROM trace.hypothesis_reasoning
         WHERE hypothesis_id = ?
         ORDER BY created_at DESC, entry_id DESC
         LIMIT ?
         """,
         (hypothesis_id, limit),
     )
-
-
-def _render_hypothesis_memory(db: CaseDB | None, hypothesis: Hypothesis) -> str:
-    """Render a hypothesis as a Markdown memory block with status, verdict, and recent reasoning."""
-    lines = [
-        f"# Hypothesis {hypothesis.id}",
-        "",
-        "## Status",
-        f"- {hypothesis.status}",
-        "",
-        "## Verdict",
-        f"- {hypothesis.verdict or 'pending'}",
-        "",
-        "## Description",
-        hypothesis.description,
-        "",
-        "## Summary",
-        hypothesis.summary or "-",
-    ]
-    if db is not None:
-        reasoning_rows = _recent_reasoning_rows(db, hypothesis.id)
-        if reasoning_rows:
-            lines.extend(["", "## Reasoning"])
-            for row in reasoning_rows:
-                phase = str(row.get("phase") or "")
-                verdict = str(row.get("verdict") or "-")
-                query_id = str(row.get("query_id") or "-")
-                body = " ".join(str(row.get("body") or "").split())[:240]
-                lines.append(
-                    f"- [{phase}] verdict={verdict} query={query_id} :: {body}"
-                )
-    return "\n".join(lines) + "\n"
 
 
 def _next_hypothesis_id(db: CaseDB) -> str:

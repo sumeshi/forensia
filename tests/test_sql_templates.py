@@ -120,3 +120,55 @@ class HostValidationTests(unittest.TestCase):
         for entry in catalog:
             self.assertIn("template_id", entry)
             self.assertIn("description", entry)
+
+    def test_cte_names_cannot_authorize_schema_qualified_tables(self) -> None:
+        queries = (
+            "WITH trace AS (SELECT 1 AS x) "
+            "SELECT * FROM trace.investigation_steps LIMIT 1",
+            'WITH "trace" AS (SELECT 1 AS x) '
+            'SELECT * FROM "trace"."investigation_steps" LIMIT 1',
+            "SELECT * FROM main.evtx_events LIMIT 1",
+            "SELECT * FROM memory.main.evtx_events LIMIT 1",
+        )
+        for query in queries:
+            with (
+                self.subTest(query=query),
+                self.assertRaisesRegex(ValueError, "Schema-qualified table references"),
+            ):
+                validate_select_sql(query)
+        unrelated_cte = (
+            "WITH safe AS (SELECT 1 AS x), outer_q AS ("
+            "SELECT * FROM hypothesis_reasoning WHERE EXISTS ("
+            "WITH hypothesis_reasoning AS (SELECT 1) SELECT 1)) "
+            "SELECT * FROM safe LIMIT 1"
+        )
+        with self.assertRaisesRegex(ValueError, "Unknown table"):
+            validate_select_sql(unrelated_cte)
+
+    def test_allowlist_parser_keeps_ctes_and_rejects_table_functions(self) -> None:
+        sql = (
+            "WITH matched AS (SELECT evidence_id FROM evtx_events) "
+            "SELECT evidence_id FROM matched LIMIT 10"
+        )
+        self.assertEqual(sql, validate_select_sql(sql))
+        with self.assertRaisesRegex(ValueError, "Table functions are not allowed"):
+            validate_select_sql("SELECT * FROM read_csv('evidence.csv') LIMIT 1")
+        with self.assertRaisesRegex(ValueError, "SQL could not be parsed"):
+            validate_select_sql("SELECT * FROM")
+
+    def test_trace_allowlist_rejection_also_holds_during_case_dry_run(self) -> None:
+        query = (
+            "WITH trace AS (SELECT 1 AS x) "
+            "SELECT * FROM trace.investigation_steps LIMIT 1"
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with CaseDB(Case.init(tmpdir)) as db:
+                with self.assertRaisesRegex(
+                    ValueError, "Schema-qualified table references"
+                ):
+                    validate_select_sql(query)
+                valid = validate_select_sql(
+                    "WITH matched AS (SELECT evidence_id FROM evtx_events) "
+                    "SELECT evidence_id FROM matched LIMIT 10"
+                )
+                self.assertEqual(valid, validate_select_sql_with_dryrun(valid, db))

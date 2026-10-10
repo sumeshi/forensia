@@ -19,7 +19,6 @@ class Settings:
     llm_max_tokens: int = 4096
     llm_temperature: float = 0.0
     llm_output_language: str = "ja"
-    llm_memory_max_bytes: int = 0
     llm_report_max_queries_per_section: int = 3
     llm_reasoning_reserve_tokens: int = 0
     # 0 means unknown/auto; providers may still reject oversized requests.
@@ -77,7 +76,6 @@ def _build_settings() -> Settings:
         llm_max_tokens=_env_int("LLM_MAX_TOKENS", 4096, minimum=1),
         llm_temperature=_env_float("LLM_TEMPERATURE", 0.0, minimum=0.0, maximum=2.0),
         llm_output_language=_env_choice("FORENSIA_OUTPUT_LANGUAGE", "ja", {"ja", "en"}),
-        llm_memory_max_bytes=_env_int("FORENSIA_MEMORY_MAX_BYTES", 0, minimum=0),
         llm_report_max_queries_per_section=_env_int(
             "FORENSIA_REPORT_MAX_QUERIES_PER_SECTION", 3, minimum=1
         ),
@@ -124,7 +122,6 @@ def get_llm_settings() -> dict:
         "max_tokens": settings.llm_max_tokens,
         "temperature": settings.llm_temperature,
         "output_language": settings.llm_output_language,
-        "memory_max_bytes": get_memory_max_bytes(),
         "report_max_queries_per_section": settings.llm_report_max_queries_per_section,
         "reasoning_reserve_tokens": settings.llm_reasoning_reserve_tokens,
         "llm_context_window_tokens": settings.llm_context_window_tokens or None,
@@ -149,11 +146,3 @@ def get_prompt_budget_tokens() -> int:
     if configured > 0:
         return configured
     return DEFAULT_PROMPT_BUDGET_TOKENS
-
-
-def get_memory_max_bytes() -> int:
-    """Return the overview compaction threshold derived from the prompt budget."""
-    configured = settings.llm_memory_max_bytes
-    if configured > 0:
-        return configured
-    return max(4096, min(65536, get_prompt_budget_tokens() * 4 // 3))

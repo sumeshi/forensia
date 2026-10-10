@@ -12,6 +12,7 @@ from forensia.core.session import Hypothesis, SessionState
 from forensia.db.database import CaseDB
 from forensia.db.query import fetch_records
 from forensia.investigation.hypotheses.hypothesis_manager import (
+    _resolve_hypothesis_in_transaction,
     admit_new_hypothesis,
     merge_active_hypotheses,
     qualify_event_contexts,
@@ -34,7 +35,7 @@ def _seed_rule_hypotheses(
     db: CaseDB,
     state: SessionState,
     session_id: str,
-) -> None:
+) -> list[str]:
     """Seed hypotheses declared in rulepacks into active hypotheses.
 
     For each rule with hypotheses[] that produced at least one finding,
@@ -162,7 +163,10 @@ def _seed_rule_hypotheses(
                     f"[seed] rejected {rule.id}/{decl.id}: {reason}",
                 )
 
+    seeded_ids: list[str] = []
     if seeded:
+        previous_active_ids = {item.id for item in state.active_hypotheses}
+        aliases: dict[str, str] = {}
         state.active_hypotheses = merge_active_hypotheses(
             db=db,
             current=state.active_hypotheses,
@@ -170,6 +174,16 @@ def _seed_rule_hypotheses(
             resolved=state.resolved_hypotheses,
             session_id=session_id,
             origin="rule",
+            alias_map_out=aliases,
+        )
+        active_ids = {item.id for item in state.active_hypotheses}
+        seeded_ids = sorted(
+            {
+                canonical_id
+                for item in seeded
+                if (canonical_id := aliases.get(item.id)) in active_ids
+                and canonical_id not in previous_active_ids
+            }
         )
         _log(
             "HYPOTHESIS",
@@ -178,6 +192,7 @@ def _seed_rule_hypotheses(
     # G-8: Pre-screen telemetry availability to avoid wasting LLM cycles on
     # hypotheses whose required event IDs are entirely absent from the case.
     prescreen_telemetry_availability(db, state, session_id)
+    return seeded_ids
 
 
 def prescreen_telemetry_availability(
@@ -196,8 +211,6 @@ def prescreen_telemetry_availability(
     This prevents wasting 3+ LLM cycles on hypotheses that will ultimately
     become untestable due to missing telemetry.
     """
-    from forensia.investigation.hypotheses.hypothesis_manager import resolve_hypothesis
-
     # Compute the set of event_ids present in the case.
     try:
         rows = db.execute(
@@ -242,7 +255,7 @@ def prescreen_telemetry_availability(
             )
             if decision.allowed and decision.verdict == "untestable":
                 with db.transaction():
-                    resolve_hypothesis(
+                    _resolve_hypothesis_in_transaction(
                         db=db,
                         state=state,
                         hypothesis_id=hyp.id,
@@ -288,7 +301,7 @@ def _scan_report_keypoints(
         _family_interleaved_keypoint_names(), start=1
     ):
         try:
-            result = _resolve_evidence_results(case, db, keypoints=[keypoint_name])[0]
+            result = _resolve_evidence_results(db, keypoints=[keypoint_name])[0]
         except Exception as exc:
             _log("PIVOT", f"keypoint scan failed for {keypoint_name}: {exc}")
             continue

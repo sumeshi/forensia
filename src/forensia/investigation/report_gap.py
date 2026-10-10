@@ -5,12 +5,13 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Callable
 from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
 from forensia.core.identifiers import gap_hypothesis_id, report_gap_id
-from forensia.core.memory import MemoryManager
+from forensia.core.progress_event import progress_event
 from forensia.core.session import Hypothesis, SessionState
 from forensia.core.textutil import normalize_text as _normalize_text
 from forensia.db.database import CaseDB
@@ -359,8 +360,8 @@ def inject_gap_hypotheses(
     state: SessionState,
     gaps: list[str],
     session_id: str,
-    memory: MemoryManager | None = None,
     llm_output: dict[str, Any] | None = None,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> int:
     """Convert unresolved report gaps into active hypotheses, skipping duplicates and non-DB gaps.
 
@@ -408,6 +409,9 @@ def inject_gap_hypotheses(
         gap_kind = classify_gap_kind(gap)
         # Normalize gap to report_gaps table
         section_key = gap_sections.get(normalized_gap, "")
+        prior_gap = db.execute(
+            "SELECT status FROM report_gaps WHERE gap_id = ?", [gap_id]
+        ).fetchone()
         db.execute(
             """INSERT INTO report_gaps (gap_id, section_key, description, kind, status, origin, created_at, updated_at)
                VALUES (?, ?, ?, ?, 'open', 'section', now(), now())
@@ -421,6 +425,21 @@ def inject_gap_hypotheses(
                    updated_at = now()""",
             [gap_id, section_key, gap, gap_kind],
         )
+        if progress_callback and (prior_gap is None or prior_gap[0] != "open"):
+            progress_callback(
+                progress_event(
+                    "report_gap.admitted",
+                    "completed",
+                    severity="info",
+                    reason="section_gap_opened",
+                    refs={"gap_id": gap_id},
+                    stage="report_admission",
+                    session_id=session_id,
+                    summary="report gap admitted for investigation",
+                    gap_kind=gap_kind,
+                    section_key=section_key or None,
+                )
+            )
 
         existing = _existing_hypothesis(state, gap)
         if existing is not None:
@@ -440,6 +459,18 @@ def inject_gap_hypotheses(
                     "WHERE gap_id = ?",
                     [existing.id, gap_id],
                 )
+            if progress_callback:
+                progress_callback(
+                    progress_event(
+                        "report_gap.linked",
+                        "completed",
+                        reason="existing_hypothesis",
+                        refs={"gap_id": gap_id, "hypothesis_id": existing.id},
+                        stage="report_admission",
+                        session_id=session_id,
+                        summary="report gap linked to existing hypothesis",
+                    )
+                )
             continue
 
         existing_task = db.execute(
@@ -452,6 +483,18 @@ def inject_gap_hypotheses(
                 "UPDATE report_gaps SET task_id = ?, updated_at = now() WHERE gap_id = ?",
                 [str(existing_task[0]), gap_id],
             )
+            if progress_callback:
+                progress_callback(
+                    progress_event(
+                        "report_gap.linked",
+                        "completed",
+                        reason="existing_task",
+                        refs={"gap_id": gap_id, "task_id": str(existing_task[0])},
+                        stage="report_admission",
+                        session_id=session_id,
+                        summary="report gap linked to existing task",
+                    )
+                )
             continue
 
         if gap_kind != "internal_db_check":
@@ -477,6 +520,20 @@ def inject_gap_hypotheses(
                 "UPDATE report_gaps SET task_id = ? WHERE gap_id = ?",
                 [task_id, gap_id],
             )
+            if progress_callback:
+                progress_callback(
+                    progress_event(
+                        "investigation.task_admitted",
+                        "completed",
+                        severity="success",
+                        reason="report_gap_requires_external_action",
+                        refs={"gap_id": gap_id, "task_id": task_id},
+                        stage="report_admission",
+                        session_id=session_id,
+                        summary="report gap admitted as an investigation task",
+                        task_kind=gap_kind,
+                    )
+                )
             continue
 
         required_entities, confirm_when = _parse_gap_hypothesis_output(
@@ -498,6 +555,19 @@ def inject_gap_hypotheses(
                 "needs_review",
                 f"verification_spec_invalid:{type(exc).__name__}",
             )
+            if progress_callback:
+                progress_callback(
+                    progress_event(
+                        "hypothesis.admission_skipped",
+                        "skipped",
+                        severity="warning",
+                        reason=f"verification_spec_invalid:{type(exc).__name__}",
+                        refs={"gap_id": gap_id},
+                        stage="report_admission",
+                        session_id=session_id,
+                        summary="report gap hypothesis requires review",
+                    )
+                )
             continue
 
         # --- Unified admission gate (G-5) ---
@@ -509,6 +579,19 @@ def inject_gap_hypotheses(
                 else "needs_review"
             )
             _persist_admission_outcome(db, gap_id, outcome, f"admission_{reason}")
+            if progress_callback:
+                progress_callback(
+                    progress_event(
+                        "hypothesis.admission_skipped",
+                        "skipped",
+                        severity="warning",
+                        reason=f"admission_{reason}",
+                        refs={"gap_id": gap_id},
+                        stage="report_admission",
+                        session_id=session_id,
+                        summary="report gap hypothesis was not admitted",
+                    )
+                )
             continue
 
         state.active_hypotheses.append(candidate)
@@ -518,35 +601,18 @@ def inject_gap_hypotheses(
             "UPDATE report_gaps SET hypothesis_id = ?, updated_at = now() WHERE gap_id = ?",
             [candidate.id, gap_id],
         )
+        if progress_callback:
+            progress_callback(
+                progress_event(
+                    "hypothesis.admitted",
+                    "completed",
+                    severity="success",
+                    reason="report_gap_internal_check",
+                    refs={"gap_id": gap_id, "hypothesis_id": candidate.id},
+                    stage="report_admission",
+                    session_id=session_id,
+                    summary="report gap admitted as an internal investigation hypothesis",
+                )
+            )
         added += 1
-    if memory is not None:
-        project_investigation_tasks(db, memory)
     return added
-
-
-def project_investigation_tasks(db: CaseDB, memory: MemoryManager) -> None:
-    """Project authoritative open tasks into a replaceable Markdown section."""
-    rows = db.execute(
-        "SELECT task_id, kind, description, reason FROM investigation_tasks "
-        "WHERE status = 'open' ORDER BY created_at, task_id"
-    ).fetchall()
-    begin = "<!-- forensia:investigation-tasks:start -->"
-    end = "<!-- forensia:investigation-tasks:end -->"
-    lines = [begin, "## Investigation Tasks"]
-    if rows:
-        for task_id, kind, description, reason in rows:
-            suffix = f" — {reason}" if reason else ""
-            lines.append(f"- [{kind}] {description}{suffix} ({task_id})")
-    else:
-        lines.append("- none")
-    lines.append(end)
-    managed = "\n".join(lines)
-    path = memory.tasks_memory_path
-    existing = path.read_text(encoding="utf-8") if path.exists() else "# Tasks\n"
-    if begin in existing and end in existing:
-        prefix, remainder = existing.split(begin, 1)
-        _, suffix = remainder.split(end, 1)
-        content = prefix.rstrip() + "\n\n" + managed + suffix
-    else:
-        content = existing.rstrip() + "\n\n" + managed + "\n"
-    path.write_text(content, encoding="utf-8")

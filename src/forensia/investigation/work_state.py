@@ -185,7 +185,7 @@ def classify_active_hypotheses_on_stop(
             row = db.execute(
                 """
                 SELECT
-                    (SELECT COUNT(*) FROM hypothesis_reasoning WHERE hypothesis_id = ?),
+                    (SELECT COUNT(*) FROM trace.hypothesis_reasoning WHERE hypothesis_id = ?),
                     (SELECT COUNT(*) FROM hypothesis_evidence WHERE hypothesis_id = ?),
                     sufficiency_status, blocked_reason
                 FROM hypotheses WHERE hypothesis_id = ?

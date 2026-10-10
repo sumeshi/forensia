@@ -7,7 +7,6 @@ import traceback
 from typing import Any
 
 from forensia.core.case import Case
-from forensia.core.memory import MemoryManager
 from forensia.core.session import LLMBudgetExceededError
 from forensia.db.database import CaseDB
 from forensia.report.sections.section_block_context import (
@@ -367,7 +366,6 @@ def run_section_block_agent(
     report_brief: dict[str, Any] | None,
     base_url: str,
     model: str,
-    memory: MemoryManager | None = None,
     max_queries_per_section: int = 3,
     evidence_keypoints: list[str] | None = None,
     question_mode: bool = False,
@@ -395,7 +393,6 @@ def run_section_block_agent(
         template_body=template_body,
         base_url=base_url,
         model=model,
-        memory=memory,
         max_queries=max_queries,
         evidence_keypoints=evidence_keypoints,
         question_mode=question_mode,
@@ -454,7 +451,6 @@ async def async_run_section_block_agent(
     report_brief: dict[str, Any] | None,
     base_url: str,
     model: str,
-    memory: MemoryManager | None = None,
     max_queries_per_section: int = 3,
     evidence_keypoints: list[str] | None = None,
     question_mode: bool = False,
@@ -479,7 +475,6 @@ async def async_run_section_block_agent(
         report_brief=report_brief,
         base_url=base_url,
         model=model,
-        memory=memory,
         max_queries_per_section=max_queries_per_section,
         evidence_keypoints=evidence_keypoints,
         question_mode=question_mode,

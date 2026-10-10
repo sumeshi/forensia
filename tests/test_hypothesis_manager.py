@@ -431,6 +431,9 @@ class TestResolvedHypothesisDedup:
                 )
 
     def test_spec_change_reopens_resolved_hypothesis(self) -> None:
+        from forensia.investigation.hypotheses.hypothesis_manager import (
+            _merge_active_hypotheses_in_transaction,
+        )
         from forensia.investigation.hypotheses.hypothesis_store import (
             _upsert_hypothesis,
             load_persisted_hypotheses,
@@ -498,22 +501,23 @@ class TestResolvedHypothesisDedup:
                 )
                 resolved_projection = [resolved]
                 aliases: dict[str, str] = {}
-                reopened = merge_active_hypotheses(
-                    db=db,
-                    current=[],
-                    updates=[
-                        Hypothesis(
-                            id="H-new",
-                            description=resolved.description,
-                            status="active",
-                            refute_when={"zero_rows": True},
-                        )
-                    ],
-                    resolved=resolved_projection,
-                    session_id="session-spec-change",
-                    origin="broad_plan",
-                    alias_map_out=aliases,
-                )
+                with db.transaction():
+                    reopened = _merge_active_hypotheses_in_transaction(
+                        db=db,
+                        current=[],
+                        updates=[
+                            Hypothesis(
+                                id="H-new",
+                                description=resolved.description,
+                                status="active",
+                                refute_when={"zero_rows": True},
+                            )
+                        ],
+                        resolved=resolved_projection,
+                        session_id="session-spec-change",
+                        origin="broad_plan",
+                        alias_map_out=aliases,
+                    )
 
                 assert len(reopened) == 1
                 assert reopened[0].id == "H-001"

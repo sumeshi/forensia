@@ -23,9 +23,9 @@ class PrescreenTelemetryAvailabilityTests(unittest.TestCase):
     def _make_session(
         self, db: CaseDB, session_id: str = "test-session"
     ) -> SessionState:
-        """Create a SessionState with the investigation_sessions row."""
+        """Create a SessionState with the trace.investigation_sessions row."""
         db.execute(
-            "INSERT INTO investigation_sessions "
+            "INSERT INTO trace.investigation_sessions "
             "(session_id, started_at, finished_at, iterations, status) "
             "VALUES (?, ?, ?, ?, ?)",
             (session_id, "2025-01-01 00:00:00", None, 0, "running"),

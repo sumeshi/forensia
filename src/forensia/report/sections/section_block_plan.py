@@ -185,7 +185,6 @@ def _run_block_plan(
         prior_runs=prior_runs,
         reusable_facts=ctx.reusable_facts,
         reusable_evidence=ctx.reusable_evidence,
-        memory_context_md=ctx.memory_context_md,
         evidence_keypoints=ctx.evidence_keypoints,
         question_spec=ctx.question_spec.to_prompt_dict()
         if ctx.question_spec is not None
@@ -392,7 +391,6 @@ def _run_block_check(
         prior_runs=prior_runs,
         reusable_facts=ctx.reusable_facts,
         reusable_evidence=ctx.reusable_evidence,
-        memory_context_md=ctx.memory_context_md,
         question_spec=ctx.question_spec.to_prompt_dict()
         if ctx.question_spec is not None
         else None,

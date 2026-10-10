@@ -389,12 +389,12 @@ def _build_report_brief(
 def write_report_brief(case: Case, db: CaseDB) -> dict[str, Any]:
     """Write the report brief to reports/report_brief.json and return the dict."""
     brief = _build_report_brief(db, case)
-    overview_path = case.memory_dir / "overview.md"
-    if overview_path.exists():
-        overview_text = overview_path.read_text(encoding="utf-8")
-        match = re.search(r"## Investigation Objective\s+-\s+(.+)", overview_text)
-        if match:
-            brief["investigation_objective"] = match.group(1).strip()
+    from forensia.db.investigation_state import load_investigation_state
+
+    investigation = load_investigation_state(db) or {}
+    objective = str(investigation.get("objective") or "").strip()
+    if objective:
+        brief["investigation_objective"] = objective
     path = case.reports_dir / "report_brief.json"
     path.write_text(
         json.dumps(brief, ensure_ascii=False, indent=2, default=str), encoding="utf-8"

@@ -14,26 +14,22 @@ from forensia.context.case_profile import CaseEvidenceProfile
 from forensia.context.prompt_context import (
     _build_schema_guidance,
 )
-from forensia.context.retrieval import ToolReceipt, evaluate_retrieval
 from forensia.context.sql_templates import (
     query_template_catalog_for_tables,
     render_query_template,
     validate_select_sql,
     validate_select_sql_with_dryrun,
 )
-from forensia.core.memory import MemoryManager
 from forensia.core.session import Hypothesis, PlannedQuery, SessionState
 from forensia.db.database import CaseDB
 from forensia.investigation.hypotheses.hypothesis_store import _recent_reasoning_rows
 from forensia.investigation.prompts import (
     build_query_intent_messages,
-    render_work_context,
 )
 from forensia.knowledge.coverage import disclosure_tables_for_spec
 from forensia.llm import json_response
 from forensia.llm.schemas import (
     QUERY_INTENT_SCHEMA,
-    MemoryReadMoreAction,
     QueryIntentResponse,
     SQLQueryAction,
 )
@@ -45,8 +41,6 @@ def eligible_query_actions(phase: str) -> tuple[str, ...]:
     """Return the bounded action menu for one query-intent phase."""
 
     if phase == "initial":
-        return ("memory.read_more", "sql.query")
-    if phase == "after_read_more":
         return ("sql.query",)
     raise ValueError(f"unknown query-intent phase: {phase}")
 
@@ -55,7 +49,7 @@ def normalize_query_intent_action(
     payload: dict[str, Any],
     *,
     phase: str = "initial",
-) -> tuple[MemoryReadMoreAction | SQLQueryAction | None, str | None]:
+) -> tuple[SQLQueryAction | None, str | None]:
     """Validate the single action envelope emitted by the current planner."""
 
     try:
@@ -72,9 +66,6 @@ def normalize_query_intent_action(
 
     if action.type not in eligible:
         return None, f"{action.type} is not eligible in {phase} phase"
-    if isinstance(action, MemoryReadMoreAction):
-        if any(not path.strip() for path in action.paths):
-            return None, "memory.read_more paths must be non-empty"
     return action, None
 
 
@@ -96,15 +87,13 @@ def _materialize_planned_query(
 class _QueryIntentResult:
     """Keep host validation and selected context separate from raw model output."""
 
-    action: MemoryReadMoreAction | SQLQueryAction | None
+    action: SQLQueryAction | None
     raw_response: dict[str, Any]
-    read_more: list[str]
     error: str | None = None
 
 
 @dataclass(slots=True)
 class HypothesisPlanResult:
-    read_more: list[str]
     query: PlannedQuery | None
     stop_reason: str | None
     raw_response: dict[str, Any]
@@ -170,12 +159,19 @@ def persist_hypothesis_plan_result(
     if emit:
         emit(
             "investigate/plan",
-            f"[plan] planner validation failed; retrying {hypothesis.id}: {reason}",
+            f"[plan] planner rejected {hypothesis.id}: {reason}",
             iteration=iteration,
+            kind="hypothesis.plan_rejected",
+            status="failed",
+            severity="warning",
+            reason="planner_validation_failed",
             hypothesis_id=hypothesis.id,
-            planner_error=reason,
+            step_id=(
+                f"{session_id}-{iteration:02d}-plan-hypothesis-"
+                f"{hypothesis.id}-{query_index:02d}"
+            ),
         )
-    logger.warning("%s planner validation failed; retrying: %s", hypothesis.id, reason)
+    logger.warning("%s planner validation rejected the plan: %s", hypothesis.id, reason)
     return "continue"
 
 
@@ -190,145 +186,24 @@ def planner_retry_allowed(
     )
 
 
-def request_with_optional_context(
-    memory: MemoryManager,
-    messages_builder: Callable[[str], list[dict[str, str]]],
+def request_query_intent(
+    messages: list[dict[str, str]],
+    *,
     base_url: str,
     model: str,
-    initial_context: str | None = None,
     status_callback: Callable[[str], None] | None = None,
-    hypothesis_id: str | None = None,
-    retrieval_callback: Callable[[dict[str, Any]], None] | None = None,
-    json_schema: dict[str, Any] | None = None,
 ) -> _QueryIntentResult:
-    """Request LLM with optional scoped memory expansion.
-
-    First call uses default context. If the action requests memory paths,
-    loads those paths and re-queries the LLM with the expanded context.
-    """
-    default_context = initial_context
-    if default_context is None:
-        default_context = memory.load_investigation_context(
-            hypothesis_id,
-            max_bytes=max(1024, memory.max_bytes // 3),
-            include_overview=False,
-        )
+    """Make one bounded query decision from the supplied Case/Trace context."""
     parsed = json_response.request_llm_json(
-        messages=messages_builder(default_context),
+        messages=messages,
         model=model,
         base_url=base_url,
-        json_schema=json_schema,
+        json_schema=QUERY_INTENT_SCHEMA,
         telemetry_phase="hypothesis-plan",
         status_callback=status_callback,
     )
-    action, action_error = normalize_query_intent_action(parsed, phase="initial")
-    if action_error:
-        return _QueryIntentResult(None, parsed, [], action_error)
-    assert action is not None
-    if isinstance(action, SQLQueryAction):
-        return _QueryIntentResult(action, parsed, [])
-
-    requested_paths = list(action.paths)
-    read_more, rejected_paths = memory.filter_paths_for_scope(
-        requested_paths, hypothesis_id
-    )
-    if rejected_paths:
-        read_more = []
-    if not read_more:
-        if retrieval_callback is not None and requested_paths:
-            receipt = ToolReceipt(
-                receipt_id=f"memory-{hypothesis_id or 'global'}-empty",
-                call_id=f"memory-{hypothesis_id or 'global'}",
-                hypothesis_id=hypothesis_id,
-                phase="read_more",
-                tool_id="memory.read_more",
-                arguments={"paths": requested_paths},
-                returned_count=0,
-                sampled_count=0,
-                truncated=False,
-                status="partial" if rejected_paths else "empty",
-                reason=("scope rejected" if rejected_paths else "no paths selected"),
-            )
-            evaluation = evaluate_retrieval(
-                receipt,
-                required_fields=["paths"],
-                scope_status="rejected" if rejected_paths else "valid",
-            )
-            retrieval_callback(
-                {
-                    "requested_refs": requested_paths,
-                    "selected_refs": [],
-                    "rejected_refs": rejected_paths,
-                    "selected_chars": 0,
-                    "budget": memory.max_bytes,
-                    "scope_status": "rejected" if rejected_paths else "valid",
-                    "retrieval_evaluation": evaluation.model_dump(mode="json"),
-                }
-            )
-        return _QueryIntentResult(
-            None, parsed, [], "memory.read_more paths rejected by scope"
-        )
-    extra_context = memory.load_compact_context(read_more, max_bytes=memory.max_bytes)
-    separator = "\n\n<READ_MORE_CONTEXT>\n"
-    base_bytes = default_context.encode("utf-8")
-    separator_bytes = separator.encode("utf-8")
-    remaining = max(memory.max_bytes - len(base_bytes) - len(separator_bytes), 0)
-    raw_extra_bytes = extra_context.encode("utf-8")
-    extra_bytes = raw_extra_bytes[:remaining]
-    selected_context = extra_bytes.decode("utf-8", errors="ignore")
-    if retrieval_callback is not None:
-        receipt = ToolReceipt(
-            receipt_id=f"memory-{hypothesis_id or 'global'}-read-more",
-            call_id=f"memory-{hypothesis_id or 'global'}",
-            hypothesis_id=hypothesis_id,
-            phase="read_more",
-            tool_id="memory.read_more",
-            arguments={"paths": requested_paths},
-            returned_count=len(read_more),
-            sampled_count=len(read_more),
-            truncated=len(raw_extra_bytes) > len(extra_bytes),
-            status=(
-                "partial" if rejected_paths else ("ok" if selected_context else "empty")
-            ),
-            reason=(
-                "some paths rejected by scope"
-                if rejected_paths
-                else (
-                    None if selected_context else "selected paths contained no content"
-                )
-            ),
-        )
-        evaluation = evaluate_retrieval(
-            receipt,
-            required_fields=["paths"],
-            scope_status="rejected" if rejected_paths else "valid",
-        )
-        retrieval_callback(
-            {
-                "requested_refs": requested_paths,
-                "selected_refs": read_more,
-                "rejected_refs": rejected_paths,
-                "selected_chars": len(selected_context),
-                "budget": memory.max_bytes,
-                "scope_status": "rejected" if rejected_paths else "valid",
-                "retrieval_evaluation": evaluation.model_dump(mode="json"),
-            }
-        )
-    expanded_context = default_context
-    if extra_bytes:
-        expanded_context += separator + selected_context
-    reparsed = json_response.request_llm_json(
-        messages=messages_builder(expanded_context),
-        model=model,
-        base_url=base_url,
-        json_schema=json_schema,
-        telemetry_phase="hypothesis-plan-read-more",
-        status_callback=status_callback,
-    )
-    reparsed_action, reparsed_error = normalize_query_intent_action(
-        reparsed, phase="after_read_more"
-    )
-    return _QueryIntentResult(reparsed_action, reparsed, read_more, reparsed_error)
+    action, error = normalize_query_intent_action(parsed)
+    return _QueryIntentResult(action, parsed, error)
 
 
 def _compute_uncovered_keypoints(
@@ -382,23 +257,6 @@ def _compute_uncovered_keypoints(
     return result
 
 
-def _resolve_planner_context(
-    memory: MemoryManager,
-    hypothesis: Hypothesis,
-    default_context_md: str | None,
-) -> str:
-    """Resolve investigation context for the planner when no default_context_md is provided."""
-    if default_context_md is None:
-        relevance = memory.build_relevance_terms_from_hypothesis(hypothesis)
-        default_context_md = memory.load_investigation_context(
-            hypothesis.id,
-            relevance_terms=relevance or None,
-            max_bytes=max(1024, memory.max_bytes // 3),
-            include_overview=False,
-        )
-    return default_context_md
-
-
 def _build_hypothesis_history(
     state: SessionState,
     hypothesis: Hypothesis,
@@ -426,18 +284,15 @@ def _build_hypothesis_history(
 
 
 def _load_work_context(db: CaseDB | None, hypothesis_id: str) -> str:
-    """Build the deterministic per-attempt case/trace projection (V2-07).
-
-    Reads the current work/spec, unmet conditions, assessed supporting and
-    contradicting material from Case State and its Trace (via the shared
-    work-judgment owners) — never via Memory/Digest.  Returns ""
-    deterministically when no DB row exists.
-    """
+    """Build the current per-attempt Case/Trace context without Markdown memory."""
     if db is None or not hypothesis_id:
         return ""
-    from forensia.investigation.work_judgment import work_context_snapshot
+    from forensia.investigation.working_state import (
+        build_working_state,
+        render_working_state,
+    )
 
-    return render_work_context(work_context_snapshot(db, hypothesis_id))
+    return render_working_state(build_working_state(db, hypothesis_id=hypothesis_id))
 
 
 def _load_prior_check_feedback(db: CaseDB | None, hypothesis: Hypothesis) -> str:
@@ -458,7 +313,7 @@ def _load_prior_check_feedback(db: CaseDB | None, hypothesis: Hypothesis) -> str
                    ROW_NUMBER() OVER (
                        PARTITION BY phase ORDER BY created_at DESC, entry_id DESC
                    ) AS phase_rank
-            FROM hypothesis_reasoning
+            FROM trace.hypothesis_reasoning
             WHERE hypothesis_id = ?
               AND phase IN ('sufficiency', 'settlement')
         ) recent
@@ -510,67 +365,12 @@ def _consume_planner_error_block(state: SessionState, hypothesis_id: str) -> str
     return block
 
 
-def _plan_query_intent(
-    *,
-    memory: MemoryManager,
-    intent_messages_builder: Callable[[str], list[dict[str, str]]],
-    base_url: str,
-    model: str,
-    default_context_md: str,
-    db: CaseDB | None,
-    status_callback: Callable[[str], None] | None,
-    hypothesis: Hypothesis,
-    session_id: str | None,
-) -> _QueryIntentResult:
-    """Run the single query-intent LLM decision.
-
-    The model response contains the complete bounded SQL action. All readiness
-    validation (table/column/SELECT-only/allow-list/row-limit/dry-run) is
-    performed deterministically by the host before execution.
-    """
-
-    def retrieval_callback(event: dict[str, Any]) -> None:
-        if db is None:
-            return
-        from forensia.context.retrieval import record_retrieval_event
-
-        record_retrieval_event(
-            db,
-            session_id=session_id,
-            scope_kind="hypothesis",
-            scope_id=hypothesis.id,
-            phase="read_more",
-            source_kind="memory",
-            query_terms=[],
-            candidate_count=len(event["requested_refs"]),
-            selected_refs=event["selected_refs"],
-            rejected_refs=event["rejected_refs"],
-            selected_chars=event["selected_chars"],
-            budget=event["budget"],
-        )
-
-    intent_response = request_with_optional_context(
-        memory=memory,
-        messages_builder=intent_messages_builder,
-        base_url=base_url,
-        model=model,
-        initial_context=default_context_md,
-        status_callback=status_callback,
-        hypothesis_id=hypothesis.id,
-        retrieval_callback=retrieval_callback,
-        json_schema=QUERY_INTENT_SCHEMA,
-    )
-    return intent_response
-
-
 def plan_hypothesis_query(
     state: SessionState,
     hypothesis: Hypothesis,
-    memory: MemoryManager,
     base_url: str,
     model: str,
     db: CaseDB | None = None,
-    default_context_md: str | None = None,
     status_callback: Callable[[str], None] | None = None,
     query_index: int = 1,
     time_range: dict[str, str] | None = None,
@@ -585,9 +385,6 @@ def plan_hypothesis_query(
     table/column/SELECT-only/allow-list/row-limit/dry-run before execution.
 
     The former second "schema-readiness" LLM self-check call was removed."""
-    default_context_md = _resolve_planner_context(
-        memory, hypothesis, default_context_md
-    )
     hypothesis_history = _build_hypothesis_history(state, hypothesis, db, limit=10)
     # V2-08 single disclosure pathway: one spec/capability correspondence
     # (the artifact capability catalog shared with Coverage and the work
@@ -628,36 +425,28 @@ def plan_hypothesis_query(
     execution_error_block = _consume_execution_error_block(state)
     planner_error_block = _consume_planner_error_block(state, hypothesis.id)
 
-    def intent_messages_builder(extra_context: str) -> list[dict[str, str]]:
-        return build_query_intent_messages(
-            hypothesis=hypothesis,
-            recent_history=hypothesis_history,
-            active_hypotheses=state.active_hypotheses,
-            time_range=time_range or {},
-            schema_context=schema_card,
-            extra_context_md=extra_context
-            + execution_error_block
-            + planner_error_block,
-            prior_check_feedback=prior_check_feedback,
-            case_profile=case_profile,
-            case_policy=case_policy,
-            findings_snapshot=state.findings_snapshot,
-            work_context_md=work_context_md,
-            db=db,
-            session_id=state.session_id,
-            spec_payload=spec_payload,
-        )
+    messages = build_query_intent_messages(
+        hypothesis=hypothesis,
+        recent_history=hypothesis_history,
+        active_hypotheses=state.active_hypotheses,
+        time_range=time_range or {},
+        schema_context=schema_card,
+        extra_context_md=execution_error_block + planner_error_block,
+        prior_check_feedback=prior_check_feedback,
+        case_profile=case_profile,
+        case_policy=case_policy,
+        findings_snapshot=state.findings_snapshot,
+        work_context_md=work_context_md,
+        db=db,
+        session_id=state.session_id,
+        spec_payload=spec_payload,
+    )
 
-    intent_response = _plan_query_intent(
-        memory=memory,
-        intent_messages_builder=intent_messages_builder,
+    intent_response = request_query_intent(
+        messages,
         base_url=base_url,
         model=model,
-        default_context_md=default_context_md,
-        db=db,
         status_callback=status_callback,
-        hypothesis=hypothesis,
-        session_id=state.session_id,
     )
     action = intent_response.action
     error = intent_response.error
@@ -681,7 +470,6 @@ def plan_hypothesis_query(
     elif not error:
         error = "SQL action was not selected"
     return HypothesisPlanResult(
-        read_more=intent_response.read_more,
         query=planned_query,
         stop_reason=f"invalid_action: {error}" if error else None,
         raw_response=intent_response.raw_response,
