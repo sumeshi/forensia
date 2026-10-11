@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -108,6 +109,27 @@ for _template_mode in (True, False):
             "properties": _branch_properties,
         }
     )
+
+
+def query_intent_schema_for_catalog(
+    tables: list[str] | tuple[str, ...], template_ids: list[str] | tuple[str, ...]
+) -> dict[str, Any]:
+    """Narrow the planner's structured action to its disclosed work catalog."""
+    schema = deepcopy(QUERY_INTENT_SCHEMA)
+    action = schema["$defs"]["SQLQueryAction"]
+    table_enum = list(dict.fromkeys(str(table) for table in tables))
+    template_enum = list(dict.fromkeys(str(item) for item in template_ids))
+    action["properties"]["target_table"]["enum"] = table_enum
+    action["properties"]["template_id"]["enum"] = [*template_enum, None]
+    for branch in action["anyOf"]:
+        branch_props = branch["properties"]
+        branch_props["target_table"]["enum"] = table_enum
+        if branch_props["template_id"].get("type") == "string":
+            branch_props["template_id"]["enum"] = template_enum
+        else:
+            branch_props["template_id"]["enum"] = [None]
+    return schema
+
 
 SNAKE_CASE_COLUMNS: list[str] = [
     "computer",

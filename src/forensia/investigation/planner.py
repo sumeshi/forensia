@@ -15,6 +15,8 @@ from forensia.context.prompt_context import (
     _build_schema_guidance,
 )
 from forensia.context.sql_templates import (
+    MAX_SQL_ROWS,
+    query_referenced_tables,
     query_template_catalog_for_tables,
     render_query_template,
     validate_select_sql,
@@ -22,18 +24,32 @@ from forensia.context.sql_templates import (
 )
 from forensia.core.session import Hypothesis, PlannedQuery, SessionState
 from forensia.db.database import CaseDB
-from forensia.investigation.hypotheses.hypothesis_store import (
-    load_hypothesis_attempts,
+from forensia.db.evidence_lookup import canonical_record_table
+from forensia.db.query import normalize_value
+from forensia.evidence.links import verification_spec_fingerprint
+from forensia.investigation.hypotheses.execution import (
+    _evidence_scope_fingerprint,
+    _repeat_gate_decision,
 )
+from forensia.investigation.hypotheses.hypothesis_store import load_hypothesis_attempts
+from forensia.investigation.progress import query_fingerprint
 from forensia.investigation.prompts import (
     build_query_intent_messages,
 )
-from forensia.knowledge.coverage import disclosure_tables_for_spec
+from forensia.investigation.verification.assessment import _observation_value_matches
+from forensia.knowledge.coverage import (
+    derive_required_capabilities,
+    disclosure_tables_for_spec,
+    load_artifact_capabilities,
+    observation_catalog,
+    observation_condition_error,
+)
 from forensia.llm import json_response
 from forensia.llm.schemas import (
     QUERY_INTENT_SCHEMA,
     QueryIntentResponse,
     SQLQueryAction,
+    query_intent_schema_for_catalog,
 )
 
 logger = logging.getLogger(__name__)
@@ -55,7 +71,9 @@ def normalize_query_intent_action(
 
 
 def _materialize_planned_query(
-    payload: dict[str, Any], db: CaseDB | None = None
+    payload: dict[str, Any],
+    db: CaseDB | None = None,
+    eligible_tables: tuple[str, ...] | None = None,
 ) -> PlannedQuery:
     planned_query = PlannedQuery.model_validate(payload)
     tid = planned_query.template_id
@@ -63,9 +81,91 @@ def _materialize_planned_query(
         planned_query.sql = render_query_template(tid, planned_query.params)
     else:
         planned_query.sql = validate_select_sql(planned_query.sql)
+    if eligible_tables is not None:
+        used_tables = query_referenced_tables(planned_query.sql)
+        allowed = {str(table).casefold() for table in eligible_tables}
+        target = str(payload.get("target_table") or "").casefold()
+        if not used_tables or not used_tables <= allowed:
+            rejected = ", ".join(sorted(used_tables - allowed)) or "no artifact table"
+            raise ValueError(
+                f"query table is outside this work's eligible catalog: {rejected}"
+            )
+        if target not in used_tables:
+            raise ValueError("target_table must name a table used by the query")
     if db is not None:
         planned_query.sql = validate_select_sql_with_dryrun(planned_query.sql, db)
     return planned_query
+
+
+def _typed_observation_query(
+    *,
+    hypothesis: Hypothesis,
+    spec_payload: dict[str, Any] | None,
+    query_index: int,
+    db: CaseDB | None,
+) -> PlannedQuery | None:
+    """Build the first bounded query directly from an admitted typed observation."""
+    if query_index != 1 or not isinstance(spec_payload, dict):
+        return None
+    conditions = spec_payload.get("support_conditions") or {}
+    observation = (
+        conditions.get("observation") if isinstance(conditions, dict) else None
+    )
+    if observation is None:
+        return None
+    if (
+        observation_condition_error(conditions)
+        or spec_payload.get("scope")
+        or spec_payload.get("correlation")
+    ):
+        return None
+    family = str(observation["family"]).strip().lower()
+    capability = str(observation["capability"]).strip()
+    field = str(observation["field"]).strip()
+    operator = str(observation["operator"]).strip()
+    expected = observation["value"]
+    table = canonical_record_table(family)
+    catalog = observation_catalog().get(family)
+    if not table or not catalog or capability not in catalog["capabilities"]:
+        return None
+    if field not in catalog["fields"]:
+        return None
+
+    if db is None:
+        return None
+    id_column = "artifact_id" if family == "registry" else "evidence_id"
+    matching_ids: list[str] = []
+    cursor = db.execute(
+        f"SELECT {id_column}, {field} FROM {table} ORDER BY {id_column}"
+    )
+    while batch := cursor.fetchmany(512):
+        for evidence_id, value in batch:
+            if family == "prefetch" and field == "exec_times":
+                value = normalize_value(value)
+            if _observation_value_matches(value, operator, expected):
+                matching_ids.append(str(evidence_id))
+                if len(matching_ids) == MAX_SQL_ROWS:
+                    break
+        if len(matching_ids) == MAX_SQL_ROWS:
+            break
+    id_filter = ", ".join(
+        "'" + evidence_id.replace("'", "''") + "'" for evidence_id in matching_ids
+    )
+    predicate = f"{id_column} IN ({id_filter})" if matching_ids else "FALSE"
+    sql = (
+        f"SELECT {id_column} AS evidence_id FROM {table} WHERE {predicate} "
+        f"ORDER BY {id_column} LIMIT {MAX_SQL_ROWS}"
+    )
+    return PlannedQuery(
+        query_id=f"{hypothesis.id}-q{query_index}",
+        hypothesis_id=hypothesis.id,
+        purpose=(
+            f"primary verification: {family}.{field} "
+            f"{observation['operator']} {observation['value']}"
+        ),
+        sql=sql,
+        test_intent="primary_verification",
+    )
 
 
 @dataclass(slots=True)
@@ -89,6 +189,36 @@ class HypothesisPlanResult:
     disclosure: dict[str, Any] | None = None
 
 
+def _eligible_planner_tables(
+    spec_payload: dict[str, Any] | None,
+    disclosed_tables: tuple[str, ...],
+    *,
+    include_corroboration: bool,
+) -> tuple[str, ...] | None:
+    if not isinstance(spec_payload, dict):
+        return None
+    support_conditions = spec_payload.get("support_conditions") or {}
+    if not disclosed_tables and not (
+        spec_payload.get("required_capabilities") or support_conditions
+    ):
+        return None
+    tables = dict.fromkeys(disclosed_tables)
+    if include_corroboration:
+        capabilities = derive_required_capabilities(
+            list(spec_payload.get("required_capabilities") or []), support_conditions
+        )
+        catalog = load_artifact_capabilities()
+        families = catalog.get("families") or {}
+        for capability in capabilities:
+            cross = (catalog.get("cross_artifact_corroboration") or {}).get(
+                capability, {}
+            )
+            for family in cross.get("preferred_families") or []:
+                for table in (families.get(family) or {}).get("tables") or []:
+                    tables.setdefault(str(table), None)
+    return tuple(tables)
+
+
 def persist_hypothesis_plan_result(
     *,
     db: CaseDB,
@@ -110,6 +240,11 @@ def persist_hypothesis_plan_result(
     output["_plan_status"] = {
         "query_materialized": plan.query is not None,
         "stop_reason": plan.stop_reason,
+        "test_intent": (
+            plan.query.test_intent
+            if plan.query is not None
+            else plan.raw_response.get("test_intent")
+        ),
     }
     if plan.disclosure is not None:
         output["_disclosure"] = plan.disclosure
@@ -140,6 +275,9 @@ def persist_hypothesis_plan_result(
     state.last_planner_error = {
         "hypothesis_id": hypothesis.id,
         "reason": reason[:500],
+        "rejected_action": json.dumps(
+            plan.raw_response, ensure_ascii=False, default=str
+        )[:500],
     }
     if emit:
         emit(
@@ -177,13 +315,14 @@ def request_query_intent(
     base_url: str,
     model: str,
     status_callback: Callable[[str], None] | None = None,
+    json_schema: dict[str, Any] = QUERY_INTENT_SCHEMA,
 ) -> _QueryIntentResult:
     """Make one bounded query decision from the supplied Case/Trace context."""
     parsed = json_response.request_llm_json(
         messages=messages,
         model=model,
         base_url=base_url,
-        json_schema=QUERY_INTENT_SCHEMA,
+        json_schema=json_schema,
         telemetry_phase="hypothesis-plan",
         status_callback=status_callback,
     )
@@ -335,6 +474,7 @@ def _consume_planner_error_block(state: SessionState, hypothesis_id: str) -> str
         "The previous planner action was rejected by host validation. "
         "Correct the action before trying again; do not repeat the rejected payload.\n"
         f"reason: {state.last_planner_error.get('reason', 'unknown validation error')}\n"
+        f"rejected_action: {state.last_planner_error.get('rejected_action', '(not recorded)')}\n"
         "</PLANNER_VALIDATION_ERROR>\n"
     )
     state.last_planner_error = None
@@ -382,22 +522,107 @@ def plan_hypothesis_query(
         spec_payload = (
             spec_obj.model_dump(mode="json") if spec_obj is not None else None
         )
+    declared_conditions = (
+        spec_payload.get("support_conditions")
+        if isinstance(spec_payload, dict)
+        else None
+    )
+    if (
+        isinstance(declared_conditions, dict)
+        and "observation" in declared_conditions
+        and (condition_error := observation_condition_error(declared_conditions))
+    ):
+        return HypothesisPlanResult(
+            query=None,
+            stop_reason=f"invalid_typed_primary: {condition_error}",
+            raw_response={"test_intent": "primary_verification"},
+        )
+    deterministic_query = _typed_observation_query(
+        hypothesis=hypothesis,
+        spec_payload=spec_payload,
+        query_index=query_index,
+        db=db,
+    )
+    primary_query = deterministic_query
+    test_intent = "corroboration" if query_index > 1 else "primary_verification"
+    already_attempted = False
+    if deterministic_query is not None and db is not None:
+        try:
+            deterministic_query.sql = validate_select_sql(deterministic_query.sql)
+            deterministic_query.sql = validate_select_sql_with_dryrun(
+                deterministic_query.sql, db
+            )
+            query_fp = query_fingerprint(deterministic_query.sql)
+            spec_fp = verification_spec_fingerprint(hypothesis.verification_spec)
+            scope_fp = _evidence_scope_fingerprint(db, deterministic_query.sql)
+            repeat_gate = _repeat_gate_decision(
+                db,
+                hypothesis,
+                query_fp=query_fp,
+                verification_fp=spec_fp,
+                scope_fp=scope_fp,
+            )
+            already_attempted = repeat_gate["decision"] == "skip"
+        except (ValueError, ValidationError) as exc:
+            return HypothesisPlanResult(
+                query=None,
+                stop_reason=f"invalid_typed_primary: {str(exc).splitlines()[0][:300]}",
+                raw_response={"test_intent": "primary_verification"},
+            )
+        if already_attempted:
+            deterministic_query = None
+            test_intent = "corroboration"
     _disclosure_tables, _primary_tables = disclosure_tables_for_spec(spec_payload)
+    eligible_tables = _eligible_planner_tables(
+        spec_payload,
+        _disclosure_tables,
+        include_corroboration=test_intent == "corroboration",
+    )
+    if eligible_tables == ():
+        return HypothesisPlanResult(
+            query=None,
+            stop_reason="no_eligible_capability",
+            raw_response={"test_intent": test_intent},
+            disclosure={"schema_cards": [], "playbook_tables": [], "template_ids": []},
+        )
+    disclosure_record = {
+        "schema_cards": (
+            list(eligible_tables)
+            if test_intent == "corroboration" and eligible_tables is not None
+            else list(_primary_tables)
+        )
+        or ["evtx_events"],
+        "playbook_tables": sorted(eligible_tables or _disclosure_tables) or None,
+        "template_ids": [
+            entry["template_id"]
+            for entry in query_template_catalog_for_tables(
+                eligible_tables or _disclosure_tables or ()
+            )
+        ],
+    }
+    if deterministic_query is not None:
+        return HypothesisPlanResult(
+            query=deterministic_query,
+            stop_reason=None,
+            raw_response={"test_intent": "primary_verification"},
+            disclosure={
+                "schema_cards": [],
+                "playbook_tables": [],
+                "template_ids": [],
+            },
+        )
+    schema_tables = (
+        list(eligible_tables)
+        if test_intent == "corroboration" and eligible_tables is not None
+        else list(_primary_tables)
+    ) or ["evtx_events"]
     schema_card = _build_schema_guidance(
-        list(_primary_tables) or "evtx_events",
+        schema_tables,
         db=db,
         session_id=state.session_id,
     )
     prior_check_feedback = _load_prior_check_feedback(db, hypothesis)
     working_state_block = _build_working_state_block(db, hypothesis.id)
-    disclosure_record = {
-        "schema_cards": list(_primary_tables) or ["evtx_events"],
-        "playbook_tables": sorted(_disclosure_tables) or None,
-        "template_ids": [
-            entry["template_id"]
-            for entry in query_template_catalog_for_tables(_disclosure_tables or ())
-        ],
-    }
     execution_error_block = _consume_execution_error_block(state)
     planner_error_block = _consume_planner_error_block(state, hypothesis.id)
 
@@ -416,6 +641,8 @@ def plan_hypothesis_query(
         db=db,
         session_id=state.session_id,
         spec_payload=spec_payload,
+        eligible_tables=eligible_tables,
+        test_intent=test_intent,
     )
 
     intent_response = request_query_intent(
@@ -423,6 +650,17 @@ def plan_hypothesis_query(
         base_url=base_url,
         model=model,
         status_callback=status_callback,
+        json_schema=(
+            query_intent_schema_for_catalog(
+                list(eligible_tables),
+                [
+                    entry["template_id"]
+                    for entry in query_template_catalog_for_tables(eligible_tables)
+                ],
+            )
+            if eligible_tables is not None
+            else QUERY_INTENT_SCHEMA
+        ),
     )
     action = intent_response.action
     error = intent_response.error
@@ -434,12 +672,26 @@ def plan_hypothesis_query(
                     "query_id": f"{hypothesis.id}-q{query_index}",
                     "hypothesis_id": hypothesis.id,
                     "purpose": action.intent,
+                    "target_table": action.target_table,
                     "template_id": action.template_id,
                     "params": action.params,
                     "sql": action.sql,
+                    "test_intent": test_intent,
                 },
                 db,
+                eligible_tables,
             )
+            if (
+                planned_query is not None
+                and primary_query is not None
+                and test_intent == "corroboration"
+                and query_fingerprint(planned_query.sql)
+                == query_fingerprint(primary_query.sql)
+            ):
+                planned_query = None
+                error = (
+                    "duplicate primary query; choose an eligible corroboration query"
+                )
         except (ValueError, ValidationError) as exc:
             error = str(exc).splitlines()[0][:300]
             logger.debug("planned SQL rejected by host validation: %s", error)

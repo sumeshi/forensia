@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -89,6 +89,9 @@ class PlannedQuery(BaseModel):
     sql: str = ""
     template_id: str | None = None
     params: dict[str, Any] = Field(default_factory=dict)
+    test_intent: Literal["primary_verification", "corroboration"] = (
+        "primary_verification"
+    )
 
     @field_validator("params", mode="before")
     @classmethod

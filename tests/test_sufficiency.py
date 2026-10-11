@@ -739,6 +739,46 @@ class SufficiencyEvaluationTests(unittest.TestCase):
         self.assertFalse(_observation_value_matches("Infinity", "equals", "Infinity"))
         self.assertFalse(_observation_value_matches(float("inf"), "equals", "Infinity"))
 
+        datetime_cases = (
+            (datetime(2026, 1, 2), "greater_than", "2026-01-01T00:00:00Z", True),
+            (
+                datetime(2026, 1, 1),
+                "greater_than",
+                "2026-01-01T01:00:00+01:00",
+                False,
+            ),
+            (
+                datetime(2026, 1, 2),
+                "equals",
+                "2026-01-02T01:00:00+01:00",
+                True,
+            ),
+            (
+                datetime.fromisoformat("2026-01-02T01:00:00+01:00"),
+                "equals",
+                datetime(2026, 1, 2),
+                True,
+            ),
+            (datetime(2026, 1, 2), "greater_than", "not-a-timestamp", False),
+            (
+                "2026-01-02T00:00:00Z",
+                "greater_than",
+                "2026-01-01T01:00:00+01:00",
+                True,
+            ),
+            (
+                "2026-01-02T00:00:00Z",
+                "greater_than",
+                "2026-01-03T00:00:00Z",
+                False,
+            ),
+        )
+        for actual, operator, expected, matches in datetime_cases:
+            with self.subTest(actual=actual, operator=operator, expected=expected):
+                self.assertEqual(
+                    matches, _observation_value_matches(actual, operator, expected)
+                )
+
     def test_typed_observation_claim_scope_gates_settlement(self) -> None:
         condition = {
             "observation": {

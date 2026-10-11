@@ -131,6 +131,24 @@ def _render_template_params(
     return rendered
 
 
+def query_referenced_tables(sql: str) -> set[str]:
+    """Return physical tables only, excluding CTE aliases and subquery scopes."""
+    try:
+        tree = sqlglot.parse_one(sql, read="duckdb")
+    except sqlglot.errors.ParseError as exc:
+        raise ValueError("SQL could not be parsed") from exc
+    tables: set[str] = set()
+    for scope in traverse_scope(tree):
+        for _, (node, source) in scope.selected_sources.items():
+            if isinstance(source, Scope):
+                continue
+            if not isinstance(source, sqlglot.exp.Table):
+                raise ValueError("Unsupported table reference")
+            table = node if isinstance(node, sqlglot.exp.Table) else source
+            tables.add(table.name.casefold())
+    return tables
+
+
 def validate_select_sql(sql: str) -> str:
     """Validate and normalize a read-only SQL statement.
 

@@ -353,6 +353,8 @@ def build_query_intent_messages(
     db: Any | None = None,
     session_id: str | None = None,
     spec_payload: Any = None,
+    eligible_tables: tuple[str, ...] | None = None,
+    test_intent: str = "primary_verification",
 ) -> list[dict[str, str]]:
     """Build messages for the query_intent_planner phase.
 
@@ -370,10 +372,11 @@ def build_query_intent_messages(
     disclosure_tables, _primary_tables = _work_disclosure_tables(
         hypothesis, spec_payload
     )
+    planning_tables = eligible_tables or disclosure_tables
     template_catalog_md = _template_catalog_block(
-        query_template_catalog_for_tables(disclosure_tables or ())
+        query_template_catalog_for_tables(planning_tables or ())
     )
-    playbook_tables = set(disclosure_tables) or None
+    playbook_tables = set(planning_tables) or None
     profile_event_ids = (
         set(case_profile.event_ids)
         if case_profile and case_profile.event_ids is not None
@@ -446,7 +449,7 @@ def build_query_intent_messages(
         f"{_time_range_guidance(time_range)}"
         f"{_case_profile_guidance(case_profile.summary if case_profile else None)}"
         f"{_org_knowledge_block(description=getattr(hypothesis, 'description', ''), extra_words=knowledge_extra, db=db, session_id=session_id, phase='hypothesis_plan')}"
-        "<TASK>You are the bounded query action planner. Choose one action and, for sql.query, provide either an exact executable template_catalog ID with params or a bounded SELECT fallback. Cookbook/RECIPE_INDEX IDs are reference-only and must be adapted into raw SQL with template_id=null. The host validates and executes it; do not delegate SQL composition to another model.</TASK>\n"
+        f"<TASK>You are the bounded query action planner. This action is {test_intent}. Choose one action and, for sql.query, provide either an exact executable template_catalog ID with params or a bounded SELECT fallback. Cookbook/RECIPE_INDEX IDs are reference-only and must be adapted into raw SQL with template_id=null. The host validates and executes it; do not delegate SQL composition to another model.</TASK>\n"
         "<INPUT_SCHEMA>\n"
         f"hypothesis: {json.dumps(_hypothesis_prompt_projection(hypothesis), ensure_ascii=False, default=str)}\n"
         f"{render_prior_attempts(recent_history)}"
@@ -466,7 +469,12 @@ def build_query_intent_messages(
         "The sql.query action MUST include a complete intent, known target_table, and exactly one execution path: for a template, copy an executable ID from <TEMPLATE_CATALOG>, set params, and set sql to an empty string; for raw SQL, set template_id to null and provide a bounded SELECT. If the catalog contains no applicable template, use raw SQL. RECIPE_INDEX IDs are never valid template_id values. Do not emit unknown actions, free-form tools, or an empty/ambiguous action.\n"
         "If EXECUTION_ERROR is present, you MUST change the query — at minimum change the table list, the WHERE clause, or eliminate the failing JOIN. Never repeat the same SQL that caused an execution error.\n"
         "If prior_check_feedback names specific missing event_ids or evidence types, the new SQL MUST include those event_ids or evidence types. Never ignore prior check feedback.\n"
-        "</RULES>"
+        + (
+            "This is corroboration after the typed primary search. Do not repeat that primary query. Use only tables listed in the selected schema cards; cross-family corroboration is allowed only when those tables are listed. Keep the purpose and evidence family explicit.\n"
+            if test_intent == "corroboration"
+            else "This is the primary verification search. Keep its family and typed observation field in scope.\n"
+        )
+        + "</RULES>"
     )
     current_id = str(getattr(hypothesis, "id", "") or "")
     peer_hypotheses = [

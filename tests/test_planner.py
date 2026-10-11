@@ -169,6 +169,167 @@ class PlannerRetryTests(unittest.TestCase):
         self.assertEqual("inspect events", result.query.purpose)
         self.assertEqual(response, result.raw_response)
 
+    def test_typed_mft_observation_builds_bounded_primary_without_planner(self) -> None:
+        from forensia.context.sql_templates import MAX_SQL_ROWS
+        from forensia.core.verification import VerificationSpec
+
+        spec = VerificationSpec.model_validate(
+            {
+                "spec_version": "1",
+                "support_conditions": {
+                    "observation": {
+                        "family": "mft",
+                        "capability": "file_activity",
+                        "field": "file_name",
+                        "operator": "equals",
+                        "value": "STRASSE.EXE",
+                    }
+                },
+            }
+        )
+        hypothesis = Hypothesis(
+            id="H-mft-primary",
+            description="An executable was created",
+            verification_spec=spec,
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                db.execute(
+                    "INSERT INTO hypotheses (hypothesis_id, description, status, "
+                    "created_at, updated_at, verification_spec) VALUES (?, ?, 'active', "
+                    "now(), now(), ?)",
+                    [hypothesis.id, hypothesis.description, spec.model_dump_json()],
+                )
+                db.insert_many(
+                    "INSERT INTO mft_entries (evidence_id, source_file, file_name) "
+                    "VALUES (?, 'source-a', 'other.exe')",
+                    [(f"mft-primary-{index:04d}",) for index in range(MAX_SQL_ROWS)],
+                )
+                db.execute(
+                    "INSERT INTO mft_entries (evidence_id, source_file, file_name) "
+                    "VALUES ('mft-primary-zzzz', 'source-a', 'Straße.exe')"
+                )
+                with patch(
+                    "forensia.llm.json_response.request_llm_json",
+                    side_effect=AssertionError(
+                        "typed primary must not ask the planner"
+                    ),
+                ):
+                    result = plan_hypothesis_query(
+                        state=SessionState(session_id="S-mft-primary"),
+                        hypothesis=hypothesis,
+                        base_url=_llm_base_url(),
+                        model="test-model",
+                        db=db,
+                    )
+                self.assertEqual("primary_verification", result.query.test_intent)
+                self.assertIn("FROM mft_entries", result.query.sql)
+                self.assertIn("ORDER BY evidence_id LIMIT 1000", result.query.sql)
+                self.assertEqual(
+                    ["mft-primary-zzzz"],
+                    [row[0] for row in db.execute(result.query.sql).fetchall()],
+                )
+
+    def test_invalid_typed_observation_field_is_rejected_before_provider(self) -> None:
+        from forensia.core.verification import VerificationSpec
+
+        hypothesis = Hypothesis(
+            id="H-bad-observation",
+            description="Invalid typed observation",
+            verification_spec=VerificationSpec.model_validate(
+                {
+                    "spec_version": "1",
+                    "support_conditions": {
+                        "observation": {
+                            "family": "mft",
+                            "capability": "file_activity",
+                            "field": "not_a_column",
+                            "operator": "equals",
+                            "value": "x",
+                        }
+                    },
+                }
+            ),
+        )
+        with patch(
+            "forensia.llm.json_response.request_llm_json",
+            side_effect=AssertionError("invalid observation must be rejected"),
+        ):
+            result = plan_hypothesis_query(
+                state=SessionState(session_id="S-bad-observation"),
+                hypothesis=hypothesis,
+                base_url=_llm_base_url(),
+                model="test-model",
+            )
+        self.assertIsNone(result.query)
+        self.assertIn("observation-field-unsupported", result.stop_reason)
+
+        no_catalog_hypothesis = Hypothesis(
+            id="H-unknown-capability",
+            description="An unsupported capability was requested",
+            verification_spec=VerificationSpec.model_validate(
+                {"spec_version": "1", "required_capabilities": ["unknown"]}
+            ),
+        )
+        with patch(
+            "forensia.llm.json_response.request_llm_json",
+            side_effect=AssertionError("empty catalog must not call the provider"),
+        ):
+            empty = plan_hypothesis_query(
+                state=SessionState(session_id="S-unknown-capability"),
+                hypothesis=no_catalog_hypothesis,
+                base_url=_llm_base_url(),
+                model="test-model",
+            )
+        self.assertIsNone(empty.query)
+        self.assertEqual("no_eligible_capability", empty.stop_reason)
+        self.assertEqual([], empty.disclosure["schema_cards"])
+        self.assertEqual([], empty.disclosure["playbook_tables"])
+
+        unmapped_event_hypothesis = Hypothesis(
+            id="H-unmapped-event",
+            description="An unmapped event was observed",
+            verification_spec=VerificationSpec.model_validate(
+                {
+                    "spec_version": "1",
+                    "support_conditions": {"co_observed_event_ids": [9999]},
+                }
+            ),
+        )
+        with patch(
+            "forensia.llm.json_response.request_llm_json",
+            side_effect=AssertionError("unmapped support must not call the provider"),
+        ):
+            unmapped = plan_hypothesis_query(
+                state=SessionState(session_id="S-unmapped-event"),
+                hypothesis=unmapped_event_hypothesis,
+                base_url=_llm_base_url(),
+                model="test-model",
+            )
+        self.assertIsNone(unmapped.query)
+        self.assertEqual("no_eligible_capability", unmapped.stop_reason)
+        self.assertEqual([], unmapped.disclosure["schema_cards"])
+        self.assertEqual([], unmapped.disclosure["playbook_tables"])
+
+    def test_eligible_table_check_ignores_cte_aliases(self) -> None:
+        from forensia.investigation.planner import _materialize_planned_query
+
+        planned = _materialize_planned_query(
+            {
+                "query_id": "H-cte-q1",
+                "hypothesis_id": "H-cte",
+                "purpose": "inspect the eligible MFT rows",
+                "target_table": "mft_entries",
+                "sql": (
+                    "WITH evtx_events AS (SELECT evidence_id FROM mft_entries) "
+                    "SELECT evidence_id FROM evtx_events LIMIT 10"
+                ),
+            },
+            eligible_tables=("mft_entries",),
+        )
+        self.assertIn("FROM evtx_events", planned.sql)
+
     def test_plan_prompt_carries_the_deterministic_case_work_context(self) -> None:
         """The planner reconstructs bounded Case/Trace state after reopen.
 

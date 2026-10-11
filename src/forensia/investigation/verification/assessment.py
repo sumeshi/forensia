@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any, Literal
 
@@ -146,6 +147,14 @@ def _observation_value_matches(value: Any, operator: str, expected: Any) -> bool
                 and expected_number is not None
                 and actual_number == expected_number
             )
+        if isinstance(value, datetime):
+            actual_time = _observation_utc_datetime(value)
+            expected_time = _observation_utc_datetime(expected)
+            return (
+                actual_time is not None
+                and expected_time is not None
+                and actual_time == expected_time
+            )
         return str(value).strip().casefold() == str(expected).strip().casefold()
     if operator == "contains":
         wanted = str(expected).strip().casefold()
@@ -158,14 +167,16 @@ def _observation_value_matches(value: Any, operator: str, expected: Any) -> bool
         expected_number = _finite_decimal(expected)
         if actual_number is not None and expected_number is not None:
             return actual_number > expected_number
-        from datetime import datetime
-
-        try:
-            actual_time = (
-                value
-                if isinstance(value, datetime)
-                else datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if isinstance(value, datetime):
+            actual_time = _observation_utc_datetime(value)
+            expected_time = _observation_utc_datetime(expected)
+            return (
+                actual_time is not None
+                and expected_time is not None
+                and actual_time > expected_time
             )
+        try:
+            actual_time = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
             expected_time = (
                 expected
                 if isinstance(expected, datetime)
@@ -175,6 +186,21 @@ def _observation_value_matches(value: Any, operator: str, expected: Any) -> bool
         except TypeError, ValueError, OverflowError:
             return False
     return False
+
+
+def _observation_utc_datetime(value: Any) -> datetime | None:
+    """Interpret naive database timestamps as UTC and normalize ISO inputs."""
+    try:
+        parsed = (
+            value
+            if isinstance(value, datetime)
+            else datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        )
+    except TypeError, ValueError, OverflowError:
+        return None
+    if parsed.utcoffset() is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 def _finite_decimal(value: Any) -> Decimal | None:

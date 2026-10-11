@@ -60,17 +60,20 @@ class TestScanKnowledgeDir:
         assert [doc.name for doc in docs] == ["valid"]
         assert "invalid frontmatter" in caplog.text
 
-    def test_scan_recursive(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize("newline", ["\n", "\r\n"])
+    def test_scan_recursive(self, tmp_path: Path, newline: str) -> None:
         d = tmp_path / "root"
         sub = d / "sub"
         sub.mkdir(parents=True)
-        (sub / "a.md").write_text(
-            "---\ntype: knowledge\ntitle: A\ndescription: d\ntags: [x]\n---\nBody\n",
-            encoding="utf-8",
+        (sub / "a.md").write_bytes(
+            "---\ntype: knowledge\ntitle: A\ndescription: d\ntags: [x]\n---\nBody\n".replace(
+                "\n", newline
+            ).encode("utf-8")
         )
         docs = scan_knowledge_dir(d)
         assert len(docs) == 1
         assert (docs[0].title, docs[0].description, docs[0].tags) == ("A", "d", ("x",))
+        assert load_body(docs[0]) == "Body\n"
 
 
 class TestLoadBody:

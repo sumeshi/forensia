@@ -180,7 +180,9 @@ def test_python_entry_pins_markdown_before_evidence_work(tmp_path, monkeypatch) 
     assert output.is_file()
 
 
-@pytest.mark.parametrize("proposal_case", ["accepted", "invalid_entity"])
+@pytest.mark.parametrize(
+    "proposal_case", ["accepted", "invalid_entity", "typed_primary"]
+)
 def test_public_run_records_provider_planned_query_or_bounded_rejection(
     tmp_path, monkeypatch, proposal_case
 ) -> None:
@@ -214,36 +216,84 @@ def test_public_run_records_provider_planned_query_or_bounded_rejection(
                 "GapIdentifier": {"gap_areas": []},
                 "HypothesisDrafter": {
                     "hypothesis": {
-                        "description": "A new service named Updater was installed on host-01.",
+                        "description": (
+                            'At least 1 prefetch observation has executable_name equals "sample.exe".'
+                            if proposal_case == "typed_primary"
+                            else "A new service named Updater was installed on host-01."
+                        ),
                         "required_entities": (
                             ["not_a_column"]
                             if proposal_case == "invalid_entity"
-                            else ["computer", "service_name"]
+                            else (
+                                ["executable_name"]
+                                if proposal_case == "typed_primary"
+                                else ["computer", "service_name"]
+                            )
                         ),
-                        "source_rule_ids": ["seed-service-rule"],
-                        "confirm_when": {
-                            "co_observed_event_ids": [4697],
-                            "event_contexts": [
-                                {
-                                    "event_id": 4697,
-                                    "channel": "Security",
-                                    "provider": "Microsoft-Windows-Security-Auditing",
+                        "source_rule_ids": [
+                            "seed-prefetch-rule"
+                            if proposal_case == "typed_primary"
+                            else "seed-service-rule"
+                        ],
+                        "confirm_when": (
+                            {
+                                "observation": {
+                                    "family": "prefetch",
+                                    "capability": "process_execution",
+                                    "field": "executable_name",
+                                    "operator": "equals",
+                                    "value": "sample.exe",
                                 }
-                            ],
-                        },
+                            }
+                            if proposal_case == "typed_primary"
+                            else {
+                                "co_observed_event_ids": [4697],
+                                "event_contexts": [
+                                    {
+                                        "event_id": 4697,
+                                        "channel": "Security",
+                                        "provider": "Microsoft-Windows-Security-Auditing",
+                                    }
+                                ],
+                            }
+                        ),
                     }
                 },
                 "QueryIntentResponse": {
                     "action": {
                         "type": "sql.query",
-                        "intent": "Inspect observed service installation on host-01",
-                        "target_table": "evtx_events",
-                        "template_id": "q_service_or_task_after_host_logon",
-                        "params": {"computer": "host-01", "hours": 24},
-                        "sql": "",
-                        "filters_required": ["event_id = 4697", "computer = host-01"],
+                        "intent": (
+                            "Inspect Prefetch process executions"
+                            if proposal_case == "typed_primary"
+                            else "Inspect observed service installation on host-01"
+                        ),
+                        "target_table": (
+                            "prefetch_executions"
+                            if proposal_case == "typed_primary"
+                            else "evtx_events"
+                        ),
+                        "template_id": (
+                            ""
+                            if proposal_case == "typed_primary"
+                            else "q_service_or_task_after_host_logon"
+                        ),
+                        "params": (
+                            {}
+                            if proposal_case == "typed_primary"
+                            else {"computer": "host-01", "hours": 24}
+                        ),
+                        "sql": (
+                            "SELECT evidence_id FROM prefetch_executions LIMIT 1000"
+                            if proposal_case == "typed_primary"
+                            else ""
+                        ),
+                        "filters_required": (
+                            []
+                            if proposal_case == "typed_primary"
+                            else ["event_id = 4697", "computer = host-01"]
+                        ),
                         "time_window": "24 hours",
-                        "expected_row_shape": "service installation evidence",
+                        "expected_row_shape": "evidence rows",
                     }
                 },
                 "VerdictReview": {
@@ -281,6 +331,26 @@ def test_public_run_records_provider_planned_query_or_bounded_rejection(
     input_dir.mkdir()
 
     def seed_observation(_case, db):
+        if proposal_case == "typed_primary":
+            db.execute(
+                "INSERT INTO prefetch_executions (evidence_id, source_file, "
+                "executable_name, exec_count) VALUES "
+                "('prefetch-public-typed', 'seed-prefetch-source', 'Sample.exe', 1)"
+            )
+            db.execute(
+                "INSERT INTO evidence_sources (source_id, artifact_family, "
+                "display_path, ingest_status, parser_name, parser_version, row_count) "
+                "VALUES ('seed-prefetch-source', 'prefetch', 'sample.pf', "
+                "'normalized', 'prefetch', 'test', 1)"
+            )
+            db.execute(
+                "INSERT INTO findings (finding_id, rule_id, title, summary, severity, "
+                "confidence, status, evidence) VALUES ('F-prefetch-seed', "
+                "'seed-prefetch-rule', 'Prefetch execution', 'sample.exe observed', "
+                "'medium', 0.8, 'accepted', ?)",
+                [json_module.dumps([{"evidence_id": "prefetch-public-typed"}])],
+            )
+            return
         db.execute(
             "INSERT INTO evtx_events (evidence_id, source_file, computer, timestamp, "
             "event_id, channel, service_name, command_line, raw_json) VALUES "
@@ -370,12 +440,72 @@ def test_public_run_records_provider_planned_query_or_bounded_rejection(
             receipts = [
                 json_module.loads(row[0]).get("tool_receipt") for row in do_outputs
             ]
-            assert "QueryIntentResponse" in provider.schemas
             assert "VerdictReview" in provider.schemas
             assert any(receipt and receipt.get("receipt_id") for receipt in receipts)
             assert check and json_module.loads(check[0])["assessment"]["assessment_id"]
-            assert settlement and settlement[0] == "completed" and settlement[1]
-            assert final_hypothesis == ("confirmed",)
+            if proposal_case == "typed_primary":
+                assert "QueryIntentResponse" not in provider.schemas
+                typed_receipt = next(
+                    receipt
+                    for receipt in receipts
+                    if receipt
+                    and receipt.get("arguments", {}).get("test_intent")
+                    == "primary_verification"
+                )
+                assert typed_receipt["result_refs"]["evidence_ids"] == [
+                    "prefetch-public-typed"
+                ]
+                typed_check = db.execute(
+                    "SELECT output_json FROM trace.investigation_steps "
+                    "WHERE phase = 'check' ORDER BY created_at DESC LIMIT 1"
+                ).fetchone()
+                assessment = json_module.loads(typed_check[0])["assessment"]
+                assert assessment["role"] == "supporting"
+                assert assessment["witness_evidence_ids"] == ["prefetch-public-typed"]
+                assert settlement and settlement[0] == "completed" and settlement[1]
+                assert final_hypothesis == ("confirmed",)
+            else:
+                assert "QueryIntentResponse" in provider.schemas
+                assert settlement and settlement[0] == "completed" and settlement[1]
+                assert final_hypothesis == ("confirmed",)
+
+    if proposal_case == "typed_primary":
+        from forensia.core.session import SessionState
+        from forensia.investigation.hypotheses.hypothesis_store import (
+            load_persisted_hypotheses,
+        )
+        from forensia.investigation.planner import plan_hypothesis_query
+
+        with CaseDB(Case.open(case_dir)) as db:
+            active, resolved = load_persisted_hypotheses(db)
+            hypothesis = next(
+                item for item in [*active, *resolved] if item.verification_spec
+            )
+            state = SessionState(session_id=session_id)
+
+            replay = plan_hypothesis_query(
+                state,
+                hypothesis,
+                "http://provider.test",
+                "controlled-provider",
+                db=db,
+            )
+            assert replay.query is not None
+            assert replay.query.test_intent == "corroboration"
+
+            db.execute(
+                "UPDATE evidence_sources SET parser_version = 'test-revision-2' "
+                "WHERE source_id = 'seed-prefetch-source'"
+            )
+            replacement = plan_hypothesis_query(
+                state,
+                hypothesis,
+                "http://provider.test",
+                "controlled-provider",
+                db=db,
+            )
+            assert replacement.query is not None
+            assert replacement.query.test_intent == "primary_verification"
 
 
 def test_mft_only_resume_uses_normalization_receipt_and_parser_revision() -> None:

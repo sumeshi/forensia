@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from typing import Any
 
@@ -9,15 +10,157 @@ import sqlglot
 from sqlglot import exp
 
 from forensia.context.retrieval import ToolReceipt, coverage_snapshot
+from forensia.context.sql_templates import query_referenced_tables
 from forensia.core.log import log as _log
 from forensia.core.session import Hypothesis
 from forensia.db.database import CaseDB
+from forensia.investigation.hypotheses.hypothesis_store import load_hypothesis_attempts
 from forensia.knowledge.rules.engine import (
     execute_event_keyword_fallback_search,
     execute_fallback_search,
 )
 from forensia.knowledge.rules.loader import load_rule_by_id
 from forensia.llm.telemetry import get_active_telemetry
+
+
+def _query_artifact_families(sql: str) -> list[str]:
+    """Find catalogued evidence families named by the validated SQL."""
+    from forensia.knowledge.coverage import load_artifact_capabilities
+
+    family_by_table = {
+        str(table).lower(): str(family)
+        for family, config in load_artifact_capabilities().get("families", {}).items()
+        for table in config.get("tables", [])
+    }
+    try:
+        tables = query_referenced_tables(sql)
+    except ValueError:
+        return []
+    return sorted(
+        {family_by_table[table] for table in tables if table in family_by_table}
+    )
+
+
+def _evidence_scope_fingerprint(db: CaseDB, sql: str) -> str:
+    """Fingerprint source revisions for the artifact families a query reads."""
+    receipt_row = db.execute(
+        "SELECT output_json FROM trace.investigation_steps "
+        "WHERE phase = 'pipeline-normalize' "
+        "ORDER BY created_at DESC, step_id DESC LIMIT 1"
+    ).fetchone()
+    normalize_revision = None
+    if receipt_row is not None:
+        try:
+            receipt = json.loads(str(receipt_row[0]))
+        except TypeError, ValueError:
+            receipt = {}
+        if isinstance(receipt, dict) and receipt.get("status") == "completed":
+            revision = str(receipt.get("revision") or "")
+            if revision:
+                normalize_revision = {
+                    "revision": revision,
+                    "parser_revision": str(receipt.get("parser_revision") or ""),
+                }
+    source_fields = (
+        "source_id, artifact_family, ingest_status, parser_name, parser_version, "
+        "row_count, channel, hosts, volume_id, min_time, max_time, error_code, "
+        "error_summary"
+    )
+    families = _query_artifact_families(sql)
+    if families:
+        placeholders = ", ".join("?" for _ in families)
+        rows = db.execute(
+            f"SELECT {source_fields} "
+            f"FROM evidence_sources WHERE artifact_family IN ({placeholders}) "
+            "ORDER BY artifact_family, source_id",
+            families,
+        ).fetchall()
+    else:
+        rows = db.execute(
+            f"SELECT {source_fields} FROM evidence_sources "
+            "ORDER BY artifact_family, source_id"
+        ).fetchall()
+    normalized_rows = []
+    for row in rows:
+        values = list(row)
+        hosts = values[7]
+        if isinstance(hosts, str):
+            try:
+                hosts = json.loads(hosts)
+            except TypeError, ValueError:
+                hosts = []
+        values[7] = (
+            sorted({str(host) for host in hosts if host})
+            if isinstance(hosts, (list, tuple, set))
+            else []
+        )
+        normalized_rows.append(values)
+    encoded = json.dumps(
+        {"sources": normalized_rows, "pipeline_normalize": normalize_revision},
+        ensure_ascii=False,
+        sort_keys=True,
+        default=str,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _repeat_gate_decision(
+    db: CaseDB,
+    hypothesis: Hypothesis,
+    *,
+    query_fp: str,
+    verification_fp: str,
+    scope_fp: str,
+) -> dict[str, Any]:
+    """Apply the bounded same-input retry policy to one canonical query."""
+    attempts = load_hypothesis_attempts(db, hypothesis.id)
+    matching = [
+        attempt
+        for attempt in attempts
+        if attempt.get("query_fingerprint") == query_fp
+        and attempt.get("verification_spec_fingerprint") == verification_fp
+        and attempt.get("evidence_scope_fingerprint") == scope_fp
+    ]
+    if not matching:
+        return {"decision": "execute", "reason_code": "new_attempt_fingerprint"}
+
+    retry_count = sum(
+        1
+        for attempt in matching
+        if (attempt.get("repeat_gate") or {}).get("decision") == "retry"
+    )
+    previous = matching[-1]
+    previous_status = str(previous.get("status") or "")
+    if previous_status == "skipped":
+        return {
+            "decision": "skip",
+            "reason_code": "duplicate_attempt_already_blocked",
+            "attempt_ref": previous.get("attempt_ref"),
+        }
+    if previous_status == "error":
+        if previous.get("retryable") and retry_count < 1:
+            return {
+                "decision": "retry",
+                "reason_code": "bounded_transient_execution_retry",
+                "retry_of": previous.get("attempt_ref"),
+            }
+        return {
+            "decision": "skip",
+            "reason_code": "same_revision_execution_failure",
+            "attempt_ref": previous.get("attempt_ref"),
+        }
+    if not previous.get("check_verdict") and retry_count < 1:
+        return {
+            "decision": "retry",
+            "reason_code": "bounded_retry_after_missing_check",
+            "retry_of": previous.get("attempt_ref"),
+        }
+    return {
+        "decision": "skip",
+        "reason_code": "duplicate_query_same_verification_and_evidence_scope",
+        "attempt_ref": previous.get("attempt_ref"),
+    }
 
 
 def sql_absence_scope(hypothesis: Hypothesis, sql: str) -> tuple[str, list[str] | None]:
@@ -293,6 +436,7 @@ def build_sql_receipt(
         tool_id="sql.query",
         arguments={
             "query_id": planned_query.query_id,
+            "test_intent": planned_query.test_intent,
             "template_id": planned_query.template_id,
             "params": planned_query.params,
             "normalized_sql": planned_query.sql,
