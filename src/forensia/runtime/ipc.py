@@ -25,6 +25,7 @@ from forensia.core.ownership import (
     control_dir,
     controller_lock_path,
 )
+from forensia.db.database import CaseDBBusyError
 from forensia.db.views import DETAIL_KINDS
 
 _MAX_MESSAGE = 1_048_576
@@ -89,11 +90,17 @@ class RuntimeClient:
                     sock.close()
                 raise
         else:
-            conn = Client(
-                runtime_address(self.case_dir),
-                family="AF_PIPE" if os.name == "nt" else "AF_UNIX",
-                authkey=key,
-            )
+            try:
+                conn = Client(
+                    runtime_address(self.case_dir),
+                    family="AF_PIPE" if os.name == "nt" else "AF_UNIX",
+                    authkey=key,
+                )
+            except OSError as exc:
+                # Windows reports named-pipe contention as OSError.
+                if getattr(exc, "winerror", None) in {121, 231}:
+                    raise TimeoutError("Runtime pipe remained busy") from exc
+                raise
         try:
             conn.send_bytes(payload)
             if not conn.poll(self.timeout):
@@ -104,6 +111,8 @@ class RuntimeClient:
         if not isinstance(response, dict):
             raise ValueError("Runtime returned an invalid response")
         if not response.get("ok"):
+            if response.get("code") == "case_busy":
+                raise CaseDBBusyError(response.get("error", "Case database is busy"))
             raise RuntimeError(response.get("error", "Runtime request failed"))
         return response.get("result")
 
@@ -328,6 +337,8 @@ class RuntimeServer:
                             and result.get("retired") is True
                         )
                         response = {"ok": True, "result": result}
+                    except CaseDBBusyError as exc:
+                        response = {"ok": False, "code": "case_busy", "error": str(exc)}
                     except Exception as exc:
                         response = {"ok": False, "error": str(exc)}
                     encoded = json.dumps(

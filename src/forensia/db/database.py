@@ -18,6 +18,10 @@ _CASE_CONNECTION_LOCKS: dict[str, threading.RLock] = {}
 _CASE_CONNECTION_LOCKS_GUARD = threading.Lock()
 
 
+class CaseDBBusyError(RuntimeError):
+    """Raised when a nonblocking case read finds the database in use."""
+
+
 def _case_connection_lock(case: Case) -> threading.RLock:
     key = str(case.database_path.resolve())
     with _CASE_CONNECTION_LOCKS_GUARD:
@@ -25,12 +29,13 @@ def _case_connection_lock(case: Case) -> threading.RLock:
 
 
 class CaseDB:
-    def __init__(self, case: Case, *, read_only: bool = False):
+    def __init__(self, case: Case, *, read_only: bool = False, blocking: bool = True):
         """Open a current case or initialize a new case database."""
         self.case = case
         self.read_only = read_only
         self._connection_lock = _case_connection_lock(case)
-        self._connection_lock.acquire()
+        if not self._connection_lock.acquire(blocking=blocking):
+            raise CaseDBBusyError("Case database is busy")
         self._thread_connections = threading.local()
         self._cursors: list[duckdb.DuckDBPyConnection] = []
         self._closed = False
@@ -118,10 +123,14 @@ class CaseDB:
             self.conn.executemany(query, rows)
 
     @contextmanager
-    def read_snapshot(self) -> Iterator[None]:
+    def read_snapshot(self, *, blocking: bool = True) -> Iterator[None]:
         """Keep a derived view consistent with one durable event position."""
-        with self._connection_lock:
+        if not self._connection_lock.acquire(blocking=blocking):
+            raise CaseDBBusyError("Case database is busy")
+        try:
             yield
+        finally:
+            self._connection_lock.release()
 
     @contextmanager
     def transaction(self) -> Iterator[None]:

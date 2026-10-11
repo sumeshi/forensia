@@ -6,7 +6,7 @@ import pytest
 
 from forensia.core.case import Case
 from forensia.core.progress_event import progress_event
-from forensia.db.database import CaseDB
+from forensia.db.database import CaseDB, CaseDBBusyError
 from forensia.db.progress import record_progress_event
 from forensia.db.views import case_snapshot
 from forensia.tui import CaseApp, InfoWindow, _command, _format_header, _format_sidebar
@@ -117,7 +117,7 @@ def test_tui_windows_keep_refresh_and_log_navigation_working(tmp_path) -> None:
     async def exercise() -> None:
         app = CaseApp(case)
         async with app.run_test(size=(120, 40)) as pilot:
-            assert app._sidebar.region.x < app._log.region.x
+            assert app._sidebar.region.x > app._log.region.x
             assert app._connections.region.y > app._sidebar.region.y
             assert "Read     OK" in app._connections.content.plain
             assert app._events[0]["event_index"] == 6
@@ -155,11 +155,70 @@ def test_tui_windows_keep_refresh_and_log_navigation_working(tmp_path) -> None:
 
             await pilot.resize_terminal(64, 32)
             assert app.screen.has_class("narrow")
-            assert app._log.region.y > app._sidebar.region.y
+            assert app._log.region.y < app._sidebar.region.y
             await app._refresh()
             assert "Read     OK" in app._connections.content.plain
             assert (
                 app._log.virtual_size.width <= app._log.scrollable_content_region.width
             )
+
+    asyncio.run(exercise())
+
+
+def test_tui_retains_runtime_and_last_view_on_read_failure(
+    tmp_path, monkeypatch
+) -> None:
+    case = Case.init(tmp_path / "case")
+    with CaseDB(case) as db:
+        snapshot = case_snapshot(case, db)
+
+    class Client:
+        failure: Exception | None = None
+        released = False
+
+        def claim_control(self):
+            pass
+
+        def release_control(self):
+            self.released = True
+
+        def request(self, request):
+            if self.failure:
+                raise self.failure
+            return snapshot if request["type"] == "snapshot" else []
+
+    client = Client()
+    monkeypatch.setattr("forensia.tui.probe_runtime", lambda _: True)
+    monkeypatch.setattr("forensia.tui.RuntimeClient", lambda _: client)
+
+    async def exercise() -> None:
+        app = CaseApp(case)
+        async with app.run_test(size=(120, 40)):
+            header = app._header.content.plain
+            for failure, status in (
+                (CaseDBBusyError("Case database is busy"), "busy"),
+                (TimeoutError("Runtime response delayed"), "timeout"),
+                (RuntimeError("Query failed"), "unavailable"),
+            ):
+                client.failure = failure
+                await app._refresh()
+                assert app.client is client
+                assert not app._runtime_lost
+                assert not client.released
+                assert app._header.content.plain == header
+                assert f"Read     {status} (stale)" in app._connections.content.plain
+                assert "Updated" in app._connections.content.plain
+                line_count = len(app._log.lines)
+                await app._refresh()
+                assert len(app._log.lines) == line_count
+
+            client.failure = None
+            await app._refresh()
+            assert "Read     OK" in app._connections.content.plain
+            client.failure = EOFError("Runtime closed")
+            await app._refresh()
+            assert app._runtime_lost
+            assert app.client is None
+            assert client.released
 
     asyncio.run(exercise())

@@ -15,7 +15,7 @@ from forensia.config import Settings, load_settings, settings_scope
 from forensia.core.case import Case
 from forensia.core.control import InvestigationStopped, stop_scope
 from forensia.core.progress_event import progress_event
-from forensia.db.database import CaseDB
+from forensia.db.database import CaseDB, CaseDBBusyError
 from forensia.db.progress import record_progress_event
 from forensia.db.views import case_detail, case_events, case_snapshot
 from forensia.llm.telemetry import (
@@ -215,14 +215,29 @@ class RuntimeEngine:
         self._prepared = True
 
     @contextmanager
-    def _database(self, *, write: bool = False) -> Iterator[CaseDB]:
-        with self._lock:
+    def _database(
+        self, *, write: bool = False, nonblocking: bool = False
+    ) -> Iterator[CaseDB]:
+        """Open the case DB, optionally refusing contended reads immediately."""
+        if not self._lock.acquire(blocking=not nonblocking):
+            raise CaseDBBusyError("Case database is busy")
+        try:
             case = self._case or Case.open(self.case_dir)
             if self._db is not None:
-                yield self._db
+                if nonblocking:
+                    with self._db.read_snapshot(blocking=False):
+                        yield self._db
+                else:
+                    yield self._db
                 return
-            with CaseDB(case, read_only=not write) as db:
-                yield db
+            with CaseDB(case, read_only=not write, blocking=not nonblocking) as db:
+                if nonblocking:
+                    with db.read_snapshot(blocking=False):
+                        yield db
+                else:
+                    yield db
+        finally:
+            self._lock.release()
 
     def _sync_stop_requested(self, db: CaseDB) -> None:
         pending = db.execute(
@@ -235,17 +250,17 @@ class RuntimeEngine:
             self.stop_requested.clear()
 
     def snapshot(self) -> dict[str, Any]:
-        with self._database() as db:
+        with self._database(nonblocking=True) as db:
             return case_snapshot(self._case or db.case, db)
 
     def events(self, *, after_index: int = 0, limit: int = 100) -> list[dict[str, Any]]:
-        with self._database() as db:
+        with self._database(nonblocking=True) as db:
             return case_events(db, after_index, limit)
 
     def detail(
         self, kind: str, item_id: str, *, limit: int = 100, offset: int = 0
     ) -> dict[str, Any] | None:
-        with self._database() as db:
+        with self._database(nonblocking=True) as db:
             return case_detail(db, kind, item_id, limit, offset=offset)
 
     def command(

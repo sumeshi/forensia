@@ -6,12 +6,13 @@ import sys
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from forensia.core.case import Case
 from forensia.core.ownership import case_lock
-from forensia.db.database import CaseDB
+from forensia.db.database import CaseDB, CaseDBBusyError
 from forensia.runtime import RuntimeClient, start_runtime
 from forensia.runtime.ipc import (
     RuntimeServer,
@@ -41,6 +42,32 @@ class _Engine:
 def _serve_test_runtime(case_dir: str) -> None:
     lock = case_lock(case_dir).acquire()
     RuntimeServer(case_dir, _Engine(), lock).serve_forever()
+
+
+def _serve_busy_test_runtime(case_dir: str, busy, release) -> None:
+    from forensia.runtime.engine import RuntimeEngine
+
+    case = Case.open(case_dir)
+    engine = RuntimeEngine(case.path)
+    engine.prepare()
+    engine._open_active_db()
+    worker = threading.Thread(target=engine.run)
+    worker.start()
+
+    def hold_transaction() -> None:
+        with CaseDB(case) as db:
+            with db.transaction():
+                busy.set()
+                release.wait(10)
+
+    holder = threading.Thread(target=hold_transaction)
+    holder.start()
+    busy.wait(10)
+    lock = case_lock(case_dir).acquire()
+    RuntimeServer(case_dir, engine, lock).serve_forever()
+    release.set()
+    holder.join(timeout=2)
+    worker.join(timeout=2)
 
 
 def test_case_lock_is_process_owned_and_outside_case(tmp_path):
@@ -141,6 +168,85 @@ def test_runtime_ipc_and_lock_cross_process(tmp_path):
         pass
 
 
+def test_runtime_ipc_reads_report_busy_without_blocking_followup_requests(tmp_path):
+    case = Case.init(tmp_path / "case")
+    with CaseDB(case):
+        pass
+    context = multiprocessing.get_context("spawn")
+    busy = context.Event()
+    release = context.Event()
+    process = context.Process(
+        target=_serve_busy_test_runtime,
+        args=(str(case.path), busy, release),
+    )
+    process.start()
+    client = RuntimeClient(case.path, timeout=1)
+    try:
+        assert busy.wait(5)
+        for _ in range(100):
+            if probe_runtime(case.path):
+                break
+            time.sleep(0.01)
+        assert probe_runtime(case.path)
+
+        for request in (
+            {"type": "snapshot"},
+            {"type": "events"},
+            {"type": "detail", "kind": "task", "id": "missing"},
+        ):
+            with pytest.raises(CaseDBBusyError, match="database is busy"):
+                client.request(request)
+        assert client.request({"type": "status"})["ready"] is True
+
+        release.set()
+        snapshot = None
+        for _ in range(100):
+            try:
+                snapshot = client.request({"type": "snapshot"})
+                break
+            except CaseDBBusyError:
+                time.sleep(0.01)
+        assert snapshot["case_name"] == case.path.name
+        assert isinstance(client.request({"type": "events"}), list)
+        assert (
+            client.request({"type": "detail", "kind": "task", "id": "missing"}) is None
+        )
+
+        receipt = client.request(
+            {
+                "type": "command",
+                "command_id": "stop-after-busy-read",
+                "operation": "stop",
+            }
+        )
+        assert receipt["status"] == "accepted"
+        for _ in range(100):
+            receipt = client.request(
+                {
+                    "type": "command",
+                    "command_id": "stop-after-busy-read",
+                    "operation": "stop",
+                }
+            )
+            if receipt["status"] == "applied":
+                break
+            time.sleep(0.01)
+        assert receipt["status"] == "applied"
+        assert client.request({"type": "retire"})["retired"] is True
+        process.join(timeout=3)
+        assert not process.is_alive()
+        assert process.exitcode == 0
+    finally:
+        release.set()
+        process.join(timeout=3)
+        if process.is_alive():
+            process.terminate()
+            process.join(timeout=2)
+        if sys.platform != "win32":
+            Path(runtime_address(case.path)).unlink(missing_ok=True)
+        _key_path(case.path).unlink(missing_ok=True)
+
+
 def test_probe_runtime_treats_endpoint_eof_as_disconnected(monkeypatch, tmp_path):
     def endpoint_closed(_client, _request):
         raise EOFError("Runtime pipe closed during authentication")
@@ -148,6 +254,33 @@ def test_probe_runtime_treats_endpoint_eof_as_disconnected(monkeypatch, tmp_path
     monkeypatch.setattr(RuntimeClient, "request", endpoint_closed)
 
     assert not probe_runtime(tmp_path / "case")
+
+
+def test_windows_pipe_contention_is_timeout_and_missing_pipe_is_disconnection(
+    monkeypatch, tmp_path
+):
+    import forensia.runtime.ipc as ipc
+
+    client = RuntimeClient(tmp_path / "case")
+    key = tmp_path / "key"
+    key.write_bytes(b"test-key")
+    monkeypatch.setattr(ipc, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(ipc, "_key_path", lambda _: key)
+
+    def unavailable_pipe(*args, **kwargs):
+        raise failure
+
+    monkeypatch.setattr(ipc, "Client", unavailable_pipe)
+    for code in (121, 231):
+        failure = OSError("Named pipe is busy")
+        failure.winerror = code
+        with pytest.raises(TimeoutError, match="pipe remained busy"):
+            client.request({"type": "status"})
+
+    failure = FileNotFoundError("Runtime pipe is gone")
+    failure.winerror = 2
+    with pytest.raises(FileNotFoundError):
+        client.request({"type": "status"})
 
 
 def test_command_receipt_is_durable_and_idempotent(tmp_path):

@@ -6,6 +6,7 @@ import asyncio
 import json
 import time
 from datetime import UTC, datetime
+from multiprocessing import AuthenticationError
 from pathlib import Path
 from typing import Any
 
@@ -18,7 +19,7 @@ from textual.widgets import Button, Footer, Input, RichLog, Rule, Static
 
 from forensia.core.case import Case
 from forensia.core.ownership import CaseLock, controller_lock_path
-from forensia.db.database import CaseDB
+from forensia.db.database import CaseDB, CaseDBBusyError
 from forensia.db.views import case_detail, case_events, case_snapshot
 from forensia.runtime import RuntimeClient, probe_runtime, start_runtime
 
@@ -281,12 +282,12 @@ class CaseApp(App[None]):
     Screen { layout: vertical; }
     #case-state { height: 3; padding: 0 1; border-bottom: solid cyan; content-align: left middle; }
     #body { height: 1fr; }
-    #sidebar { width: 30; height: 1fr; padding: 1; border-right: solid $primary-darken-2; overflow-y: auto; }
+    #sidebar { width: 30; height: 1fr; padding: 1; border-left: solid $primary-darken-2; overflow-y: auto; }
     #investigation-state, #connections { height: auto; }
     #event-log { width: 1fr; height: 1fr; padding: 0 1; border: round $primary-darken-2; }
     #prompt { height: 3; }
     .narrow #body { layout: vertical; }
-    .narrow #sidebar { width: 1fr; height: auto; max-height: 12; border-right: none; border-bottom: solid $primary-darken-2; }
+    .narrow #sidebar { width: 1fr; height: auto; max-height: 12; border-left: none; border-top: solid $primary-darken-2; }
     """
     TITLE = "FORENSIA"
     BINDINGS = [("f1", "help", "Help")]
@@ -308,7 +309,8 @@ class CaseApp(App[None]):
         self._pending_commands: set[str] = set()
         self._rendered_event_indexes: tuple[int, ...] | None = None
         self._log_width = 0
-        self._read_failed = False
+        self._last_read_error: tuple[type[Exception], str] | None = None
+        self._last_view_at: str | None = None
         self._closed = False
 
     def compose(self) -> ComposeResult:
@@ -328,11 +330,11 @@ class CaseApp(App[None]):
         )
         yield self._header
         with Horizontal(id="body"):
+            yield self._log
             with Vertical(id="sidebar"):
                 yield self._sidebar
                 yield Rule()
                 yield self._connections
-            yield self._log
         yield self._prompt
         yield Footer()
 
@@ -342,7 +344,7 @@ class CaseApp(App[None]):
         self._log.write(text)
 
     def _connection_state(
-        self, *, readable: bool, generated_at: str | None = None
+        self, read_status: str = "OK", *, severity: str = "success"
     ) -> None:
         text = Text()
         text.append("CONNECTION\n", style="bold cyan")
@@ -355,15 +357,14 @@ class CaseApp(App[None]):
             f"Runtime  {runtime}\n", style="yellow" if self._runtime_lost else "white"
         )
         text.append("DB       DuckDB\n", style="white")
-        text.append(
-            "Read     OK\n" if readable else "Read     unavailable (stale)\n",
-            style="green" if readable else "red",
-        )
+        if read_status != "OK":
+            read_status += " (stale)" if self._last_view_at else " (no view)"
+        text.append(f"Read     {read_status}\n", style=_SEVERITY_COLORS[severity])
         text.append(
             str(self.case.database_path.relative_to(self.case.path)), style="dim"
         )
-        if generated_at:
-            text.append(f"\nUpdated  {_local_time(generated_at)}", style="dim")
+        if self._last_view_at:
+            text.append(f"\nUpdated  {_local_time(self._last_view_at)}", style="dim")
         self._connections.update(text)
         self._connections.tooltip = str(self.case.database_path)
 
@@ -439,7 +440,7 @@ class CaseApp(App[None]):
             self._header.update(
                 Text(f"{self.case.path.name} · control unavailable", style="red")
             )
-            self._connection_state(readable=False)
+            self._connection_state("unavailable", severity="error")
             self._prompt.disabled = True
             return
         await self._refresh()
@@ -491,26 +492,37 @@ class CaseApp(App[None]):
                         )
                         self._pending_commands.discard(command_id)
         except Exception as exc:
-            if self.client is not None:
+            read_status, severity = "unavailable", "error"
+            if isinstance(exc, CaseDBBusyError):
+                read_status, severity = "busy", "warning"
+            elif isinstance(exc, TimeoutError):
+                read_status, severity = "timeout", "warning"
+            elif self.client is not None and isinstance(
+                exc, (EOFError, OSError, AuthenticationError)
+            ):
                 self._runtime_lost = True
                 try:
                     await asyncio.to_thread(self.client.release_control)
                 except Exception:
                     pass
                 self.client = None
-            self._connection_state(readable=False)
-            if not self._read_failed:
-                self._notice(f"Read unavailable; retaining last view: {exc}", "error")
-            self._read_failed = True
+            self._connection_state(read_status, severity=severity)
+            error = (type(exc), str(exc))
+            if error != self._last_read_error:
+                self._notice(
+                    f"Read {read_status}; retaining last view: {exc}", severity
+                )
+            self._last_read_error = error
             return
-        self._read_failed = False
+        self._last_read_error = None
         self._highwater = int(snapshot.get("event_highwater") or self._highwater)
         if self._following:
             self._events.extend(latest)
             self._events = self._events[-_PAGE_SIZE:]
         self._header.update(_format_header(snapshot))
         self._sidebar.update(_format_sidebar(snapshot))
-        self._connection_state(readable=True, generated_at=snapshot.get("generated_at"))
+        self._last_view_at = snapshot.get("generated_at")
+        self._connection_state()
         width = self._log.scrollable_content_region.width
         if width != self._log_width:
             self._rendered_event_indexes = None
