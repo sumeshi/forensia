@@ -37,6 +37,22 @@ def _summary(rows: list[dict[str, Any]], event_ids: list[int]) -> dict[str, Any]
     }
 
 
+def _event_row(event_id: int, **fields: Any) -> dict[str, Any]:
+    row = {"event_id": event_id, **fields}
+    if event_id in {4624, 4625}:
+        row.update(
+            {
+                "channel": "Security",
+                "raw_json": {
+                    "winlog": {
+                        "provider": {"name": "Microsoft-Windows-Security-Auditing"}
+                    }
+                },
+            }
+        )
+    return row
+
+
 class TestVerifyVerdictConsistency(unittest.TestCase):
     def test_event_and_required_entity_contracts(self) -> None:
         cases = (
@@ -45,7 +61,11 @@ class TestVerifyVerdictConsistency(unittest.TestCase):
                 "confirmed",
                 _hypothesis(confirm_when={"co_observed_event_ids": [4625, 4624]}),
                 _summary(
-                    [{"target_user": "alice", "evidence_id": "ev-1"}], [4625, 4624]
+                    [
+                        _event_row(4625, target_user="alice", evidence_id="ev-1"),
+                        _event_row(4624, target_user="alice", evidence_id="ev-2"),
+                    ],
+                    [4625, 4624],
                 ),
                 "confirmed",
             ),
@@ -53,7 +73,9 @@ class TestVerifyVerdictConsistency(unittest.TestCase):
                 "missing event",
                 "confirmed",
                 _hypothesis(confirm_when={"co_observed_event_ids": [4625]}),
-                _summary([{"target_user": "alice", "evidence_id": "ev-1"}], [2004]),
+                _summary(
+                    [_event_row(2004, target_user="alice", evidence_id="ev-1")], [2004]
+                ),
                 "inconclusive",
             ),
             (
@@ -61,7 +83,11 @@ class TestVerifyVerdictConsistency(unittest.TestCase):
                 "confirmed",
                 _hypothesis(required=["target_user", "src_ip"]),
                 _summary(
-                    [{"target_user": "n/a", "src_ip": None, "evidence_id": "ev-1"}],
+                    [
+                        _event_row(
+                            4624, target_user="n/a", src_ip=None, evidence_id="ev-1"
+                        )
+                    ],
                     [4624],
                 ),
                 "inconclusive",
@@ -70,7 +96,9 @@ class TestVerifyVerdictConsistency(unittest.TestCase):
                 "required value present",
                 "confirmed",
                 _hypothesis(required=["target_user"]),
-                _summary([{"target_user": "alice", "evidence_id": "ev-1"}], [4624]),
+                _summary(
+                    [_event_row(4624, target_user="alice", evidence_id="ev-1")], [4624]
+                ),
                 "confirmed",
             ),
             ("refuted bypass", "refuted", _hypothesis(), _summary([], []), "refuted"),
@@ -125,6 +153,12 @@ class TestVerifyVerdictConsistency(unittest.TestCase):
                     "event_id": 4624,
                     "computer": second_host,
                     "target_user": second_user,
+                    "channel": "Security",
+                    "raw_json": {
+                        "winlog": {
+                            "provider": {"name": "Microsoft-Windows-Security-Auditing"}
+                        }
+                    },
                     "timestamp": (
                         base + datetime.timedelta(minutes=minutes)
                     ).isoformat(),

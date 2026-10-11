@@ -38,6 +38,8 @@ from pathlib import Path
 
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
+from forensia.report.render.formats import load_report_formats
+from forensia.report.resources import report_templates_dir
 from forensia.report.sections.template_parsing import (
     TemplateMeta,
     parse_template,
@@ -141,6 +143,9 @@ def decide_report_sources(
     report_spec: str | Path | None = None,
 ) -> ReportInputDecision:
     """Pin an implicit resume to its recorded input; explicit inputs reload it."""
+    from forensia.config import get_llm_settings
+
+    output_language = str(get_llm_settings().get("output_language", "ja")).casefold()
     recorded = _recorded_report_input(db)
     root = Path(template_root) if template_root is not None else None
     explicit = report_spec is not None or (
@@ -166,9 +171,23 @@ def decide_report_sources(
             raise ReportSpecError("recorded report input has no sections")
         try:
             current = resolve_report_sources(case, root)
-            changed = _section_digest(current) != str(recorded["content_sha256"])
+            recorded_language = str(
+                recorded.get("output_language", output_language)
+            ).casefold()
+            comparison = (
+                _localize_unchanged_default_templates(
+                    current, language=recorded_language
+                )
+                if recorded.get("source") == "default"
+                else current
+            )
+            changed = _section_digest(comparison) != str(recorded["content_sha256"])
         except OSError, UnicodeError, ReportSpecError:
             changed = True
+        if recorded.get("source") == "default":
+            sections = _localize_unchanged_default_templates(
+                sections, language=output_language
+            )
         notice = (
             "REPORT.md/report templates changed or are unavailable; the recorded "
             "revision remains in force. Adopt a replacement through run_report(report_spec=..., write=True)."
@@ -185,6 +204,7 @@ def decide_report_sources(
         "content_sha256": _section_digest(sections),
         "source": "explicit" if explicit else "default",
         "source_path": source_path,
+        "output_language": output_language,
         "notice": notice,
     }
     return ReportInputDecision(sections=sections, record=record, notice=notice)
@@ -315,11 +335,77 @@ def resolve_report_sources(
     if default_spec.is_file():
         return sections_from_report_spec(default_spec)
     if root is not None:
-        return sections_from_template_dir(root)
+        return _localize_unchanged_default_templates(sections_from_template_dir(root))
     from forensia.report.template_export import seed_case_report_templates
 
     seed_case_report_templates(case)
-    return sections_from_template_dir(case.report_template_dir)
+    return _localize_unchanged_default_templates(
+        sections_from_template_dir(case.report_template_dir)
+    )
+
+
+def _localize_unchanged_default_templates(
+    sections: list[SectionSource],
+    *,
+    language: str | None = None,
+) -> list[SectionSource]:
+    """Localize bundled defaults while leaving edited templates untouched."""
+    from dataclasses import replace
+
+    if language is None:
+        from forensia.config import get_llm_settings
+
+        language = str(get_llm_settings().get("output_language", "ja")).casefold()
+    else:
+        language = language.casefold()
+    mappings = load_report_formats().get("default_headings") or {}
+    japanese_map = mappings.get("ja") if isinstance(mappings, dict) else None
+    if not isinstance(japanese_map, dict):
+        return sections
+    english_map = {str(value): str(key) for key, value in japanese_map.items()}
+    if language == "ja":
+        heading_map = {
+            **{str(key): str(value) for key, value in japanese_map.items()},
+            **{str(value): str(value) for value in japanese_map.values()},
+        }
+    elif language == "en":
+        heading_map = {
+            **{str(key): str(key) for key in japanese_map},
+            **english_map,
+        }
+    else:
+        return sections
+    packaged = report_templates_dir()
+    localized: list[SectionSource] = []
+    for section in sections:
+        local_path = Path(section.source)
+        packaged_path = packaged / local_path.name
+        try:
+            is_unedited_default = local_path.read_bytes() == packaged_path.read_bytes()
+        except OSError:
+            is_unedited_default = False
+        if not is_unedited_default:
+            localized.append(section)
+            continue
+        body = re.sub(
+            r"^(#{1,2}\s+)(.+?)\s*$",
+            lambda match: (
+                match.group(1) + str(heading_map.get(match.group(2), match.group(2)))
+            ),
+            section.body,
+            flags=re.MULTILINE,
+        )
+        localized.append(
+            replace(
+                section,
+                body=body,
+                meta=replace(
+                    section.meta,
+                    title=str(heading_map.get(section.meta.title, section.meta.title)),
+                ),
+            )
+        )
+    return localized
 
 
 def report_input_paths(case: Case, report_spec: str | Path | None = None) -> set[Path]:

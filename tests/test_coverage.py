@@ -15,8 +15,8 @@ from forensia.knowledge.coverage import (
     get_coverage_summary,
     observation_catalog,
     observation_condition_error,
-    observation_feasibility_error,
     refresh_evidence_coverage,
+    verification_feasibility_error,
 )
 
 
@@ -236,20 +236,47 @@ class RequiredCapabilityDerivationTests(unittest.TestCase):
                         "observation_min_count_exceeds_current_family_count",
                         "current-family-count:1",
                     ),
-                    observation_feasibility_error(db, condition),
+                    verification_feasibility_error(db, condition),
                 )
                 self.assertEqual(
                     (
-                        "observation_required_entity_unobservable",
-                        "required entity columns absent from canonical schema: computer",
+                        "required_entity_unobservable",
+                        "required entity columns absent from canonical query-family schema: computer",
                     ),
-                    observation_feasibility_error(
+                    verification_feasibility_error(
                         db, {"observation": condition["observation"]}, ["computer"]
                     ),
                 )
                 self.assertIsNone(
-                    observation_feasibility_error(
+                    verification_feasibility_error(
                         db, {"observation": condition["observation"]}, ["source_file"]
+                    )
+                )
+                self.assertEqual(
+                    (
+                        "required_entity_unobservable",
+                        "required entity columns absent from canonical query-family schema: executable_name",
+                    ),
+                    verification_feasibility_error(
+                        db, {"co_observed_event_ids": [4688]}, ["executable_name"]
+                    ),
+                )
+                self.assertIsNone(
+                    verification_feasibility_error(
+                        db, {"co_observed_event_ids": [4688]}, ["computer"]
+                    )
+                )
+                self.assertEqual(
+                    verification_feasibility_error(
+                        db, {"co_observed_event_ids": [4688]}, ["not_a_column"]
+                    )[0],
+                    "required_entity_unobservable",
+                )
+                self.assertIsNone(
+                    verification_feasibility_error(
+                        db,
+                        {"co_observed_event_ids": ["windows-evtx-1234-abcd"]},
+                        ["computer"],
                     )
                 )
 

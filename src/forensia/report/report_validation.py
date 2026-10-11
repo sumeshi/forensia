@@ -9,6 +9,7 @@ to catch regressions after generation.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from collections.abc import Callable
@@ -436,7 +437,8 @@ _FINDING_ID_PATTERN = re.compile(
     r"\b[A-Za-z0-9_./-]*?(?:finding|find-|ext-)[A-Za-z0-9_./-]*\b", re.IGNORECASE
 )
 _HYPOTHESIS_ID_PATTERN = re.compile(
-    r"\b[A-Za-z0-9_./-]*?(?:hypothesis|hyp-|hyp_)[A-Za-z0-9_./-]*\b", re.IGNORECASE
+    r"\b(?:H-[A-Za-z0-9][A-Za-z0-9_-]*|hyp(?:othesis)?[_-][A-Za-z0-9][A-Za-z0-9_-]*|gap-[0-9a-f]{10})\b",
+    re.IGNORECASE,
 )
 _CREDENTIAL_SPECULATION_TERMS = (
     "credential compromise",
@@ -452,18 +454,309 @@ _CREDENTIAL_SPECULATION_TERMS = (
 )
 
 
-def _extract_claim_paragraphs(content: str) -> list[str]:
-    """Split report body into claim paragraphs, skipping headings and gaps."""
+def _table_block_hashes(content: str) -> dict[tuple[str, str], str]:
+    blocks: dict[tuple[str, str], str] = {}
+    section = ""
+    heading = ""
+    lines: list[str] = []
+
+    def save() -> None:
+        if section and heading and lines:
+            body = "\n".join(lines).strip()
+            blocks[(section, heading)] = hashlib.sha256(
+                body.encode("utf-8")
+            ).hexdigest()
+
+    for line in str(content or "").splitlines():
+        match = re.match(r"^(#{1,6})\s+(.+?)\s*$", line)
+        if match:
+            save()
+            level, title = len(match.group(1)), match.group(2).strip()
+            if level == 1:
+                section, heading, lines = title, "", []
+            elif level == 2:
+                heading, lines = title, [line]
+            else:
+                lines.append(line)
+            continue
+        if heading:
+            lines.append(line)
+    save()
+    return blocks
+
+
+def _trusted_table_blocks(db: Any | None, content: str) -> set[tuple[str, str]]:
+    if db is None:
+        return set()
+    present_hashes = _table_block_hashes(content)
+    projections = db.execute(
+        """
+        SELECT section_key, payload FROM section_runs
+        WHERE phase = 'projection'
+        ORDER BY created_at DESC, run_id DESC
+        """
+    ).fetchall()
+    latest_projection: dict[str, dict[str, Any]] = {}
+    for section_key, serialized in projections:
+        key = str(section_key or "")
+        if key in latest_projection:
+            continue
+        try:
+            payload = json.loads(str(serialized))
+        except TypeError, ValueError:
+            continue
+        if isinstance(payload, dict):
+            latest_projection[key] = payload
+
+    try:
+        from forensia.report.answers.table_registry import (
+            TABLE_BLOCKS,
+            source_receipt_metadata,
+        )
+    except Exception:
+        return set()
+
+    trusted: set[tuple[str, str]] = set()
+    rows = db.execute(
+        """
+        SELECT section.section_key, section.title, section.stale,
+               receipt.block_heading, receipt.payload
+        FROM section_runs AS receipt
+        JOIN report_sections AS section USING (section_key)
+        WHERE receipt.phase = 'query'
+          AND json_extract_string(receipt.payload, '$.source_kind') = 'deterministic_table'
+        """
+    ).fetchall()
+    for section_key, title, stale, block_heading, serialized in rows:
+        key = (str(title or "").strip(), str(block_heading or "").strip())
+        if not key[0] or not key[1] or bool(stale):
+            continue
+        payload = latest_projection.get(str(section_key or ""), {})
+        try:
+            receipt = json.loads(str(serialized))
+        except TypeError, ValueError:
+            continue
+        block_hash = str(receipt.get("block_body_sha256") or "")
+        if not block_hash or present_hashes.get(key) != block_hash:
+            continue
+        source_signature = str(receipt.get("source_state_signature") or "")
+        if not source_signature:
+            continue
+        builder = str(receipt.get("query_ref") or "")
+        table_spec = TABLE_BLOCKS.get(builder)
+        if table_spec is None:
+            continue
+        try:
+            table_rows = table_spec.builder(db)
+            source_metadata = source_receipt_metadata(db, table_spec)
+        except Exception:
+            continue
+        if any(
+            receipt.get(key) != value
+            for key, value in source_metadata.items()
+            if key
+            in {
+                "source_tables",
+                "source_families",
+                "query_description",
+            }
+        ):
+            continue
+        rows_hash = hashlib.sha256(
+            json.dumps(
+                table_rows,
+                ensure_ascii=False,
+                sort_keys=True,
+                default=str,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        if rows_hash != str(receipt.get("table_rows_sha256") or ""):
+            continue
+        if source_metadata["source_ids"] != receipt.get("source_ids"):
+            continue
+        if source_metadata["source_receipt_sha256"] != receipt.get(
+            "source_receipt_sha256"
+        ):
+            continue
+        projection_receipts = payload.get("query_receipts") or []
+        if not any(
+            item.get("source_kind") == "deterministic_table"
+            and item.get("block_heading") == key[1]
+            and item.get("query_ref") == builder
+            and item.get("block_body_sha256") == block_hash
+            and item.get("table_rows_sha256") == rows_hash
+            and item.get("source_receipt_sha256")
+            == source_metadata["source_receipt_sha256"]
+            and item.get("source_state_signature") == source_signature
+            and all(
+                item.get(field) == source_metadata[field]
+                for field in (
+                    "source_tables",
+                    "source_families",
+                    "query_description",
+                    "source_ids",
+                )
+            )
+            for item in projection_receipts
+            if isinstance(item, dict)
+        ):
+            continue
+        trusted.add(key)
+    # Keypoint blocks require current resolver replay and an exact body receipt.
+    try:
+        from forensia.report.answers.keypoint_catalog import (
+            REPORT_KEYPOINT_ALIASES,
+            REPORT_KEYPOINT_METADATA,
+        )
+        from forensia.report.sections.section_exec import _execute_keypoint
+        from forensia.report.sections.section_refresher import (
+            _canonical_hash,
+            _case_evidence_signature,
+            _evidence_ids,
+        )
+
+        current_signature = _case_evidence_signature(db)
+        section_rows = db.execute(
+            "SELECT section_key, title, stale FROM report_sections"
+        ).fetchall()
+        section_info = {
+            str(section_key): (str(title or "").strip(), bool(stale))
+            for section_key, title, stale in section_rows
+        }
+        query_rows = db.execute(
+            """
+            SELECT section_key, block_heading, payload
+            FROM section_runs
+            WHERE phase = 'query'
+              AND json_extract_string(payload, '$.source_kind') = 'keypoint'
+            ORDER BY created_at DESC, run_id DESC
+            """
+        ).fetchall()
+        latest: dict[tuple[str, str, str], dict[str, Any]] = {}
+        for section_key, block_heading, serialized in query_rows:
+            try:
+                receipt = json.loads(str(serialized))
+            except TypeError, ValueError:
+                continue
+            if not isinstance(receipt, dict):
+                continue
+            identity = (
+                str(section_key or ""),
+                str(block_heading or ""),
+                str(receipt.get("query_ref") or ""),
+            )
+            latest.setdefault(identity, receipt)
+
+        projection_receipts: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        for section_key, payload in latest_projection.items():
+            for receipt in payload.get("query_receipts") or []:
+                if (
+                    isinstance(receipt, dict)
+                    and receipt.get("source_kind") == "keypoint"
+                ):
+                    key = (section_key, str(receipt.get("block_heading") or ""))
+                    projection_receipts.setdefault(key, []).append(receipt)
+
+        expected: dict[tuple[str, str], set[str]] = {}
+        valid: dict[tuple[str, str], set[str]] = {}
+        for (section_key, block_heading, query_ref), receipt in latest.items():
+            title, stale = section_info.get(section_key, ("", True))
+            key = (title, block_heading)
+            expected.setdefault(key, set()).add(query_ref)
+            block_hash = str(receipt.get("block_body_sha256") or "")
+            result_hash = str(receipt.get("keypoint_result_sha256") or "")
+            if (
+                not title
+                or not block_heading
+                or stale
+                or not block_hash
+                or present_hashes.get(key) != block_hash
+                or not result_hash
+                or receipt.get("source_state_signature") != current_signature
+            ):
+                continue
+            try:
+                _source_ref, result = _execute_keypoint(
+                    getattr(db, "case", None), db, query_ref
+                )
+                result["source_ref"] = query_ref
+                result["block_heading"] = block_heading
+                result["case_refs"] = sorted(
+                    {
+                        str(value)
+                        for value in result.get("hypothesis_ids") or []
+                        if str(value).strip()
+                    }
+                )
+                result["source_state_signature"] = current_signature
+                if _canonical_hash(result) != result_hash:
+                    continue
+            except Exception:
+                continue
+            evidence_count = int(
+                (receipt.get("result") or {}).get("evidence_count") or 0
+            )
+            evidence_ids = _evidence_ids([result])
+            case_refs = receipt.get("case_refs") or []
+            metadata_name = REPORT_KEYPOINT_ALIASES.get(query_ref, query_ref)
+            is_coverage = (
+                REPORT_KEYPOINT_METADATA.get(metadata_name) is not None
+                and REPORT_KEYPOINT_METADATA[metadata_name].purpose == "coverage"
+            )
+            if (
+                evidence_count != len(evidence_ids)
+                or (receipt.get("result") or {}).get("evidence_ids") != evidence_ids
+                or case_refs != result.get("case_refs", [])
+                or (not evidence_ids and not case_refs and not is_coverage)
+            ):
+                continue
+            matched = any(
+                item.get("query_ref") == query_ref
+                and item.get("keypoint_result_sha256") == result_hash
+                and item.get("block_body_sha256") == block_hash
+                and item.get("source_state_signature") == current_signature
+                and item.get("case_refs") == case_refs
+                and item.get("evidence_count") == len(evidence_ids)
+                for item in projection_receipts.get((section_key, block_heading), [])
+            )
+            if matched:
+                valid.setdefault(key, set()).add(query_ref)
+
+        for key, query_refs in expected.items():
+            if query_refs and valid.get(key) == query_refs:
+                trusted.add(key)
+    except Exception:
+        pass
+    return trusted
+
+
+def _extract_claim_paragraphs(
+    content: str, *, trusted_table_blocks: set[tuple[str, str]] | None = None
+) -> list[str]:
+    """Split prose and blocks without a matching deterministic receipt."""
     paragraphs: list[str] = []
+    section_title = ""
+    block_heading = ""
     for paragraph in re.split(r"\n\s*\n", str(content or "")):
         text = paragraph.strip()
+        if not text:
+            continue
+        heading = re.match(r"^#{1,6}\s+(.+)$", text)
+        if heading:
+            level = len(text) - len(text.lstrip("#"))
+            if level == 1:
+                section_title = heading.group(1).strip()
+                block_heading = ""
+            elif level == 2:
+                block_heading = heading.group(1).strip()
+            continue
         if (
-            not text
-            or text.startswith("#")
-            or text.startswith("**Status:**")
-            or text.startswith("**ID:**")
-            or text.startswith("### ")
+            trusted_table_blocks
+            and (section_title, block_heading) in trusted_table_blocks
         ):
+            continue
+        if text.startswith(("**Status:**", "**ID:**")):
             continue
         paragraphs.append(text)
     return paragraphs
@@ -488,7 +781,9 @@ def _is_evidence_claim(text: str) -> bool:
     return bool(_EVIDENCE_ADJACENT_PATTERN.search(text))
 
 
-def check_claim_traceability(content: str) -> list[ValidationFinding]:
+def check_claim_traceability(
+    content: str, db: Any | None = None
+) -> list[ValidationFinding]:
     """Reject claims that cannot be traced to machine-detectable evidence/finding refs.
 
     A report must not publish bare hypothesis IDs or unsupported credential
@@ -497,7 +792,9 @@ def check_claim_traceability(content: str) -> list[ValidationFinding]:
     contains claim prose but zero references fails traceability outright.
     """
     findings: list[ValidationFinding] = []
-    paragraphs = _extract_claim_paragraphs(content)
+    paragraphs = _extract_claim_paragraphs(
+        content, trusted_table_blocks=_trusted_table_blocks(db, content)
+    )
     if not paragraphs:
         return findings
 
@@ -948,7 +1245,10 @@ def _validation_plan(
                 ("local_path_leak", lambda: check_local_path_leak(report_body)),
                 ("fallback_stub", lambda: check_fallback_stub(report_body)),
                 ("failure_marker", lambda: check_failure_markers(report_body)),
-                ("claim_traceability", lambda: check_claim_traceability(report_body)),
+                (
+                    "claim_traceability",
+                    lambda: check_claim_traceability(report_body, db),
+                ),
             ]
         )
         if expected_language:
@@ -990,7 +1290,7 @@ def validate_report(
     """Run all validation checks on a generated report.
 
     Args:
-        report_brief: The report brief dict (from report_brief.json).
+        report_brief: The report brief projection built from CaseDB.
         report_body: Optional full report markdown body for path leak checks.
 
     Returns:

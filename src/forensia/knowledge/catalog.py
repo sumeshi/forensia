@@ -77,8 +77,8 @@ def event_context_eligible(
     The event catalog is the authority for those constraints.  A context-aware
     caller should pass both values when available; a missing value is treated as
     unknown and therefore cannot satisfy a constrained catalog entry.
-    Entries without a declared constraint remain eligible for backward-compatible
-    catalog records.
+    A constrained event requires both declared values. Unconstrained catalog
+    entries retain their existing event-ID semantics.
     """
 
     try:
@@ -93,11 +93,52 @@ def event_context_eligible(
 
     channels = [normalized(value) for value in hint.get("channels") or [] if value]
     providers = [normalized(value) for value in hint.get("providers") or [] if value]
+    if bool(channels) != bool(providers):
+        return False
     if channels and normalized(channel) not in channels:
         return False
     if providers and normalized(provider) not in providers:
         return False
     return True
+
+
+def event_context_sql(event_ids: tuple[int, ...] | list[int]) -> str:
+    """Build an event predicate from the catalog's channel/provider declarations."""
+    clauses: list[str] = []
+    for event_id in event_ids:
+        hint = load_event_id_hints().get(int(event_id))
+        if not hint:
+            continue
+        channels = [
+            str(value).strip().casefold()
+            for value in hint.get("channels") or []
+            if value
+        ]
+        providers = [
+            str(value).strip().casefold()
+            for value in hint.get("providers") or []
+            if value
+        ]
+        if not channels or not providers:
+            continue
+        channel_values = ", ".join(
+            "'" + value.replace("'", "''") + "'" for value in channels
+        )
+        provider_values = ", ".join(
+            "'" + value.replace("'", "''") + "'" for value in providers
+        )
+        clause = (
+            f"event_id = {int(event_id)}"
+            " AND LOWER(CAST(COALESCE(channel, "
+            "json_extract_string(raw_json, '$.winlog.channel'), ''"
+            ") AS VARCHAR))"
+            f" IN ({channel_values})"
+            " AND LOWER(CAST("
+            "json_extract_string(raw_json, '$.winlog.provider.name')"
+            f" AS VARCHAR)) IN ({provider_values})"
+        )
+        clauses.append(f"({clause})")
+    return f"({' OR '.join(clauses)})" if clauses else "FALSE"
 
 
 def event_context_from_row(row: dict[str, Any]) -> tuple[str | None, str | None]:
@@ -115,8 +156,6 @@ def event_context_from_row(row: dict[str, Any]) -> tuple[str | None, str | None]
                     provider_obj = winlog.get("provider")
                     if isinstance(provider_obj, dict):
                         provider = provider_obj.get("name")
-                    elif provider_obj:
-                        provider = provider_obj
                     channel = channel or winlog.get("channel")
         except TypeError, ValueError, json.JSONDecodeError:
             pass
@@ -437,7 +476,7 @@ def exe_glob_sql(column: str, globs: tuple[str, ...]) -> str:
 
 
 _CATALOG_SQL_PLACEHOLDER_RE = re.compile(
-    r"\{\{\s*catalog_(?P<kind>[a-z_]+):(?P<body>[^{}]+?)\s*\}\}"
+    r"\{\{\s*(?P<kind>catalog_[a-z_]+|event_context):(?P<body>[^{}]+?)\s*\}\}"
 )
 
 
@@ -452,11 +491,20 @@ def expand_catalog_sql_placeholders(sql: str) -> str:
     - ``{{catalog_extension_sql:section:column}}``
     - ``{{catalog_artifact_sql:section:column}}``
     - ``{{catalog_label_sql:section:label_key:value_keys:columns:alias}}``
+    - ``{{event_context:event_id,...}}``
     """
 
     def repl(match: re.Match[str]) -> str:
-        kind = match.group("kind")
+        kind = match.group("kind").removeprefix("catalog_")
         parts = [part.strip() for part in match.group("body").split(":")]
+        if kind == "event_context" and len(parts) == 1:
+            try:
+                event_ids = [int(value.strip()) for value in parts[0].split(",")]
+            except ValueError as exc:
+                raise ValueError(
+                    f"Invalid event_context placeholder: {parts[0]}"
+                ) from exc
+            return event_context_sql(event_ids)
         if kind == "exe_sql" and len(parts) == 2:
             section, column = parts
             return exe_glob_sql(column, catalog_exe_globs(section))

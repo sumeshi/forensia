@@ -14,7 +14,8 @@ from typing import Any
 class CompletionMetadata:
     input_tokens: int
     output_tokens: int
-    usage_source: str
+    input_tokens_source: str
+    output_tokens_source: str
     finish_reason: str
     latency_ms: int
 
@@ -41,7 +42,8 @@ def record_completion_metadata(
     usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
     raw_input = usage.get("prompt_tokens", usage.get("input_tokens"))
     raw_output = usage.get("completion_tokens", usage.get("output_tokens"))
-    measured = isinstance(raw_input, int) and isinstance(raw_output, int)
+    input_actual = isinstance(raw_input, int)
+    output_actual = isinstance(raw_output, int)
     input_tokens = (
         int(raw_input)
         if isinstance(raw_input, int)
@@ -54,7 +56,12 @@ def record_completion_metadata(
         CompletionMetadata(
             input_tokens=input_tokens,
             output_tokens=output_tokens,
-            usage_source="provider_actual" if measured else "local_estimate",
+            input_tokens_source=(
+                "provider_actual" if input_actual else "local_estimate"
+            ),
+            output_tokens_source=(
+                "provider_actual" if output_actual else "local_estimate"
+            ),
             finish_reason=str(finish_reason or "unknown"),
             latency_ms=max(0, int((time.monotonic() - started_at) * 1000)),
         )

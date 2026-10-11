@@ -19,7 +19,8 @@ events:
     title: Event Log service shutdown
     required_fields:
       - computer
-    channels: ["Security", "System"]
+    channels: ["Security"]
+    providers: ["Microsoft-Windows-Eventlog"]
     allowed_claims:
       - event log service was shut down
       - logging was intentionally stopped
@@ -31,10 +32,11 @@ events:
       - shutdown
   1102:
     title: Security log cleared
+    channels: ["Security"]
+    providers: ["Microsoft-Windows-Eventlog"]
     required_fields:
       - subject_user
       - computer
-    channels: ["Security"]
     allowed_claims:
       - security log was cleared
       - log tampering detected
@@ -48,7 +50,8 @@ events:
     title: System log cleared
     required_fields:
       - computer
-    channels: ["System", "Security"]
+    channels: ["System"]
+    providers: ["Microsoft-Windows-Eventlog"]
     allowed_claims:
       - system log was cleared
       - log tampering detected
@@ -60,6 +63,8 @@ events:
       - event log
   4624:
     title: Account logon
+    channels: ["Security"]
+    providers: ["Microsoft-Windows-Security-Auditing"]
     required_fields:
       - target_user
       - logon_type
@@ -81,6 +86,8 @@ events:
       - auth
   4625:
     title: Logon failure
+    channels: ["Security"]
+    providers: ["Microsoft-Windows-Security-Auditing"]
     required_fields:
       - target_user
       - logon_type
@@ -113,6 +120,8 @@ events:
       "0xC0000413": new logon denied (Kerberos armoring required)
   4634:
     title: Logoff
+    channels: ["Security"]
+    providers: ["Microsoft-Windows-Security-Auditing"]
     required_fields:
       - target_user
       - logon_type
@@ -127,6 +136,8 @@ events:
       - session end
   4647:
     title: Initiated logoff
+    channels: ["Security"]
+    providers: ["Microsoft-Windows-Security-Auditing"]
     required_fields:
       - target_user
     allowed_claims:
@@ -156,6 +167,22 @@ events:
     keywords_for_string_search:
       - explicit credential
       - runas
+  4608:
+    title: Windows startup (Security Event 4608)
+    channels: ["Security"]
+    providers: ["Microsoft-Windows-Security-Auditing"]
+    required_fields: [computer, timestamp]
+    allowed_claims: [Windows startup was recorded]
+    disallowed_without_extra: [startup cause]
+    keywords_for_string_search: [startup, "4608"]
+  4609:
+    title: Windows shutdown (Security Event 4609)
+    channels: ["Security"]
+    providers: ["Microsoft-Windows-Security-Auditing"]
+    required_fields: [computer, timestamp]
+    allowed_claims: [Windows shutdown was recorded]
+    disallowed_without_extra: [shutdown cause]
+    keywords_for_string_search: [shutdown, "4609"]
   4672:
     title: Special privileges assigned to a new logon (privilege assignment)
     required_fields:
@@ -190,6 +217,8 @@ events:
       - sensitive
   4697:
     title: Service install (Security)
+    channels: ["Security"]
+    providers: ["Microsoft-Windows-Security-Auditing"]
     required_fields:
       - subject_user
       - service_name
@@ -206,6 +235,8 @@ events:
       - service created
   4698:
     title: Scheduled task created
+    channels: ["Security"]
+    providers: ["Microsoft-Windows-Security-Auditing"]
     required_fields:
       - subject_user
       - task_name
@@ -221,6 +252,8 @@ events:
       - scheduled task
   4700:
     title: Scheduled task enabled
+    channels: ["Security"]
+    providers: ["Microsoft-Windows-Security-Auditing"]
     required_fields:
       - subject_user
       - task_name
@@ -234,6 +267,8 @@ events:
       - task activated
   4701:
     title: Scheduled task disabled
+    channels: ["Security"]
+    providers: ["Microsoft-Windows-Security-Auditing"]
     required_fields:
       - subject_user
       - task_name
@@ -248,6 +283,8 @@ events:
       - task deactivated
   4702:
     title: Scheduled task updated
+    channels: ["Security"]
+    providers: ["Microsoft-Windows-Security-Auditing"]
     required_fields:
       - subject_user
       - task_name
@@ -466,6 +503,8 @@ events:
       - tgs request
   4776:
     title: NTLM authentication by DC
+    channels: ["Security"]
+    providers: ["Microsoft-Windows-Security-Auditing"]
     required_fields:
       - target_user
       - src_ip
@@ -694,6 +733,7 @@ events:
       - service_name
       - service_command
     channels: ["System"]
+    providers: ["Service Control Manager"]
     allowed_claims:
       - service was installed
       - new service created (System log)
@@ -706,6 +746,8 @@ events:
       - service created
   12:
     title: OS started (Kernel-General Event 12)
+    channels: ["System"]
+    providers: ["Microsoft-Windows-Kernel-General"]
     required_fields:
       - computer
       - timestamp
@@ -721,6 +763,8 @@ events:
       - kernel-general
   13:
     title: Kernel shutdown initiated
+    channels: ["System"]
+    providers: ["Microsoft-Windows-Kernel-General"]
     required_fields:
       - computer
       - timestamp
@@ -1246,6 +1290,8 @@ events:
       - connection
   1074:
     title: Initiated shutdown or restart (System Event 1074)
+    channels: ["System"]
+    providers: ["User32"]
     required_fields:
       - computer
       - timestamp
@@ -1543,20 +1589,20 @@ events:
       - privileged
       - object
   4688:
-    title: OST file access followed by browser launch within 15 minutes
+    title: Process creation
+    channels: ["Security"]
+    providers: ["Microsoft-Windows-Security-Auditing"]
     required_fields:
       - computer
       - timestamp
     allowed_claims:
-      - event 4688 was observed
-      - the referenced Windows event was present in the evidence
+      - process creation was observed
     disallowed_without_extra:
       - attacker action (needs corroborating evidence)
       - compromise (needs supporting process, account, or file evidence)
     keywords_for_string_search:
-      - "4688"
-      - file
-      - access
+      - process created
+      - process start
   4689:
     title: Process exited (Event 4689)
     required_fields:
@@ -1573,20 +1619,15 @@ events:
       - process
       - exited
   4699:
-    title: Scheduled task deleted (Event 4699)
-    required_fields:
-      - computer
-      - timestamp
+    title: Scheduled task deleted
+    channels: ["Security"]
+    providers: ["Microsoft-Windows-Security-Auditing"]
+    required_fields: [subject_user, task_name]
     allowed_claims:
-      - event 4699 was observed
-      - the referenced Windows event was present in the evidence
+      - scheduled task was deleted
     disallowed_without_extra:
-      - attacker action (needs corroborating evidence)
-      - compromise (needs supporting process, account, or file evidence)
-    keywords_for_string_search:
-      - "4699"
-      - scheduled
-      - task
+      - malicious task removal (could be administration)
+    keywords_for_string_search: [task deleted, scheduled task]
   4719:
     title: System audit policy changed (Event 4719)
     required_fields:
@@ -1977,51 +2018,6 @@ events:
       - "5858"
       - activity
       - operation
-  6005:
-    title: Event Log service start/stop
-    required_fields:
-      - computer
-      - timestamp
-    allowed_claims:
-      - event 6005 was observed
-      - the referenced Windows event was present in the evidence
-    disallowed_without_extra:
-      - attacker action (needs corroborating evidence)
-      - compromise (needs supporting process, account, or file evidence)
-    keywords_for_string_search:
-      - "6005"
-      - service
-      - start
-  6006:
-    title: Event Log service start/stop
-    required_fields:
-      - computer
-      - timestamp
-    allowed_claims:
-      - event 6006 was observed
-      - the referenced Windows event was present in the evidence
-    disallowed_without_extra:
-      - attacker action (needs corroborating evidence)
-      - compromise (needs supporting process, account, or file evidence)
-    keywords_for_string_search:
-      - "6006"
-      - service
-      - start
-  6008:
-    title: Unexpected shutdown record (System Event 6008)
-    required_fields:
-      - computer
-      - timestamp
-    allowed_claims:
-      - event 6008 was observed
-      - the referenced Windows event was present in the evidence
-    disallowed_without_extra:
-      - attacker action (needs corroborating evidence)
-      - compromise (needs supporting process, account, or file evidence)
-    keywords_for_string_search:
-      - "6008"
-      - unexpected
-      - shutdown
   6009:
     title: System uptime logged
     required_fields:
@@ -2223,6 +2219,7 @@ events:
       - computer
       - timestamp
     channels: ["System"]
+    providers: ["EventLog"]
     allowed_claims:
       - event log service was started
     disallowed_without_extra:
@@ -2236,6 +2233,7 @@ events:
       - computer
       - timestamp
     channels: ["System"]
+    providers: ["EventLog"]
     allowed_claims:
       - event log service was stopped
     disallowed_without_extra:
@@ -2249,6 +2247,7 @@ events:
       - computer
       - timestamp
     channels: ["System"]
+    providers: ["EventLog"]
     allowed_claims:
       - unexpected system shutdown occurred
       - system was not shut down cleanly

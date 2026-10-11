@@ -162,6 +162,9 @@ class LLMTelemetry:
     ) -> str:
         scope = _ACTIVE_SCOPE.get()
         iteration = iteration if iteration is not None else scope.get("iteration")
+        parent_logical_call_id = parent_logical_call_id or scope.get(
+            "parent_logical_call_id"
+        )
         hypothesis_id = hypothesis_id or scope.get("hypothesis_id")
         section_id = section_id or scope.get("section_id")
         action_id = action_id or scope.get("action_id")
@@ -254,9 +257,9 @@ class LLMTelemetry:
                 requested_output_limit, effective_output_limit, input_chars,
                 connect_timeout_ms, read_timeout_ms, logical_deadline_ms,
                 retry_class, retry_reason, policy_decision, request_changed_fields,
-                prompt_metadata, request_body,
+                prompt_metadata, request_body, status,
                 start_time, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)
             """,
             (
                 attempt_id,
@@ -289,6 +292,14 @@ class LLMTelemetry:
                 now_utc(),
             ),
         )
+        target_session_id = session_id or self.session_id
+        if target_session_id is not None:
+            self.db.execute(
+                "UPDATE trace.investigation_sessions SET phase = 'waiting_for_llm', "
+                "status_reason = 'waiting for provider response' "
+                "WHERE session_id = ? AND status = 'running'",
+                (target_session_id,),
+            )
         return attempt_id
 
     def record_attempt_response(
@@ -308,6 +319,7 @@ class LLMTelemetry:
         attempt_id: str,
         status: AttemptStatus,
         end_time: datetime | None = None,
+        end_time_known: bool = True,
         duration_ms: int | None = None,
         http_status: int | None = None,
         error_type: str | None = None,
@@ -369,7 +381,7 @@ class LLMTelemetry:
             WHERE attempt_id = ?
             """,
             (
-                end_time or now_utc(),
+                (end_time or now_utc()) if end_time_known else None,
                 duration_ms,
                 http_status,
                 error_type,
@@ -399,6 +411,23 @@ class LLMTelemetry:
                 attempt_id,
             ),
         )
+        session_id = self.db.execute(
+            "SELECT c.session_id FROM trace.llm_provider_attempts a "
+            "JOIN trace.llm_logical_calls c USING (logical_call_id) "
+            "WHERE a.attempt_id = ?",
+            (attempt_id,),
+        ).fetchone()
+        if session_id and session_id[0] is not None:
+            self.db.execute(
+                "UPDATE trace.investigation_sessions s SET phase = 'running', "
+                "status_reason = 'provider response received; safe continuation pending' "
+                "WHERE s.session_id = ? AND s.status = 'running' "
+                "AND s.phase = 'waiting_for_llm' "
+                "AND NOT EXISTS (SELECT 1 FROM trace.llm_provider_attempts a "
+                "JOIN trace.llm_logical_calls c USING (logical_call_id) "
+                "WHERE c.session_id = s.session_id AND a.status = 'open')",
+                (session_id[0],),
+            )
 
     # --- deterministic op -------------------------------------------------
     def record_deterministic_op(
@@ -439,6 +468,32 @@ class LLMTelemetry:
     # --- aggregate queries (T-12.5) --------------------------------------
     def session_aggregates(self, session_id: str | None = None) -> dict[str, Any]:
         return llm_session_aggregates(self.db, session_id or self.session_id)
+
+
+def interrupt_open_calls(db: CaseDB, session_id: str) -> None:
+    """Close durable open calls after their owning session was abandoned."""
+    telemetry = LLMTelemetry(db, session_id)
+    attempt_ids = db.execute(
+        "SELECT a.attempt_id FROM trace.llm_provider_attempts a "
+        "JOIN trace.llm_logical_calls c USING (logical_call_id) "
+        "WHERE c.session_id = ? AND a.status = 'open'",
+        (session_id,),
+    ).fetchall()
+    for (attempt_id,) in attempt_ids:
+        telemetry.finalize_attempt(
+            attempt_id=attempt_id,
+            status="application_discard",
+            end_time_known=False,
+            error_type="process_interrupted",
+            exception_class="ProcessInterrupted",
+            accepted=False,
+            discarded_reason="owning session was abandoned before provider outcome was recorded",
+        )
+    db.execute(
+        "UPDATE trace.llm_logical_calls SET status = 'discarded' "
+        "WHERE session_id = ? AND status = 'open'",
+        (session_id,),
+    )
 
 
 def _json_or_none(value: Any) -> str | None:

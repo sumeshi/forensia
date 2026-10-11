@@ -15,11 +15,10 @@ from forensia.report.sections.quality_gates import (
     _quality_gate_section,
 )
 from forensia.report.sections.section_quality import (
-    _duplicate_finding_titles,
     _section_confidence,
-    _validate_body_evidence_ids,
     collect_gaps,
 )
+from forensia.report.sections.section_run_store import _store_section_run
 from forensia.report.sections.section_store import (
     _upsert_claims,
     _upsert_report_section,
@@ -35,7 +34,6 @@ def preprocess_section_body(
 
 
 def _collect_initial_gaps(
-    db: CaseDB,
     section_key: str,
     body: str,
     extra_gaps: list[str] | None = None,
@@ -45,12 +43,6 @@ def _collect_initial_gaps(
     for gap in extra_gaps or []:
         if gap not in candidate_gaps:
             candidate_gaps.append(gap)
-    missing_evidence_ids = _validate_body_evidence_ids(db, body)
-    if missing_evidence_ids:
-        candidate_gaps.append(
-            f"Referenced evidence_id values not found in database: {', '.join(missing_evidence_ids[:5])}"
-        )
-        candidate_confidence = min(candidate_confidence, 0.6)
     return candidate_gaps, candidate_confidence
 
 
@@ -71,10 +63,11 @@ def _read_persisted_section(db: CaseDB, section_key: str) -> dict[str, Any]:
 
 
 def validate_section_evidence_ids(db: CaseDB, body: str) -> tuple[str, list[str]]:
-    """Validate evidence IDs in body against DB. Return (cleaned_body, gaps).
+    """Validate evidence IDs in body against DB. Return (cleaned_body, diagnostics).
 
     Detection delegates to the authoritative shared lookup; this owner only
-    strips unresolvable references from the body.
+    strips unresolvable references from the body. Invalid citations require
+    report review; they do not establish a need for more investigation.
     """
     ids_found = sorted(set(EVIDENCE_ID_PATTERN.findall(body)))
     if not ids_found:
@@ -94,8 +87,8 @@ def validate_section_evidence_ids(db: CaseDB, body: str) -> tuple[str, list[str]
     cleaned = re.sub(r",\s*,", ",", cleaned)
     cleaned = cleaned.strip().strip(",").strip()
 
-    gaps = [f"cited evidence ids not found: {', '.join(invalid)}"]
-    return cleaned, gaps
+    diagnostics = [f"cited evidence ids not found: {', '.join(invalid)}"]
+    return cleaned, diagnostics
 
 
 def assess_section_candidate(
@@ -109,34 +102,29 @@ def assess_section_candidate(
     """Run the persisted-section gates without changing the section or its links."""
     body = preprocess_section_body(body)
     if db is not None and body:
-        body, id_gaps = validate_section_evidence_ids(db, body)
+        body, id_diagnostics = validate_section_evidence_ids(db, body)
     else:
-        id_gaps = []
+        id_diagnostics = []
     candidate_gaps, candidate_confidence = _collect_initial_gaps(
-        db, section_key, body, extra_gaps
+        section_key, body, extra_gaps
     )
-    if id_gaps:
-        candidate_gaps.extend(id_gaps)
+    if id_diagnostics:
         candidate_confidence = min(candidate_confidence, 0.5)
-    candidate_gaps, candidate_confidence = _quality_gate_section(
+    gate_diagnostics, candidate_confidence = _quality_gate_section(
         section_key,
         title,
         body,
-        candidate_gaps,
+        [],
         candidate_confidence,
         evidence_results,
         db=db,
     )
-    duplicate_titles = _duplicate_finding_titles(db, body)
-    if duplicate_titles:
-        candidate_gaps.append(
-            f"Finding titles are repeated too often in this section: {', '.join(duplicate_titles[:3])}"
-        )
-        candidate_confidence = min(candidate_confidence, 0.6)
+    diagnostics = [*id_diagnostics, *gate_diagnostics]
     return {
         "body": body,
         "gaps": candidate_gaps,
         "confidence": candidate_confidence,
+        "diagnostics": diagnostics,
     }
 
 
@@ -168,8 +156,17 @@ def finalize_section(
     if not updated:
         return _read_persisted_section(db, section_key)
     _upsert_claims(db, section_key)
+    _store_section_run(
+        db,
+        section_key=section_key,
+        block_heading="",
+        iteration=None,
+        phase="validation",
+        payload={"diagnostics": assessed["diagnostics"]},
+    )
     return {
         "gaps": candidate_gaps,
         "confidence": candidate_confidence,
+        "diagnostics": assessed["diagnostics"],
         "updated": True,
     }

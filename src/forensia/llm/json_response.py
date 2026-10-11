@@ -11,6 +11,7 @@ from typing import Any, Literal
 
 from forensia.config import get_llm_settings
 from forensia.context.prompt_context import fit_prompt_messages
+from forensia.core.control import InvestigationStopped, check_stop
 from forensia.llm.llm_client import (
     LLMContextWindowError,
     LLMOutputTruncatedError,
@@ -25,8 +26,8 @@ from forensia.llm.telemetry import (
 CODE_BLOCK_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL | re.IGNORECASE)
 _TRAILING_COMMA_RE = re.compile(r",\s*([\]}])")
 _LINE_COMMENT_RE = re.compile(r"//[^\n\"]*\n")
-MAX_JSON_REPAIR_ATTEMPTS = 3
-MAX_JSON_COMPLETION_ATTEMPTS = 3
+MAX_JSON_REPAIR_ATTEMPTS = 1
+MAX_JSON_COMPLETION_ATTEMPTS = 2
 
 _TRUNCATION_RECOVERY = (
     "<RETRY_CONSTRAINT>The previous response exceeded the output limit. "
@@ -69,10 +70,15 @@ def _compact_messages_after_context_rejection(
     messages: list[dict[str, str]],
 ) -> list[dict[str, str]] | None:
     """After provider rejection, remove optional catalog blocks once; never replay unchanged context."""
-    return fit_prompt_messages(
+    compacted = fit_prompt_messages(
         messages,
         force_optional_reduction=True,
     )
+    if compacted is None or sum(
+        len(item.get("content", "")) for item in compacted
+    ) >= sum(len(item.get("content", "")) for item in messages):
+        return None
+    return compacted
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,22 +161,22 @@ def _request_json_repair(
     *,
     logical_call_id: str | None = None,
     ordinal: list[int] | None = None,
+    max_tokens: int | None = None,
 ) -> str:
     """Send malformed JSON to the LLM for repair; returns a corrected string."""
     if status_callback:
         status_callback("Malformed JSON returned by LLM. Requesting JSON repair.")
     messages = _json_repair_messages(broken_output, parse_error)
-    attempt_ordinal = ordinal[0] if ordinal is not None else 0
-    if ordinal is not None:
-        ordinal[0] += 1
+    check_stop()
     return chat_completion(
         messages=messages,
         model=model,
         base_url=base_url,
         status_callback=None,
         logical_call_id=logical_call_id,
-        attempt_ordinal=attempt_ordinal,
+        attempt_ordinal=ordinal if ordinal is not None else 0,
         phase="json_repair",
+        max_tokens=max_tokens,
     )
 
 
@@ -182,36 +188,41 @@ def parse_llm_json(
     *,
     logical_call_id: str | None = None,
     ordinal: list[int] | None = None,
+    correction_budget: list[int] | None = None,
+    max_tokens: int | None = None,
 ) -> dict[str, Any]:
     """Parse an LLM output string into a dict, with cheap repair and LLM-based repair fallback."""
-    current_output = output
-    current_error: Exception | None = None
-    for repair_attempt in range(1, MAX_JSON_REPAIR_ATTEMPTS + 1):
-        try:
-            parsed = JSON_REPAIR_PIPELINE.parse_object(current_output)
-        except RuntimeError:
-            raise
-        except Exception as parse_error:
-            current_error = parse_error
-            if repair_attempt >= MAX_JSON_REPAIR_ATTEMPTS:
-                break
-            if ordinal is not None:
-                ordinal[0] += 1
-            current_output = _request_json_repair(
-                current_output,
-                parse_error=parse_error,
-                base_url=base_url,
-                model=model,
-                status_callback=status_callback,
-                logical_call_id=logical_call_id,
-                ordinal=ordinal,
-            )
-            continue
-        return parsed
+    correction_budget = correction_budget if correction_budget is not None else [1]
+    try:
+        return JSON_REPAIR_PIPELINE.parse_object(output)
+    except RuntimeError:
+        raise
+    except Exception as parse_error:
+        if correction_budget[0] <= 0:
+            raise RuntimeError(
+                f"LLM returned invalid JSON after {MAX_JSON_REPAIR_ATTEMPTS} repair attempts: {parse_error}"
+            ) from parse_error
+        correction_budget[0] -= 1
+        repair_error = parse_error
 
-    raise RuntimeError(
-        f"LLM returned invalid JSON after {MAX_JSON_REPAIR_ATTEMPTS} repair attempts: {current_error}"
+    repaired = _request_json_repair(
+        output,
+        parse_error=repair_error,
+        base_url=base_url,
+        model=model,
+        status_callback=status_callback,
+        logical_call_id=logical_call_id,
+        ordinal=ordinal,
+        max_tokens=max_tokens,
     )
+    try:
+        return JSON_REPAIR_PIPELINE.parse_object(repaired)
+    except RuntimeError:
+        raise
+    except Exception as error:
+        raise RuntimeError(
+            f"LLM returned invalid JSON after {MAX_JSON_REPAIR_ATTEMPTS} repair attempts: {error}"
+        ) from error
 
 
 def request_llm_json(
@@ -224,6 +235,8 @@ def request_llm_json(
     *,
     logical_call_id: str | None = None,
     telemetry_phase: str = "request_llm_json",
+    correction_budget: list[int] | None = None,
+    attempt_ordinal: list[int] | None = None,
 ) -> dict[str, Any]:
     """Send a chat request and return parsed JSON, with retry across both completion and parsing failures."""
     telemetry = get_active_telemetry()
@@ -231,98 +244,76 @@ def request_llm_json(
     if logical_call_id is None and telemetry is not None:
         logical_call_id = telemetry.begin_logical_call(phase=telemetry_phase)
         owned = True
+    correction_budget = correction_budget if correction_budget is not None else [1]
 
-    def close_owned_call(status: Literal["failed", "success"]) -> None:
+    def close_owned_call(status: Literal["discarded", "failed", "success"]) -> None:
         if owned and telemetry is not None and logical_call_id is not None:
             telemetry.close_logical_call(logical_call_id=logical_call_id, status=status)
 
-    ordinal: list[int] = [0]
+    ordinal = attempt_ordinal if attempt_ordinal is not None else [0]
 
-    def next_ordinal() -> int:
-        value = ordinal[0]
-        ordinal[0] += 1
-        return value
-
-    last_error: Exception | None = None
     seen_truncated_outputs: set[str] = set()
-    seen_invalid_outputs: set[str] = set()
     context_compaction_used = False
     context_retry_fields: dict[str, Any] | None = None
+    truncation_retry_fields: dict[str, Any] | None = None
     configured_cap = int(get_llm_settings()["max_tokens"])
     base_max = min(int(max_tokens), configured_cap) if max_tokens else configured_cap
-    for completion_attempt in range(1, MAX_JSON_COMPLETION_ATTEMPTS + 1):
-        if completion_attempt > 1 and status_callback:
-            status_callback(
-                f"Malformed JSON persisted after {MAX_JSON_REPAIR_ATTEMPTS} repair attempts. "
-                f"Retrying original LLM request ({completion_attempt}/{MAX_JSON_COMPLETION_ATTEMPTS})."
-            )
+    for _ in range(MAX_JSON_COMPLETION_ATTEMPTS):
         try:
-            first_max_tokens = base_max
-            truncation_retry_fields: dict[str, Any] | None = None
-            last_truncation: LLMOutputTruncatedError | None = None
-            for _ in range(2):
-                try:
-                    output = chat_completion(
-                        messages=messages,
-                        model=model,
-                        base_url=base_url,
-                        max_tokens=first_max_tokens,
-                        status_callback=status_callback,
-                        json_schema=json_schema,
-                        logical_call_id=logical_call_id,
-                        attempt_ordinal=next_ordinal(),
-                        phase=telemetry_phase,
-                        retry_class=("truncation" if truncation_retry_fields else None),
-                        retry_reason=(
-                            "finish_reason=length; concise JSON retry within configured cap"
-                            if truncation_retry_fields
-                            else None
-                        ),
-                        policy_decision=(
-                            "compact_context"
-                            if context_retry_fields
-                            else "constrain_output"
-                            if truncation_retry_fields
-                            else None
-                        ),
-                        request_changed_fields=(
-                            context_retry_fields or truncation_retry_fields
-                        ),
+            try:
+                output = chat_completion(
+                    messages=messages,
+                    model=model,
+                    base_url=base_url,
+                    max_tokens=base_max,
+                    status_callback=status_callback,
+                    json_schema=json_schema,
+                    logical_call_id=logical_call_id,
+                    attempt_ordinal=ordinal,
+                    phase=telemetry_phase,
+                    retry_class=("truncation" if truncation_retry_fields else None),
+                    retry_reason=(
+                        "finish_reason=length; concise JSON retry within original cap"
+                        if truncation_retry_fields
+                        else None
+                    ),
+                    policy_decision=(
+                        "compact_context"
+                        if context_retry_fields
+                        else "constrain_output"
+                        if truncation_retry_fields
+                        else None
+                    ),
+                    request_changed_fields=(
+                        context_retry_fields or truncation_retry_fields
+                    ),
+                )
+            except LLMOutputTruncatedError as exc:
+                if exc.content:
+                    fingerprint = hashlib.sha256(exc.content.encode()).hexdigest()
+                    if fingerprint in seen_truncated_outputs:
+                        raise LLMOutputTruncatedError(
+                            "LLM repeated identical truncated output; no-information retry stopped",
+                            content=exc.content,
+                        ) from exc
+                    seen_truncated_outputs.add(fingerprint)
+                if correction_budget[0] <= 0:
+                    raise
+                correction_budget[0] -= 1
+                messages = _messages_for_truncation_retry(messages)
+                truncation_retry_fields = {
+                    "decision": "constrain_output",
+                    "max_tokens": base_max,
+                }
+                if status_callback:
+                    status_callback(
+                        "LLM output truncated; retrying once within the original output cap"
                     )
-                    break
-                except LLMOutputTruncatedError as exc:
-                    last_truncation = exc
-                    if exc.content:
-                        fingerprint = hashlib.sha256(exc.content.encode()).hexdigest()
-                        if fingerprint in seen_truncated_outputs:
-                            raise LLMOutputTruncatedError(
-                                "LLM repeated identical truncated output; no-information retry stopped",
-                                content=exc.content,
-                            ) from exc
-                        seen_truncated_outputs.add(fingerprint)
-                    previous_max = first_max_tokens
-                    first_max_tokens = min(configured_cap, first_max_tokens * 2)
-                    messages = _messages_for_truncation_retry(messages)
-                    truncation_retry_fields = {
-                        "decision": "constrain_output",
-                        "max_tokens": [previous_max, first_max_tokens],
-                        "configured_cap": configured_cap,
-                    }
-                    if status_callback:
-                        status_callback(
-                            "LLM output truncated; retrying once with concise JSON "
-                            f"and max_tokens={first_max_tokens} (cap={configured_cap})"
-                        )
-            else:
-                assert last_truncation is not None
-                raise LLMOutputTruncatedError(
-                    "LLM output remained truncated after one bounded recovery retry",
-                    content=last_truncation.content,
-                ) from last_truncation
+                continue
             if not output or not output.strip():
                 raise LLMServerUnavailableError("LLM returned empty response")
         except LLMContextWindowError as exc:
-            if not context_compaction_used:
+            if not context_compaction_used and correction_budget[0] > 0:
                 try:
                     compacted = _compact_messages_after_context_rejection(messages)
                 except Exception:
@@ -331,6 +322,7 @@ def request_llm_json(
                 if compacted is not None:
                     messages = compacted
                     context_compaction_used = True
+                    correction_budget[0] -= 1
                     context_retry_fields = {
                         "context_error": exc.status_code,
                         "decision": "structured_compaction",
@@ -341,6 +333,9 @@ def request_llm_json(
                         )
                     continue
             close_owned_call("failed")
+            raise
+        except InvestigationStopped:
+            close_owned_call("discarded")
             raise
         except LLMServerUnavailableError:
             close_owned_call("failed")
@@ -356,26 +351,21 @@ def request_llm_json(
                 status_callback=status_callback,
                 logical_call_id=logical_call_id,
                 ordinal=ordinal,
+                correction_budget=correction_budget,
+                max_tokens=base_max,
             )
             close_owned_call("success")
             return parsed
         except LLMBudgetExceededError:
             close_owned_call("failed")
             raise
+        except InvestigationStopped:
+            close_owned_call("discarded")
+            raise
         except Exception as error:
-            last_error = error
-            fingerprint = hashlib.sha256(output.encode()).hexdigest()
-            if fingerprint in seen_invalid_outputs:
-                close_owned_call("failed")
-                raise RuntimeError(
-                    "LLM repeated identical invalid JSON; no-information retry stopped"
-                ) from error
-            seen_invalid_outputs.add(fingerprint)
-            continue
-    if last_error is None:
-        close_owned_call("failed")
-        raise RuntimeError("LLM returned no JSON response")
+            close_owned_call("failed")
+            raise RuntimeError(
+                f"LLM JSON response failed after one bounded correction: {error}"
+            ) from error
     close_owned_call("failed")
-    raise RuntimeError(
-        f"LLM JSON response failed after {MAX_JSON_COMPLETION_ATTEMPTS} full attempts: {last_error}"
-    ) from last_error
+    raise RuntimeError("LLM returned no JSON response")

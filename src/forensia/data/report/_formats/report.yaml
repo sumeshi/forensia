@@ -42,13 +42,66 @@ publication:
     case_incomplete: "incomplete"
     incomplete_reason: "publication requirements are incomplete"
 
-narrative_fallback:
-  unsupported: "No supporting evidence was found for {heading}. This item is unsupported and is not part of the incident narrative."
-  evidence_reference: " (evidence: {ids})"
-  finding_reference: " (findings: {ids})"
-  observed: "Observed activity relevant to {heading}: {observations}.{reference}"
-  insufficient_detail: "Evidence relevant to {heading} was collected, but the available rows do not contain enough report-visible detail for a stronger summary.{reference}"
-  partial_suffix: " Additional correlation is needed before this is fully established."
+narration_labels:
+  model_interpretation:
+    en: "Unverified model interpretation"
+    ja: "未確認のモデル解釈"
+
+default_headings:
+  ja:
+    Summary and Scope: 調査概要と対象
+    Objective and Scope: 目的と対象範囲
+    Evidence Coverage: 証拠の取込みと範囲
+    Key Findings: 主な所見
+    Chronology: 時系列
+    Time Basis and Coverage: 時刻基準と対象範囲
+    Events: 観測イベント
+    Findings: 分析結果
+    Evidence and Interpretation: 証拠と解釈
+    Systems and Accounts: システムとアカウント
+    Execution Records: 実行記録
+    Network Records: ネットワーク記録
+    Relevant Files: 関連ファイル
+    Limitations and Gaps: 制約と未解決事項
+    Coverage and Limitations: 対象範囲と制約
+    Unresolved Questions: 未解決の仮説
+    Evidence Gaps: 証拠の不足
+    Follow-up: 追加確認事項
+    Proposed Steps: 提案する確認手順
+    Action Plan: 対応計画
+
+table_provenance:
+  en: "Source query: `{query}`; tables: {tables}; source families: {families}; source receipts: {source_count}{source_ids}."
+  ja: "出典クエリ: `{query}`。参照テーブル: {tables}。証拠種別: {families}。取込み元レシート: {source_count}{source_ids}。"
+
+keypoint_descriptions:
+  ja:
+    overview_top_findings: "概要に記載する重要度の高い採用済み所見。"
+    resolved_hypotheses_with_evidence: "判定と証拠参照を伴う、確認済みまたは反証済みの仮説。"
+    overview_hosts: "イベント件数順に並べた観測ホスト。"
+    overview_event_range: "観測イベントの最初と最後の記録時刻。"
+    timeline_high_signal_events: "証拠IDを伴う、時刻順の重要イベント記録。"
+    timeline_system_events: "起動、シャットダウン、ログオン、ログオフに関する主要なシステムイベント。"
+    timeline_log_clearing: "観測されたログ消去または完全性に影響するイベント。"
+    timeline_case_assembled: "所見、判定、構造化回答から作成した決定論的なケース時系列（1日あたり最大6件）。"
+    host_execution_activity: "ホストごとに観測されたプロセス実行活動。"
+    host_persistence_activity: "ホストごとに観測されたサービスおよびタスクの永続化活動。"
+    account_logon_patterns: "不審なリモートアクセスに関するアカウントのログオン状況。"
+    account_all_logon_summary: "ユーザー、コンピューター、ログオン種別ごとのログオンイベント件数。"
+    ioc_source_ips: "頻度順に並べた観測送信元IPアドレス。"
+    unresolved_hypotheses_summary: "調査で未解決または対応中の仮説。"
+    gaps_event_coverage: "イベント全体の網羅状況と記録期間。"
+    gaps_channel_coverage: "観測イベントのチャネル別内訳。"
+    recommendations_findings: "推奨対応の根拠となる主な所見。"
+    recommendations_recent_reviews: "過去のAIレビュー出力（非権威情報）。現在の仮説の判定状態は別に表示します。"
+
+report_labels:
+  en:
+    work_not_admitted: "Not admitted"
+    work_unlinked_detail: "No linked Task and Gap are currently admitted."
+  ja:
+    work_not_admitted: "未登録（未採用）"
+    work_unlinked_detail: "対応するTaskとGapはまだ採用されていません。"
 
 structured_answer:
   max_list_items: 5

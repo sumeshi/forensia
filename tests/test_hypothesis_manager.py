@@ -56,7 +56,18 @@ class TestHypothesisAdmissionConformance(unittest.TestCase):
             "Repeated logon events from a single src_ip to the same target_user "
             "within 30 minutes indicate automated access"
         )
-        base = {"co_observed_event_ids": [4624, 4625], "within_minutes": 30}
+        base = {
+            "co_observed_event_ids": [4624, 4625],
+            "within_minutes": 30,
+            "event_contexts": [
+                {
+                    "event_id": event_id,
+                    "channel": "Security",
+                    "provider": "Microsoft-Windows-Security-Auditing",
+                }
+                for event_id in (4624, 4625)
+            ],
+        }
         self.assertEqual(
             (False, "claim-spec-entity-correlation-missing"),
             admission(description, base),
@@ -151,11 +162,20 @@ class TestHypothesisAdmissionConformance(unittest.TestCase):
             ("Password reset (4624)", 4624),
         ):
             with self.subTest(event_id=event_id):
+                condition = {"co_observed_event_ids": [event_id]}
+                if event_id == 4624:
+                    condition["event_contexts"] = [
+                        {
+                            "event_id": 4624,
+                            "channel": "Security",
+                            "provider": "Microsoft-Windows-Security-Auditing",
+                        }
+                    ]
                 candidate = Hypothesis(
                     id="draft-semantic",
                     description=description,
                     required_entities=["computer"],
-                    confirm_when={"co_observed_event_ids": [event_id]},
+                    confirm_when=condition,
                 )
                 self.assertEqual(
                     (False, f"event-semantic-mismatch:{event_id}"),
@@ -246,7 +266,7 @@ class TestHypothesisAdmissionConformance(unittest.TestCase):
             admit_new_hypothesis(invalid, state),
         )
 
-    def test_context_list_may_omit_unconstrained_co_observed_ids(self) -> None:
+    def test_context_list_must_cover_constrained_co_observed_ids(self) -> None:
         candidate = Hypothesis(
             id="draft-mixed-context",
             description="RDP followed by PowerShell script block execution",
@@ -263,7 +283,7 @@ class TestHypothesisAdmissionConformance(unittest.TestCase):
             },
         )
         self.assertEqual(
-            (True, "accepted"),
+            (False, "event-context-missing:4624"),
             admit_new_hypothesis(candidate, SessionState(session_id="S-mixed")),
         )
 
@@ -316,12 +336,30 @@ class TestHypothesisAdmissionConformance(unittest.TestCase):
             confirm_when={
                 "co_observed_event_ids": [4624],
                 "keywords": ["sc.exe"],
+                "event_contexts": [
+                    {
+                        "event_id": 4624,
+                        "channel": "Security",
+                        "provider": "Microsoft-Windows-Security-Auditing",
+                    }
+                ],
             },
         )
         self.assertEqual((True, "accepted"), admit_new_hypothesis(candidate, state))
         assessment = assess_evidence_group(
             hypothesis=candidate,
-            rows=[{"evidence_id": "evtx-1", "event_id": 4624}],
+            rows=[
+                {
+                    "evidence_id": "evtx-1",
+                    "event_id": 4624,
+                    "channel": "Security",
+                    "raw_json": {
+                        "winlog": {
+                            "provider": {"name": "Microsoft-Windows-Security-Auditing"}
+                        }
+                    },
+                }
+            ],
             evidence_ids=["evtx-1"],
         )
         self.assertEqual(assessment.role, "contextual")

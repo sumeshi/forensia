@@ -7,11 +7,10 @@ import re
 from typing import Any
 
 from forensia.core.case import Case
-from forensia.core.log import log as _log
 from forensia.core.textutil import sanitize_ingest_path
 from forensia.db.database import CaseDB
 from forensia.db.query import fetch_records, normalize_value
-from forensia.report.benign_auth import finding_is_auth_scoped, is_benign_local_auth
+from forensia.report.benign_auth import is_benign_local_auth
 from forensia.report.evidence_refs import (
     _extract_evidence_ids_from_value,
 )
@@ -124,12 +123,11 @@ def _short_path_context(path: Any) -> str:
 def _sanitize_evidence_paths(evidence: Any) -> Any:
     """Reduce local ingest paths in finding evidence to basenames.
 
-    Defense-in-depth for the report brief: findings persisted before the
+    Defense-in-depth for report context: findings persisted before the
     engine-side sanitize (or by a resumed case whose rules were not
     re-seeded) still carry raw ingest paths like ``sample/<case>/...pf`` in
-    their evidence rows. Sanitizing at brief-build time guarantees the local
-    filesystem layout never reaches report_brief.json regardless of when the
-    finding was stored. Real Windows paths are left unchanged.
+    their evidence rows. Sanitizing at build time keeps the local filesystem
+    layout out of report context. Real Windows paths are left unchanged.
     """
     if isinstance(evidence, str):
         try:
@@ -174,13 +172,10 @@ def _is_local_machine_account_4648(row: dict[str, Any]) -> bool:
         return False
     if not evidence:
         return False
-    assume_auth = finding_is_auth_scoped(
-        row.get("rule_id") or row.get("finding_id"), row.get("title")
-    )
     for entry in evidence:
         if not isinstance(entry, dict):
             return False
-        if not is_benign_local_auth(entry, assume_auth_event=assume_auth):
+        if not is_benign_local_auth(entry):
             return False
     return True
 
@@ -298,7 +293,7 @@ def _build_report_brief(
     tz_name = getattr(case, "source_timezone", "UTC") if case else "UTC"
     tz_offset = _tz_offset_str(tz_name) if tz_name != "UTC" else ""
     publication_state = derive_publication_state(db)
-    return {
+    brief = {
         "top_findings": [normalize_value(item) for item in _query_top_findings(db)],
         "active_hypotheses": [
             normalize_value(item) for item in _query_hypotheses_by_status(db, "active")
@@ -329,31 +324,12 @@ def _build_report_brief(
         "evidence_confidence": publication_state["evidence_confidence"],
         "claim_scope": publication_state["claim_scope"],
     }
-
-
-def write_report_brief(case: Case, db: CaseDB) -> dict[str, Any]:
-    """Write the report brief to reports/report_brief.json and return the dict."""
-    brief = _build_report_brief(db, case)
     from forensia.db.investigation_state import load_investigation_state
 
     investigation = load_investigation_state(db) or {}
     objective = str(investigation.get("objective") or "").strip()
     if objective:
         brief["investigation_objective"] = objective
-    path = case.reports_dir / "report_brief.json"
-    path.write_text(
-        json.dumps(brief, ensure_ascii=False, indent=2, default=str), encoding="utf-8"
-    )
-    # Post-generation validation: warn (never block) on thesis/evidence
-    # misalignment, refuted-content leakage, and contradictory verdicts.
-    from forensia.report.report_validation import validate_report
-
-    for issue in validate_report(brief):
-        _log(
-            "VALIDATION",
-            f"{issue.check_name}: {issue.message}",
-            level="error" if issue.severity == "error" else "warning",
-        )
     return brief
 
 

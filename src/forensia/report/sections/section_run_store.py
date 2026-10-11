@@ -20,7 +20,7 @@ def _store_section_run(
     *,
     section_key: str,
     block_heading: str,
-    iteration: int,
+    iteration: int | None,
     phase: str,
     payload: dict[str, Any],
     verdict: str | None = None,

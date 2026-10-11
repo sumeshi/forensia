@@ -5,11 +5,30 @@ confidence: 0.5
 required_fields:
 - executable_name
 - last_exec_time
+- matched_filename
 tags:
 - prefetch
 - execution
 - file-reference
-query: "SELECT\n    evidence_id,\n    executable_name,\n    exec_count,\n    last_exec_time,\n    filenames\nFROM prefetch_executions\nWHERE filenames IS NOT NULL\n    AND LOWER(CAST(filenames AS VARCHAR)) LIKE '%.dll%'\n    AND (\n        LOWER(CAST(filenames AS VARCHAR)) LIKE '%\\temp\\%'\n        OR LOWER(CAST(filenames AS VARCHAR)) LIKE '%\\appdata\\%'\n        OR LOWER(CAST(filenames AS VARCHAR)) LIKE '%\\programdata\\%'\n        OR LOWER(CAST(filenames AS VARCHAR)) LIKE '%\\users\\%'\n    )\nORDER BY last_exec_time DESC\n"
+query: |
+  SELECT
+      p.evidence_id,
+      p.executable_name,
+      p.exec_count,
+      p.last_exec_time,
+      p.filenames,
+      json_extract_string(f.value, '$') AS matched_filename
+  FROM prefetch_executions AS p
+  CROSS JOIN LATERAL json_each(TRY_CAST(p.filenames AS JSON)) AS f
+  WHERE json_type(TRY_CAST(p.filenames AS JSON)) = 'ARRAY'
+      AND ENDS_WITH(LOWER(json_extract_string(f.value, '$')), '.dll')
+      AND (
+          LOWER(json_extract_string(f.value, '$')) LIKE '%\temp\%'
+          OR LOWER(json_extract_string(f.value, '$')) LIKE '%\appdata\%'
+          OR LOWER(json_extract_string(f.value, '$')) LIKE '%\programdata\%'
+          OR LOWER(json_extract_string(f.value, '$')) LIKE '%\users\%'
+      )
+  ORDER BY p.last_exec_time DESC
 finding:
   title: "DLL path referenced by Prefetch: {executable_name}"
-  summary: "The Prefetch files list for {executable_name} includes a DLL path under a commonly user-writable location (last run: {last_exec_time}). A file reference does not by itself establish that the DLL was loaded or sideloaded."
+  summary: "The Prefetch record for {executable_name} references {matched_filename} (last run: {last_exec_time}). A file reference does not establish that the DLL was loaded, sideloaded, or malicious."

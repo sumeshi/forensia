@@ -59,6 +59,7 @@ def _make_evidence_link(
     role: str = "supporting",
     source_family: str = "evtx",
     strength: str = "moderate",
+    canonical_event: dict | None = None,
 ) -> str:
     db.execute(
         "INSERT INTO hypotheses (hypothesis_id, description, status, verification_spec, "
@@ -70,7 +71,7 @@ def _make_evidence_link(
             json.dumps(hypothesis.verification_spec.model_dump(mode="json")),
         ],
     )
-    _backing_evidence_row(db, evidence_id, source_family)
+    _backing_evidence_row(db, evidence_id, source_family, canonical_event)
     return create_hypothesis_evidence_link(
         db,
         hypothesis_id=hypothesis_id,
@@ -83,13 +84,65 @@ def _make_evidence_link(
     )
 
 
-def _backing_evidence_row(db: CaseDB, evidence_id: str, source_family: str) -> None:
+def _backing_evidence_row(
+    db: CaseDB,
+    evidence_id: str,
+    source_family: str,
+    canonical_event: dict | None = None,
+) -> None:
     """Insert a source-bound normalized row for the link admission path."""
     table = "prefetch_executions" if source_family == "prefetch" else "evtx_events"
-    db.execute(
-        f"INSERT INTO {table} (evidence_id, source_file) VALUES (?, 'test-source')",
-        [evidence_id],
-    )
+    if table == "evtx_events" and canonical_event:
+        db.execute(
+            "INSERT INTO evtx_events (evidence_id, source_file, event_id, channel, raw_json) "
+            "VALUES (?, 'test-source', ?, ?, ?)",
+            [
+                evidence_id,
+                canonical_event["event_id"],
+                canonical_event["channel"],
+                json.dumps(
+                    {
+                        "winlog": {
+                            "channel": canonical_event["channel"],
+                            "provider": {"name": canonical_event["provider"]},
+                        }
+                    }
+                ),
+            ],
+        )
+    else:
+        db.execute(
+            f"INSERT INTO {table} (evidence_id, source_file) VALUES (?, 'test-source')",
+            [evidence_id],
+        )
+
+
+def _event_context(event_id: int) -> dict[str, str | int]:
+    if event_id == 21:
+        return {
+            "event_id": event_id,
+            "channel": "Microsoft-Windows-TerminalServices-LocalSessionManager/Operational",
+            "provider": "Microsoft-Windows-TerminalServices-LocalSessionManager",
+        }
+    return {
+        "event_id": event_id,
+        "channel": "Security",
+        "provider": "Microsoft-Windows-Security-Auditing",
+    }
+
+
+def _sample_event(event_id: int, **fields: object) -> dict[str, object]:
+    context = _event_context(event_id)
+    return {
+        **context,
+        "raw_json": {
+            "winlog": {
+                "channel": context["channel"],
+                "provider": {"name": context["provider"]},
+            }
+        },
+        **fields,
+    }
 
 
 class EntityValidationTests(unittest.TestCase):
@@ -281,17 +334,29 @@ class SettlementGateTests(unittest.TestCase):
                     description="RDP lateral movement",
                     source_rule_ids=["rule-rdp"],
                     required_entities=["target_user"],
-                    confirm_when={"co_observed_event_ids": [21, 4624]},
+                    confirm_when={
+                        "co_observed_event_ids": [21, 4624],
+                        "event_contexts": [_event_context(21), _event_context(4624)],
+                    },
                 )
-                _make_evidence_link(db, hypothesis=hyp)
-                _make_evidence_link(db, hypothesis=hyp, evidence_id="evtx-002")
+                _make_evidence_link(
+                    db,
+                    hypothesis=hyp,
+                    canonical_event=_event_context(21),
+                )
+                _make_evidence_link(
+                    db,
+                    hypothesis=hyp,
+                    evidence_id="evtx-002",
+                    canonical_event=_event_context(4624),
+                )
                 si = SettlementInput(
                     hypothesis=hyp,
                     checker_verdict="inconclusive",
                     check_summary="different users",
                     sample_rows=[
-                        {"event_id": 21, "target_user": "user_A"},
-                        {"event_id": 4624, "target_user": "user_B"},
+                        _sample_event(21, target_user="user_A"),
+                        _sample_event(4624, target_user="user_B"),
                     ],
                     co_observation_satisfied=True,
                 )
@@ -320,34 +385,47 @@ class SettlementGateTests(unittest.TestCase):
                     confirm_when={
                         "co_observed_event_ids": [4720, 4732, 4624],
                         "same_host": True,
+                        "event_contexts": [_event_context(4624)],
                     },
                 )
-                _make_evidence_link(db, hypothesis=hyp)
-                _make_evidence_link(db, hypothesis=hyp, evidence_id="evtx-002")
-                _make_evidence_link(db, hypothesis=hyp, evidence_id="evtx-003")
+                _make_evidence_link(
+                    db, hypothesis=hyp, canonical_event=_event_context(4720)
+                )
+                _make_evidence_link(
+                    db,
+                    hypothesis=hyp,
+                    evidence_id="evtx-002",
+                    canonical_event=_event_context(4732),
+                )
+                _make_evidence_link(
+                    db,
+                    hypothesis=hyp,
+                    evidence_id="evtx-003",
+                    canonical_event=_event_context(4624),
+                )
                 # 4720 target is "newuser", 4732/4624 are for unrelated "admin"
                 si = SettlementInput(
                     hypothesis=hyp,
                     checker_verdict="inconclusive",
                     check_summary="unrelated events on same host",
                     sample_rows=[
-                        {
-                            "event_id": 4720,
-                            "target_user": "newuser",
-                            "target_group": "Users",
-                            "computer": "HOST-PC",
-                        },
-                        {
-                            "event_id": 4732,
-                            "target_user": "admin",
-                            "target_group": "Administrators",
-                            "computer": "HOST-PC",
-                        },
-                        {
-                            "event_id": 4624,
-                            "target_user": "admin",
-                            "computer": "HOST-PC",
-                        },
+                        _sample_event(
+                            4720,
+                            target_user="newuser",
+                            target_group="Users",
+                            computer="HOST-PC",
+                        ),
+                        _sample_event(
+                            4732,
+                            target_user="admin",
+                            target_group="Administrators",
+                            computer="HOST-PC",
+                        ),
+                        _sample_event(
+                            4624,
+                            target_user="admin",
+                            computer="HOST-PC",
+                        ),
                     ],
                     co_observation_satisfied=True,
                     same_host=True,
@@ -563,13 +641,22 @@ class PositiveSettlementTests(unittest.TestCase):
                     confirm_when={
                         "co_observed_event_ids": [21, 4624],
                         "event_constraints": {4624: {"logon_type": ["10"]}},
+                        "event_contexts": [_event_context(21), _event_context(4624)],
                     },
                 )
                 _make_evidence_link(
-                    db, hypothesis=hyp, hypothesis_id="H-rdp", evidence_id="evtx-21"
+                    db,
+                    hypothesis=hyp,
+                    hypothesis_id="H-rdp",
+                    evidence_id="evtx-21",
+                    canonical_event=_event_context(21),
                 )
                 _make_evidence_link(
-                    db, hypothesis=hyp, hypothesis_id="H-rdp", evidence_id="evtx-4624"
+                    db,
+                    hypothesis=hyp,
+                    hypothesis_id="H-rdp",
+                    evidence_id="evtx-4624",
+                    canonical_event=_event_context(4624),
                 )
                 decision = settle_hypothesis(
                     db,
@@ -578,17 +665,17 @@ class PositiveSettlementTests(unittest.TestCase):
                         checker_verdict="inconclusive",
                         check_summary="service logon only",
                         sample_rows=[
-                            {
-                                "event_id": 21,
-                                "target_user": "admin",
-                                "src_ip": "192.0.2.10",
-                            },
-                            {
-                                "event_id": 4624,
-                                "target_user": "admin",
-                                "src_ip": "192.0.2.10",
-                                "logon_type": 5,
-                            },
+                            _sample_event(
+                                21,
+                                target_user="admin",
+                                src_ip="192.0.2.10",
+                            ),
+                            _sample_event(
+                                4624,
+                                target_user="admin",
+                                src_ip="192.0.2.10",
+                                logon_type=5,
+                            ),
                         ],
                         co_observation_satisfied=True,
                     ),

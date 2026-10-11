@@ -135,7 +135,7 @@ REPORT_META_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
             SELECT channel, COUNT(*) AS count
             FROM evtx_events
             GROUP BY channel
-            ORDER BY count DESC
+            ORDER BY count DESC, channel ASC NULLS LAST
             """,
         ),
     ),
@@ -172,13 +172,19 @@ REPORT_META_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
         ),
     ),
     "recommendations_recent_reviews": (
-        "Recent AI review verdicts and report notes.",
+        "Historical AI review output (non-authoritative); current hypothesis settlement is shown separately.",
         lambda db: _report_keypoint_rows(
             db,
             """
-            SELECT verdict, report_text
-            FROM trace.ai_reviews
-            ORDER BY created_at DESC
+            SELECT r.finding_id,
+                   r.verdict AS historical_ai_review_verdict,
+                   r.report_text AS historical_ai_review_text,
+                   h.status AS current_hypothesis_status,
+                   h.verdict AS current_settled_verdict
+            FROM trace.ai_reviews AS r
+            LEFT JOIN hypotheses AS h
+              ON h.hypothesis_id = REPLACE(r.finding_id, 'hypothesis:', '')
+            ORDER BY r.created_at DESC
             LIMIT 10
             """,
         ),

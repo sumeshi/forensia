@@ -30,12 +30,18 @@ def main() -> int:
         return 0
 
     print(
-        "| Session | Iteration | Reasoning entries | Verdict entries | Logical calls | Provider attempts |"
+        "| Allocation | Session | Iteration / phase | Reasoning entries | Verdict entries | Logical calls | Provider attempts |"
     )
-    print("|---|---:|---:|---|---:|---:|")
+    print("|---|---|---|---:|---|---:|---:|")
     for cycle in cycles:
+        allocation = cycle.get("allocation", "cycle")
+        iteration = (
+            cycle.get("phase", "unknown")
+            if allocation == "unassigned"
+            else cycle["iteration"]
+        )
         print(
-            f"| {cycle['session_id']} | {cycle['iteration']} | {cycle['reasoning_entries']} | "
+            f"| {allocation} | {cycle['session_id']} | {iteration} | {cycle['reasoning_entries']} | "
             f"{json.dumps(cycle['reasoning_verdicts'], ensure_ascii=False)} | "
             f"{cycle['logical_calls']} | {cycle['provider_attempts']} |"
         )

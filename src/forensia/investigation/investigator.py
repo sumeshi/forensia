@@ -46,8 +46,10 @@ from forensia.investigation.report_gap import (
 )
 from forensia.investigation.work_judgment import open_work_refs
 from forensia.investigation.work_state import (
+    broad_plan_terminal_facts,
     classify_active_hypotheses_on_stop,
     format_stop_reason,
+    format_terminal_reason,
     stop_summary,
 )
 from forensia.knowledge.coverage import refresh_evidence_coverage
@@ -62,6 +64,7 @@ from forensia.llm.telemetry import (
     LLMTelemetry,
     reset_active_telemetry,
     set_active_telemetry,
+    telemetry_scope,
 )
 from forensia.report.render.writer import render_written_report
 from forensia.report.sections.report_input import (
@@ -244,7 +247,8 @@ def _planner_only_terminal_reason(db: CaseDB, session_id: str) -> str | None:
     row = db.execute(
         """
         SELECT
-            SUM(CASE WHEN phase = 'plan-hypothesis' THEN 1 ELSE 0 END) AS plan_steps,
+            SUM(CASE WHEN phase IN ('plan-hypothesis', 'plan-broad', 'plan-broad-candidate')
+                THEN 1 ELSE 0 END) AS plan_steps,
             SUM(CASE WHEN phase IN ('do', 'check') THEN 1 ELSE 0 END) AS do_check_steps
         FROM trace.investigation_steps
         WHERE session_id = ?
@@ -253,6 +257,15 @@ def _planner_only_terminal_reason(db: CaseDB, session_id: str) -> str | None:
     ).fetchone()
     if not row or int(row[0] or 0) == 0 or int(row[1] or 0) > 0:
         return None
+    facts = broad_plan_terminal_facts(db, session_id)
+    if facts["awaiting_proposal_correction"]:
+        return "proposal_repair_pending"
+    if facts["awaiting_external_evidence"]:
+        return "external_evidence_waiting"
+    if facts["awaiting_capability"]:
+        return "capability_waiting"
+    if facts["unexamined_candidate_count"]:
+        return "candidate_scan_incomplete"
     failure = db.execute(
         """
         SELECT COUNT(*)
@@ -327,39 +340,40 @@ async def _run_investigation_loop(env: _InvestigateEnv) -> tuple[str, int, str]:
         # Snapshot at the cycle's state-commit boundary: this read equals the
         # state the previous cycle committed (Coverage refresh included).
         evaluation_before = evaluation_snapshot(env.db)
-        broad_plan_stop, focus_sections = await _run_cycle_body(
-            state=env.state,
-            ctx=env.ctx,
-            case=env.case,
-            db=env.db,
-            session_id=env.session_id,
-            base_url=env.base_url,
-            model=env.model,
-            progress_callback=env.progress_callback,
-            max_queries_per_hypothesis=env.max_queries_per_hypothesis,
-            plan_cycle=plan_cycle,
-            max_iter=env.max_iter,
-            report_only=env.report_only,
-            case_profile=env.case_profile,
-        )
+        with telemetry_scope(iteration=plan_cycle):
+            broad_plan_stop, focus_sections = await _run_cycle_body(
+                state=env.state,
+                ctx=env.ctx,
+                case=env.case,
+                db=env.db,
+                session_id=env.session_id,
+                base_url=env.base_url,
+                model=env.model,
+                progress_callback=env.progress_callback,
+                max_queries_per_hypothesis=env.max_queries_per_hypothesis,
+                plan_cycle=plan_cycle,
+                max_iter=env.max_iter,
+                report_only=env.report_only,
+                case_profile=env.case_profile,
+            )
         if env.ctx.interrupted or is_stopped():
             return "stopped", report_refresh_failures, "interrupted"
-        (
-            report_after,
-            refresh_status,
-        ) = await _run_report_phase(
-            case=env.case,
-            db=env.db,
-            session_id=env.session_id,
-            plan_cycle=plan_cycle,
-            report_every_n_cycles=env.report_every_n_cycles,
-            report_sections=env.report_sections,
-            base_url=env.base_url,
-            model=env.model,
-            progress_callback=env.progress_callback,
-            focus_sections=focus_sections,
-            state=env.state,
-        )
+        with telemetry_scope(iteration=plan_cycle):
+            report_after, refresh_status = await _run_report_phase(
+                case=env.case,
+                db=env.db,
+                session_id=env.session_id,
+                plan_cycle=plan_cycle,
+                report_every_n_cycles=env.report_every_n_cycles,
+                report_sections=env.report_sections,
+                base_url=env.base_url,
+                model=env.model,
+                progress_callback=env.progress_callback,
+                focus_sections=focus_sections,
+                state=env.state,
+            )
+        if env.ctx.interrupted or is_stopped():
+            return "stopped", report_refresh_failures, "interrupted"
         if refresh_status.startswith("failed"):
             report_refresh_failures += 1
         env.ctx.report_status = report_after
@@ -408,27 +422,33 @@ async def _run_investigation_loop(env: _InvestigateEnv) -> tuple[str, int, str]:
     return "stopped", report_refresh_failures, planner_only_reason or "max_iterations"
 
 
-async def _final_report_refresh(env: _InvestigateEnv) -> int:
+async def _final_report_refresh(
+    env: _InvestigateEnv, *, allow_narration: bool = True
+) -> int:
     """Render every section once at the final DB state. Returns 1 on failure, else 0.
 
     Run after loop termination so stale sections from late-cycle resolutions
     reach the rendered report.
     """
     try:
-        await async_refresh_report_sections(
-            case=env.case,
-            db=env.db,
-            session_id=env.session_id,
-            iteration=env.max_iter + 1,
-            base_url=env.base_url,
-            model=env.model,
-            sections=env.report_sections,
-            progress_callback=env.progress_callback,
-            focus_sections=[],
-        )
+        with telemetry_scope(iteration=env.max_iter + 1):
+            await async_refresh_report_sections(
+                case=env.case,
+                db=env.db,
+                session_id=env.session_id,
+                iteration=env.max_iter + 1,
+                base_url=env.base_url,
+                model=env.model,
+                sections=env.report_sections,
+                progress_callback=env.progress_callback,
+                focus_sections=[],
+                allow_narration=allow_narration,
+            )
         render_written_report(env.case, env.db)
         return 0
     except LLMBudgetExceededError:
+        raise
+    except InvestigationStopped:
         raise
     except Exception as exc:
         _log(
@@ -570,6 +590,46 @@ async def investigate(
     status = "running"
     stop_reason_code = ""
     report_refresh_failures = 0
+    finished_at: datetime | None = None
+    terminal_receipt: tuple[str, str] | None = None
+    stopped_classification_attempted = False
+
+    def persist_terminal_receipt() -> None:
+        nonlocal finished_at, terminal_receipt
+        if finished_at is None:
+            finished_at = datetime.now(UTC).replace(tzinfo=None)
+        reason = format_terminal_reason(status, cause=stop_reason_code)
+        persist_session_terminal_receipt(
+            db,
+            session_id,
+            status,
+            terminal_reason=reason,
+            finished_at=finished_at,
+            owner_id=owner_id,
+        )
+        terminal_receipt = (status, reason)
+
+    def classify_stopped_work() -> None:
+        nonlocal stopped_classification_attempted
+        if (
+            stopped_classification_attempted
+            or status != "stopped"
+            or stop_reason_code not in {"interrupted", "budget_exhausted"}
+            or env.report_only
+        ):
+            return
+        stopped_classification_attempted = True
+        try:
+            classify_active_hypotheses_on_stop(
+                db, state.active_hypotheses, stop_reason_code
+            )
+        except Exception as exc:
+            _log(
+                "FINALIZE",
+                f"stopped work classification failed: {exc}",
+                level="error",
+            )
+
     try:
         if report_decision.notice:
             _log("REPORT", report_decision.notice)
@@ -582,6 +642,8 @@ async def investigate(
             report_refresh_failures,
             stop_reason_code,
         ) = await _run_investigation_loop(env)
+        persist_terminal_receipt()
+        classify_stopped_work()
         # Persist the terminal state before the closing report pass so report
         # validation and narratives observe the same final state as the API.
         # Report-only is a report job (R07): it must not rewrite the Case stop
@@ -597,7 +659,7 @@ async def investigate(
             )
         if (
             status in {"completed", "stopped"}
-            and stop_reason_code != "budget_exhausted"
+            and stop_reason_code not in {"budget_exhausted", "interrupted"}
             and not ctx.interrupted
             and not is_stopped()
         ):
@@ -619,24 +681,10 @@ async def investigate(
         stop_reason_code = "exception"
         raise
     finally:
-        finished_at = datetime.now(UTC).replace(tzinfo=None)
-        # Persist the terminal session receipt before fallible projections.  A
-        # Audit-summary write must not leave a completed DB session
-        # looking permanently active.
         try:
-            terminal_reason = format_stop_reason(
-                status,
-                stop_reason_code,
-                stop_summary(db),
-            )
-            persist_session_terminal_receipt(
-                db,
-                session_id,
-                status,
-                terminal_reason=terminal_reason,
-                finished_at=finished_at,
-                owner_id=owner_id,
-            )
+            terminal_reason = format_terminal_reason(status, cause=stop_reason_code)
+            if terminal_receipt != (status, terminal_reason):
+                persist_terminal_receipt()
             db.execute(
                 "UPDATE trace.investigation_sessions SET iterations = ? "
                 "WHERE session_id = ? AND owner_id = ?",
@@ -663,6 +711,11 @@ async def investigate(
             )
         except Exception as exc:
             _log("FINALIZE", f"session receipt failed: {exc}", level="error")
+        if terminal_receipt == (
+            status,
+            format_terminal_reason(status, cause=stop_reason_code),
+        ):
+            classify_stopped_work()
         try:
             summary = stop_summary(db)
             if not env.report_only:
@@ -679,6 +732,20 @@ async def investigate(
                 f"investigation state projection failed: {exc}",
                 level="error",
             )
+        if status == "stopped" and stop_reason_code in {
+            "budget_exhausted",
+            "interrupted",
+        }:
+            try:
+                report_refresh_failures += await _final_report_refresh(
+                    env, allow_narration=False
+                )
+            except Exception as exc:
+                _log(
+                    "FINALIZE",
+                    f"deterministic closing report failed: {exc}",
+                    level="error",
+                )
         try:
             await close_llm_clients(client_scope_id)
         except Exception as exc:

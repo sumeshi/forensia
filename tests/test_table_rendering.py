@@ -91,12 +91,14 @@ class TableRenderingTests(unittest.TestCase):
 
     def test_render_table_block_prepends_caption(self) -> None:
         """R6-03: a mode:table block renders a declarative caption above the table."""
+        from forensia.config import Settings, settings_scope
         from forensia.report.answers.table_registry import render_table_block
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
-                body = render_table_block(db, "overview_evidence_scope")
+                with settings_scope(Settings(llm_output_language="en")):
+                    body = render_table_block(db, "overview_evidence_scope")
         self.assertIsNotNone(body)
         caption, _, rest = body.partition("\n\n")
         self.assertFalse(
@@ -108,15 +110,34 @@ class TableRenderingTests(unittest.TestCase):
 
     def test_render_table_block_empty_rows_render_declared_text(self) -> None:
         """R6-03: an empty result renders the declared empty text, not a bare table."""
+        from forensia.config import Settings, settings_scope
         from forensia.report.answers.table_registry import render_table_block
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
-                body = render_table_block(db, "gaps_untestable")
+                with settings_scope(Settings(llm_output_language="en")):
+                    body = render_table_block(db, "gaps_untestable")
         self.assertIsNotNone(body)
         self.assertNotIn("|", body, "no table for zero rows")
         self.assertIn("untestable", body)
+
+    def test_default_table_captions_and_headers_follow_output_language(self) -> None:
+        from forensia.config import Settings, settings_scope
+        from forensia.report.answers.table_registry import render_table_block
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                with settings_scope(Settings(llm_output_language="ja")):
+                    japanese = render_table_block(db, "overview_evidence_scope")
+                with settings_scope(Settings(llm_output_language="en")):
+                    english = render_table_block(db, "overview_evidence_scope")
+
+        self.assertIn("取込み元と正規化済み証拠", japanese)
+        self.assertIn("| 指標 | 値 | 範囲 |", japanese)
+        self.assertIn("Ingested evidence source counts", english)
+        self.assertIn("| Metric | Value | Scope |", english)
 
     def test_render_table_block_unknown_builder_returns_none(self) -> None:
         from forensia.report.answers.table_registry import render_table_block
@@ -157,6 +178,60 @@ class TableRenderingTests(unittest.TestCase):
         iexplore = next(r for r in rows if r["executable"] == "IEXPLORE.EXE")
         self.assertEqual(16, int(iexplore["execution_count"]))
         self.assertIn("15:22:07", str(iexplore["last_execution"]))
+
+    def test_account_summary_ties_have_stable_rows_and_host(self) -> None:
+        from forensia.report.answers.summary_rows import _account_summary_rows
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                for number in reversed(range(12)):
+                    db.execute(
+                        """
+                        INSERT INTO evtx_events (
+                            evidence_id, event_id, timestamp, computer, channel,
+                            raw_json, target_user
+                        ) VALUES (?, 4624, ?, 'HOST-A', 'Security', ?, ?)
+                        """,
+                        (
+                            f"evtx-{number:064x}-security-{number:012}",
+                            datetime(2015, 3, 22, 14, number),
+                            '{"winlog":{"provider":{"name":"Microsoft-Windows-Security-Auditing"}}}',
+                            f"user-{number:02}",
+                        ),
+                    )
+                db.execute(
+                    """
+                    INSERT INTO evtx_events (
+                        evidence_id, event_id, timestamp, computer, channel,
+                        raw_json, target_user
+                    ) VALUES (?, 4624, ?, 'host-a', 'Security', ?, 'user-00')
+                    """,
+                    (
+                        "evtx-" + "f" * 64 + "-security-999999999999",
+                        datetime(2015, 3, 22, 15, 0),
+                        '{"winlog":{"provider":{"name":"Microsoft-Windows-Security-Auditing"}}}',
+                    ),
+                )
+
+                rows = _account_summary_rows(db)
+                repeated_rows = _account_summary_rows(db)
+                from forensia.report.answers.table_registry import render_table_block
+
+                rendered = render_table_block(db, "technical_accounts", rows=rows)
+
+        self.assertEqual(rows, repeated_rows)
+        self.assertEqual(
+            [f"user-{number:02}" for number in range(10)],
+            [row["account"] for row in rows],
+        )
+        self.assertEqual("HOST-A", rows[0]["computer"])
+        self.assertEqual(2, rows[0]["logons"])
+        self.assertEqual(
+            "evtx-" + "0" * 64 + "-security-000000000000",
+            rows[0]["evidence_id"],
+        )
+        self.assertIn(rows[0]["evidence_id"], rendered)
 
     def test_log_integrity_keypoints_ignore_non_eventlog_104(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

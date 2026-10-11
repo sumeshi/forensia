@@ -9,6 +9,9 @@ from forensia.core.case import Case, detect_epochs
 from forensia.db.database import CaseDB
 from forensia.db.query import fetch_records
 from forensia.knowledge.catalog import (
+    event_context_sql,
+)
+from forensia.knowledge.catalog import (
     load_event_class_definitions as _load_event_class_definitions,
 )
 from forensia.knowledge.questions import (
@@ -24,6 +27,13 @@ from forensia.report.answers.answer_store import (
     _structured_answer,
     _structured_rows,
     _text,
+)
+from forensia.report.answers.event_semantics import (
+    LOGOFF_EVENT_SQL,
+    SECURITY_BOOT_EVENT_SQL,
+    SUCCESS_LOGON_EVENT_SQL,
+    SYSTEM_SHUTDOWN_EVENT_SQL,
+    SYSTEM_STARTUP_EVENT_SQL,
 )
 from forensia.report.render.markdown import (
     _build_host_note,
@@ -101,7 +111,7 @@ def _build_last_human_logon(
             src_ip,
             evidence_id
         FROM evtx_events
-        WHERE event_id = 4624
+        WHERE {SUCCESS_LOGON_EVENT_SQL}
           AND {_human_user_predicate("target_user")}
           AND CAST(COALESCE(logon_type, '') AS VARCHAR) IN ('2', '7', '10', '11')
         ORDER BY timestamp DESC
@@ -126,7 +136,7 @@ def _build_last_human_logon(
                 src_ip,
                 evidence_id
             FROM evtx_events
-            WHERE event_id = 4624
+            WHERE {SUCCESS_LOGON_EVENT_SQL}
               AND {_human_user_predicate("target_user")}
             ORDER BY timestamp DESC
             LIMIT 1
@@ -165,7 +175,7 @@ def _build_last_shutdown_event(
 ) -> dict[str, Any]:
     rows = _structured_rows(
         db,
-        """
+        f"""
         SELECT
             timestamp AS shutdown_time,
             event_id,
@@ -173,8 +183,7 @@ def _build_last_shutdown_event(
             evidence_id,
             message
         FROM evtx_events
-        WHERE (event_id = 1074)
-           OR (event_id IN (6006, 6008) AND (channel IS NULL OR LOWER(channel) LIKE '%system%'))
+        WHERE {SYSTEM_SHUTDOWN_EVENT_SQL}
         ORDER BY timestamp DESC
         LIMIT 1
         """,
@@ -307,18 +316,21 @@ def _build_daily_session_activity(
 ) -> dict[str, Any]:
     rows = _structured_rows(
         db,
-        """
+        f"""
         SELECT
             CAST(CAST(timestamp AS DATE) AS VARCHAR) AS date,
-            SUM(CASE WHEN event_id IN (6005, 4608) THEN 1 ELSE 0 END) AS startup,
-            SUM(CASE WHEN event_id = 4624 THEN 1 ELSE 0 END) AS logons,
-            SUM(CASE WHEN event_id IN (4634, 4647) THEN 1 ELSE 0 END) AS logoff,
-            SUM(CASE WHEN event_id IN (1074, 6006, 6008) THEN 1 ELSE 0 END) AS shutdown
+            SUM(CASE WHEN ({SYSTEM_STARTUP_EVENT_SQL}) OR ({SECURITY_BOOT_EVENT_SQL}) AND event_id = 4608 THEN 1 ELSE 0 END) AS startup,
+            SUM(CASE WHEN ({SUCCESS_LOGON_EVENT_SQL}) THEN 1 ELSE 0 END) AS logons,
+            SUM(CASE WHEN ({LOGOFF_EVENT_SQL}) THEN 1 ELSE 0 END) AS logoff,
+            SUM(CASE WHEN ({SYSTEM_SHUTDOWN_EVENT_SQL}) THEN 1 ELSE 0 END) AS shutdown
         FROM evtx_events
         WHERE timestamp IS NOT NULL
           AND (
-            event_id IN (4608, 4624, 4634, 4647, 1074)
-            OR (event_id IN (6005, 6006, 6008) AND (channel IS NULL OR LOWER(channel) LIKE '%system%'))
+            ({SECURITY_BOOT_EVENT_SQL})
+            OR ({SUCCESS_LOGON_EVENT_SQL})
+            OR ({LOGOFF_EVENT_SQL})
+            OR ({SYSTEM_SHUTDOWN_EVENT_SQL})
+            OR ({SYSTEM_STARTUP_EVENT_SQL})
           )
         GROUP BY CAST(timestamp AS DATE)
         ORDER BY CAST(timestamp AS DATE)
@@ -350,7 +362,7 @@ def _build_daily_session_timeline_rows(
     if not all_event_ids:
         return []
 
-    id_list = ", ".join(str(eid) for eid in all_event_ids)
+    event_filter = event_context_sql(all_event_ids)
     startup_list = ", ".join(str(e) for e in startup_ids)
     shutdown_list = ", ".join(str(e) for e in shutdown_ids)
     logon_id_list = ", ".join(str(eid) for eid in logon_ids)
@@ -377,7 +389,7 @@ def _build_daily_session_timeline_rows(
             target_user,
             evidence_id
         FROM evtx_events
-        WHERE event_id IN ({id_list})
+        WHERE {event_filter}
           AND timestamp IS NOT NULL
 {hour_filter}
     ),

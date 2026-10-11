@@ -9,56 +9,98 @@ tables:
   overview_evidence_scope:
     caption: "Ingested evidence source counts and coverage ({row_count} metrics). Coverage state and reason are shown for each capability."
     empty: "No ingested evidence sources. Check the ingestion results."
+    caption_ja: "取込み元と正規化済み証拠の件数、観測可能な範囲です（{row_count} 指標）。能力ごとに状態と理由を示します。"
+    empty_ja: "取込み元はありません。取込み結果を確認してください。"
+    columns_ja: {metric: 指標, value: 値, scope: 範囲}
     max_rows: 50
   overview_systems_observed:
     caption: "{row_count} hosts observed ({sample(host, 3)}). Row counts and first/last seen timestamps show each host's activity period."
     empty: "No hosts could be identified from EVTX."
+    caption_ja: "EVTXから確認できたホストは{row_count}台です（{sample(host, 3)}）。行数と最初・最後の記録時刻は各ホストの観測期間を示します。"
+    empty_ja: "EVTXからホストを確認できませんでした。"
+    columns_ja: {host: ホスト, note: 注記, events: EVTX行, first_seen: 初回記録, last_seen: 最終記録}
     max_rows: 0
   overview_key_findings:
     caption: "{row_count} key findings ranked by severity. Top: \"{first.finding}\". Check confidence and rationale in the body and appendix."
     empty: "No high-confidence findings have been extracted yet."
+    caption_ja: "重要度順の主な所見は{row_count}件です。先頭: 「{first.finding}」。確度と根拠を本文および付録で確認してください。"
+    empty_ja: "現時点で高い確度の所見はありません。"
+    columns_ja: {finding: 所見, severity: 重要度, confidence: 確度, why_it_matters: 重要性, reference: 参照}
     max_rows: 0
   timeline_phase_summary:
     caption: "Daily activity phase summary ({row_count} days, {first.date} to {last.date}). The Interpretation column shows machine-determined priority review points."
     empty: "No events available to construct a phase summary."
+    caption_ja: "日ごとの活動概要です（{row_count}日、{first.date}〜{last.date}）。解釈欄は機械的に抽出した確認候補を示します。"
+    empty_ja: "活動概要を作成できるイベントはありません。"
+    columns_ja: {date: 日付, phase: 観測された活動, interpretation: 解釈, window: 時間範囲}
     max_rows: 0
   timeline_chronological:
     caption: "Chronological list of {row_count} notable events ({first.time} to {last.time}). Authentication, log manipulation, and notable app executions are ordered by time."
     empty: "No notable events have been extracted for the timeline."
+    caption_ja: "注目イベント{row_count}件を時刻順に示します（{first.time}〜{last.time}）。認証、ログ操作、注目アプリの実行を時刻順に並べています。"
+    empty_ja: "時系列に掲載する注目イベントはありません。"
+    columns_ja: {time: 時刻, host: ホスト, activity: 活動, subject: 対象, artifact: 証拠種別, evidence_id: 参照}
     max_rows: 0
   technical_accounts:
     caption: "Authentication activity summary by account ({row_count} rows). Key accounts: {sample(account, 3)}. 4624=successful logon, 4625=failed, 4648=explicit credential usage."
     empty: "Account aggregation could not be constructed from authentication events."
+    caption_ja: "アカウント別の認証概要は{row_count}行です。主なアカウント: {sample(account, 3)}。4624=成功、4625=失敗、4648=明示的資格情報の使用です。"
+    empty_ja: "認証イベントからアカウント別の集計を作成できませんでした。"
+    columns_ja: {account: アカウント, computer: ホスト, logons: 成功, failed_logons: 失敗, explicit_credential_events: 明示的資格情報, first_seen: 初回記録, last_seen: 最終記録, evidence_id: 参照}
     max_rows: 50
   technical_execution:
-    caption: "{row_count} notable executed files (cleaning tools and user apps prioritized). Representatives: {sample(executable_name, 3)}."
+    caption: "{row_count} notable executed files (cleaning tools and user apps prioritized). Representatives: {sample(executable, 3)}."
     empty: "No notable execution history was found from Prefetch."
+    caption_ja: "注目する実行ファイル{row_count}件です（清掃ツールとユーザーアプリを優先）。例: {sample(executable, 3)}。"
+    empty_ja: "Prefetchから注目する実行履歴は見つかりませんでした。"
+    columns_ja: {executable: 実行ファイル, execution_count: 実行回数, last_execution: 最終実行, evidence_id: 参照}
     max_rows: 30
   technical_files:
     caption: "{row_count} user-related file artifacts (sorted by most recent update). Representatives: {sample(file_name, 3)}."
     empty: "No notable user file artifacts have been extracted."
+    caption_ja: "ユーザー関連ファイルの証拠{row_count}件です（更新時刻順）。例: {sample(file_name, 3)}。"
+    empty_ja: "注目するユーザーファイルの証拠はありません。"
+    columns_ja: {timestamp: 時刻, file_name: ファイル名, file_path: パス, evidence_id: 参照}
     max_rows: 30
   technical_antiforensic:
     caption: "{row_count} anti-forensic candidates (log clearing events, tool executions, related artifacts). Do not conclude from single items; evaluate with surrounding operations."
     empty: "No anti-forensic traces have been detected."
+    caption_ja: "反フォレンジックの候補{row_count}件です（ログ消去イベント、ツール実行、関連ファイル）。単独の項目から結論せず、前後の操作と合わせて評価してください。"
+    empty_ja: "反フォレンジックの痕跡は見つかりませんでした。"
+    columns_ja: {type: 種別, timestamp: 時刻, artifact: 対象, context: 文脈, computer: ホスト, evidence_id: 参照}
     max_rows: 0
   technical_network:
     caption: "Summary of normalized network traces. If external source/destination row counts are 0, external communication evidence has not been normalized in this dataset."
     empty: "Network traces have not been normalized."
+    caption_ja: "正規化されたネットワーク記録の概要です。外部送信元・宛先の行数が0の場合、このデータセットでは外部通信の証拠が正規化されていません。"
+    empty_ja: "ネットワーク記録は正規化されていません。"
+    columns_ja: {area: 範囲, ip_address: IPアドレス, outbound_rows: 外向き行数, inbound_rows: 内向き行数, interpretation: 解釈}
     max_rows: 0
   gaps_unresolved:
     caption: "{row_count} unresolved hypotheses. Latest rationale and Needed evidence guide re-investigation priority."
     empty: "No unresolved hypotheses."
+    caption_ja: "未解決の仮説は{row_count}件です。最新の理由と必要な証拠は再調査の参考です。"
+    empty_ja: "未解決の仮説はありません。"
+    columns_ja: {hypothesis_id: 仮説ID, hypothesis: 仮説, status: 状態, evidence_rows: 関連証拠数, missing_rationale: 未解決の理由, next_step: 次の手順, task_id: Task / 登録状態, gap_id: Gap / 登録状態}
     max_rows: 0
   gaps_untestable:
     caption: "{row_count} hypotheses deemed untestable with the current dataset. Acquiring missing telemetry is the condition for resuming verification."
     empty: "No hypotheses were deemed untestable."
+    caption_ja: "現在のデータで検証できない仮説は{row_count}件です。検証を再開するには不足するテレメトリが必要です。"
+    empty_ja: "検証不能と判断された仮説はありません。"
+    columns_ja: {hypothesis_id: 仮説ID, hypothesis: 仮説, missing_telemetry: 不足するテレメトリ, rationale: 理由, next_step: 次の手順, task_id: Task / 登録状態, gap_id: Gap / 登録状態}
     max_rows: 0
   gaps_evidence:
     caption: "{row_count} evidence gaps that may affect conclusions."
     empty: "No recorded evidence gaps."
+    caption_ja: "結論に影響する可能性がある証拠の不足は{row_count}件です。"
+    empty_ja: "記録された証拠不足はありません。"
+    columns_ja: {gap: 不足事項, why_it_matters: 影響, next_step: 次の手順}
     max_rows: 0
   recommendations_action_plan:
     caption: "{row_count} recommended actions ranked by priority. The Evidence/Gap column corresponds to the finding or gap that supports the action."
     empty: "No findings or gaps available to derive recommended actions."
+    caption_ja: "所見とGapに対応する推奨対応{row_count}件です。Evidence/Gap欄は各対応の根拠となる所見またはGapを示します。"
+    empty_ja: "推奨対応を導く所見またはGapはありません。"
+    columns_ja: {priority: 優先度, action: 対応, rationale: 理由, evidence_or_gap: 根拠/Gap, validation: 検証基準}
     max_rows: 0

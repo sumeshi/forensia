@@ -217,9 +217,17 @@ def test_public_background_runtime_stop_busy_and_idle_overwrite(tmp_path):
             {"type": "command", "command_id": "public-stop-1", "operation": "stop"}
         )
         assert accepted_stop["status"] == "accepted"
+        waiting_snapshot = client.request({"type": "snapshot"})
+        waiting_session = waiting_snapshot["session"]
+        assert waiting_session["provider_wait"]["waiting"] is True
+        assert waiting_session["provider_wait"]["stop_requested"] is True
+        assert waiting_session["phase"] == "waiting_for_llm"
         provider.release_request.set()
         stopped = _receipt(client, "public-stop-1", "stop")
         assert stopped["status"] == "applied"
+        stopped_snapshot = client.request({"type": "snapshot"})
+        assert stopped_snapshot["session"]["status"] == "stopped"
+        assert stopped_snapshot["session"]["provider_wait"]["waiting"] is False
         with CaseDB(Case.open(case_dir), read_only=True) as db:
             original_session_count = db.execute(
                 "SELECT COUNT(*) FROM trace.investigation_sessions"
@@ -228,6 +236,13 @@ def test_public_background_runtime_stop_busy_and_idle_overwrite(tmp_path):
                 "SELECT status FROM trace.runtime_commands WHERE command_id = ?",
                 ["public-stop-1"],
             ).fetchone()[0]
+            call_status, provider_status = db.execute(
+                "SELECT c.status, a.status FROM trace.llm_logical_calls c "
+                "JOIN trace.llm_provider_attempts a USING (logical_call_id) "
+                "WHERE c.session_id = (SELECT session_id FROM trace.investigation_sessions "
+                "WHERE status = 'stopped' ORDER BY started_at DESC LIMIT 1) "
+                "ORDER BY a.retry_ordinal LIMIT 1"
+            ).fetchone()
             policy_adopted = db.execute(
                 "SELECT COUNT(*) FROM trace.investigation_steps "
                 "WHERE phase = 'forensia-md' "
@@ -243,6 +258,8 @@ def test_public_background_runtime_stop_busy_and_idle_overwrite(tmp_path):
                 [str(template.resolve())],
             ).fetchone()[0]
         assert status == "applied"
+        assert call_status == "discarded"
+        assert provider_status == "success"
         assert policy_adopted == 1
         assert report_adopted >= 1
 

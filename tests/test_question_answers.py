@@ -24,6 +24,77 @@ from forensia.report.sections.section_quality import validate_body_evidence_ids
 class QuestionAnswerTests(unittest.TestCase):
     """Structured question/keypoint SQL answers and evidence-id validation."""
 
+    def test_host_execution_keypoint_requires_event_context(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with CaseDB(Case.init(tmpdir)) as db:
+                events = [
+                    (
+                        4104,
+                        "Application",
+                        "Microsoft-Windows-Winlogon",
+                        "wrong-channel",
+                    ),
+                    (
+                        4104,
+                        "Microsoft-Windows-PowerShell/Operational",
+                        "Microsoft-Windows-Winlogon",
+                        "wrong-provider",
+                    ),
+                    (
+                        4104,
+                        "Microsoft-Windows-PowerShell/Operational",
+                        "Microsoft-Windows-PowerShell",
+                        "powershell-event",
+                    ),
+                    (
+                        4104,
+                        "Microsoft-Windows-PowerShell/Operational",
+                        None,
+                        "missing-provider",
+                    ),
+                    (
+                        4688,
+                        "Security",
+                        "Microsoft-Windows-Security-Auditing",
+                        "process-event",
+                    ),
+                ]
+                for index, (event_id, channel, provider, evidence_id) in enumerate(
+                    events
+                ):
+                    raw_json = json.dumps(
+                        {"winlog": {"provider": {"name": provider}}}
+                        if provider
+                        else {"winlog": {}}
+                    )
+                    db.execute(
+                        """
+                        INSERT INTO evtx_events (
+                            evidence_id, event_id, channel, timestamp, computer,
+                            process_name, raw_json
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            f"evtx-{index}",
+                            event_id,
+                            channel,
+                            datetime(2015, 3, 22, 14, index),
+                            "PC-01",
+                            evidence_id,
+                            raw_json,
+                        ),
+                    )
+
+                result = resolve_evidence_results(
+                    db, keypoints=["host_execution_activity"]
+                )[0]
+
+            self.assertEqual(2, result["row_count"])
+            self.assertEqual(
+                {"powershell-event", "process-event"},
+                {row["process_name"] for row in result["sample_rows"]},
+            )
+
     def test_benchmark_keypoint_sql_executes_on_minimal_schema(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -204,18 +275,21 @@ class QuestionAnswerTests(unittest.TestCase):
                 db.execute(
                     """
                     INSERT INTO evtx_events (
-                        evidence_id, event_id, timestamp, computer, target_user, logon_type, process_name, src_ip
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        evidence_id, event_id, channel, timestamp, computer, target_user,
+                        logon_type, process_name, src_ip, raw_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000001",
                         4624,
+                        "Security",
                         datetime(2015, 3, 22, 14, 34, 28),
                         "informant-PC",
                         "informant",
                         "2",
                         r"C:\Windows\System32\winlogon.exe",
                         "127.0.0.1",
+                        '{"winlog":{"provider":{"name":"Microsoft-Windows-Security-Auditing"}}}',
                     ),
                 )
                 answer = build_structured_answer(
@@ -257,12 +331,25 @@ class QuestionAnswerTests(unittest.TestCase):
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
                 db.execute(
-                    "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer) VALUES (?, ?, ?, ?)",
+                    "INSERT INTO evtx_events (evidence_id, event_id, channel, timestamp, computer, raw_json) VALUES (?, ?, ?, ?, ?, ?)",
                     (
                         "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-system-000000000001",
                         6006,
+                        "System",
                         datetime(2015, 3, 22, 14, 38, 16),
                         "informant-PC",
+                        '{"winlog":{"provider":{"name":"EventLog"}}}',
+                    ),
+                )
+                db.execute(
+                    "INSERT INTO evtx_events (evidence_id, event_id, channel, timestamp, computer, raw_json) VALUES (?, ?, ?, ?, ?, ?)",
+                    (
+                        "evtx-wrong-context",
+                        6006,
+                        "Application",
+                        datetime(2015, 3, 24, 14, 38, 16),
+                        "informant-PC",
+                        '{"winlog":{"provider":{"name":"Microsoft-Windows-Winlogon"}}}',
                     ),
                 )
                 db.execute(
@@ -296,8 +383,8 @@ class QuestionAnswerTests(unittest.TestCase):
                 db.execute(
                     "INSERT INTO evtx_events (evidence_id, channel, event_id, timestamp, computer) VALUES (?, ?, ?, ?, ?), (?, ?, ?, ?, ?), (?, ?, ?, ?, ?)",
                     (
-                        "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-system-000000000001",
-                        "System",
+                        "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000001",
+                        "Security",
                         1100,
                         datetime(2015, 3, 25, 15, 31, 0),
                         "informant-PC",
@@ -312,6 +399,10 @@ class QuestionAnswerTests(unittest.TestCase):
                         datetime(2015, 3, 25, 15, 33, 0),
                         "informant-PC",
                     ),
+                )
+                db.execute(
+                    "UPDATE evtx_events SET raw_json = ? WHERE event_id IN (1100, 1102)",
+                    ('{"winlog":{"provider":{"name":"Microsoft-Windows-Eventlog"}}}',),
                 )
                 db.execute(
                     "INSERT INTO prefetch_executions (evidence_id, executable_name, exec_count, last_exec_time) VALUES (?, ?, ?, ?)",
@@ -744,6 +835,19 @@ class DailySessionTimelineBuilderTests(unittest.TestCase):
                         None,
                     ),
                 )
+                db.execute(
+                    """
+                    UPDATE evtx_events
+                    SET channel = CASE WHEN event_id IN (6005, 6006, 6008, 12, 13, 1074) THEN 'System' ELSE 'Security' END,
+                        raw_json = CASE
+                          WHEN event_id IN (6005, 6006, 6008) THEN '{"winlog":{"provider":{"name":"EventLog"}}}'
+                          WHEN event_id IN (12, 13) THEN '{"winlog":{"provider":{"name":"Microsoft-Windows-Kernel-General"}}}'
+                          WHEN event_id = 1074 THEN '{"winlog":{"provider":{"name":"User32"}}}'
+                          ELSE '{"winlog":{"provider":{"name":"Microsoft-Windows-Security-Auditing"}}}'
+                        END
+                    WHERE event_id IN (6005, 6006, 6008, 12, 13, 4624, 4634, 4647, 1074)
+                    """
+                )
 
                 rows = build_structured_answer(
                     case,
@@ -813,6 +917,17 @@ class DailySessionTimelineBuilderTests(unittest.TestCase):
                         "alice",
                         "2",
                     ),
+                )
+                db.execute(
+                    """
+                    UPDATE evtx_events
+                    SET channel = CASE WHEN event_id = 6005 THEN 'System' ELSE 'Security' END,
+                        raw_json = CASE WHEN event_id = 6005
+                          THEN '{"winlog":{"provider":{"name":"EventLog"}}}'
+                          ELSE '{"winlog":{"provider":{"name":"Microsoft-Windows-Security-Auditing"}}}'
+                        END
+                    WHERE event_id IN (6005, 4624)
+                    """
                 )
 
                 rows = build_structured_answer(

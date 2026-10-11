@@ -26,6 +26,7 @@ from forensia.investigation.work_judgment import (
     work_context_snapshot,
 )
 from forensia.investigation.work_state import (
+    broad_plan_terminal_facts,
     classify_active_hypotheses_on_stop,
     ensure_objective_gap,
     format_stop_reason,
@@ -177,6 +178,112 @@ class WorkContextSnapshotTests(unittest.TestCase):
 
 
 class StopClassificationTests(unittest.TestCase):
+    def test_broad_plan_terminal_facts_preserve_candidate_and_wait_reasons(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with CaseDB(Case.init(tmpdir)) as db:
+                db.execute(
+                    "INSERT INTO trace.investigation_steps "
+                    "(step_id, session_id, iteration, phase, input_json, output_json, created_at) "
+                    "VALUES ('S-FACTS-plan', 'S-FACTS', 1, 'plan-broad', '{}', ?, now())",
+                    [
+                        json.dumps(
+                            {
+                                "status": "completed",
+                                "candidate_summary": {
+                                    "candidate_count": 9,
+                                    "eligible_candidate_count": 6,
+                                    "unexamined_candidate_count": 4,
+                                    "draft_cap_omitted_count": 2,
+                                    "attempt_exhausted_count": 1,
+                                },
+                                "candidate_outcomes": [],
+                            }
+                        )
+                    ],
+                )
+                db.execute(
+                    "INSERT INTO trace.investigation_steps "
+                    "(step_id, session_id, iteration, phase, input_json, output_json, created_at) "
+                    "VALUES ('S-FACTS-candidate', 'S-FACTS', 1, 'plan-broad-candidate', ?, ?, now())",
+                    [
+                        json.dumps({"candidate_ref": "cand-1"}),
+                        json.dumps(
+                            {
+                                "status": "feasibility_rejected",
+                                "reason": "observation_count_unreachable: requested 8, population 2",
+                                "correction_calls_used": 1,
+                            }
+                        ),
+                    ],
+                )
+                hypothesis = _insert_hypothesis(db, "H-FACTS")
+                db.execute(
+                    "UPDATE hypotheses SET verification_spec = ? WHERE hypothesis_id = ?",
+                    [
+                        json.dumps(
+                            {
+                                "spec_version": "1",
+                                "required_capabilities": ["process_execution"],
+                            }
+                        ),
+                        hypothesis.id,
+                    ],
+                )
+                db.execute(
+                    "INSERT INTO investigation_tasks "
+                    "(task_id, kind, status, hypothesis_id, required_capability, required_source, retry_condition, created_at, updated_at) "
+                    "VALUES ('TASK-FACTS', 'blocked', 'open', 'H-FACTS', 'process_execution', 'prefetch', 'required_capability_available', now(), now())"
+                )
+                db.execute(
+                    "INSERT INTO investigation_tasks "
+                    "(task_id, kind, status, hypothesis_id, required_source, retry_condition, created_at, updated_at) "
+                    "VALUES ('TASK-FACTS-EXTERNAL', 'evidence_acquisition', 'open', 'H-FACTS', 'prefetch', 'new_evidence_or_coverage', now(), now())"
+                )
+
+                facts = broad_plan_terminal_facts(db, "S-FACTS")
+
+                self.assertEqual(facts["candidate_count"], 9)
+                self.assertEqual(facts["unexamined_candidate_count"], 4)
+                self.assertEqual(facts["attempt_exhausted_count"], 1)
+                self.assertEqual(
+                    facts["rejection_reasons"],
+                    {"observation_count_unreachable: requested 8, population 2": 1},
+                )
+                self.assertTrue(facts["awaiting_proposal_correction"])
+                self.assertTrue(facts["awaiting_external_evidence"])
+                self.assertTrue(facts["awaiting_capability"])
+                self.assertEqual(facts["external_wait_task_count"], 1)
+                self.assertEqual(facts["capability_wait_task_count"], 1)
+
+    def test_candidate_metrics_count_parsed_feasibility_rejection_only(self) -> None:
+        from scripts.eval.run import _candidate_workflow
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with CaseDB(Case.init(tmpdir)) as db:
+                for step_id, output in (
+                    (
+                        "S-METRIC-feasibility",
+                        {"status": "feasibility_rejected", "draft": {"id": "H-METRIC"}},
+                    ),
+                    ("S-METRIC-budget", {"status": "budget_exhausted"}),
+                ):
+                    db.execute(
+                        "INSERT INTO trace.investigation_steps "
+                        "(step_id, session_id, iteration, phase, input_json, output_json, created_at) "
+                        "VALUES (?, 'S-METRIC', 1, 'plan-broad-candidate', '{}', ?, now())",
+                        [step_id, json.dumps(output)],
+                    )
+
+                workflow = _candidate_workflow(db)
+
+        self.assertEqual(
+            workflow["candidate_outcome_counts"]["feasibility_rejected"], 1
+        )
+        self.assertEqual(workflow["candidate_outcome_counts"]["budget_exhausted"], 1)
+        self.assertEqual(workflow["draft_reached"]["value"], 1)
+
     def test_typed_observation_infeasibility_blocks_selection_and_stop(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             with CaseDB(Case.init(tmpdir)) as db:
@@ -284,9 +391,9 @@ class StopClassificationTests(unittest.TestCase):
                 self.assertFalse(judgment.runnable)
                 self.assertTrue(
                     any(
-                        blocker.code == "observation_required_entity_unobservable"
+                        blocker.code == "required_entity_unobservable"
                         and blocker.owner
-                        == "required entity columns absent from canonical schema: computer"
+                        == "required entity columns absent from canonical query-family schema: computer"
                         for blocker in judgment.blockers
                     )
                 )
@@ -971,6 +1078,30 @@ class RetryAndProjectionTests(unittest.TestCase):
                 self.assertEqual(report_row["gap_id"], gap_row[0])
                 self.assertEqual(task_row[1], gap_row[0])
                 self.assertEqual(task_row[2], report_row["hypothesis_id"])
+
+    def test_unadmitted_hypothesis_stays_visible_and_counts_linked_evidence(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with CaseDB(Case.init(tmpdir)) as db:
+                _insert_hypothesis(db, "H-001")
+                db.execute(
+                    "INSERT INTO trace.hypothesis_reasoning "
+                    "(entry_id, hypothesis_id, phase, body) VALUES "
+                    "('R-1', 'H-001', 'draft', 'one'), ('R-2', 'H-001', 'check', 'two')"
+                )
+                db.execute(
+                    "INSERT INTO hypothesis_evidence "
+                    "(link_id, hypothesis_id, evidence_id) "
+                    "VALUES ('HE-1', 'H-001', 'evtx-evidence-1')"
+                )
+
+                row = _build_gaps_unresolved_table(db)[0]
+
+        self.assertEqual(1, row["evidence_rows"])
+        self.assertEqual("未登録（未採用）", row["task_id"])
+        self.assertEqual("未登録（未採用）", row["gap_id"])
+        self.assertIn("TaskとGap", row["next_step"])
 
 
 class StopSummaryTests(unittest.TestCase):

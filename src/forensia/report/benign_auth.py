@@ -12,6 +12,10 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any
 
+from forensia.knowledge.catalog import (
+    event_context_eligible,
+    event_context_from_row,
+)
 from forensia.knowledge.resources import schema_dir
 
 
@@ -85,11 +89,8 @@ def normalise_ip(value: Any) -> str:
 def finding_is_auth_scoped(rule_id: Any, title: Any) -> bool:
     """Return True when a finding is scoped to authentication events.
 
-    Rule queries commonly filter on an auth event ID (``WHERE event_id =
-    4648``) without SELECTing the column, so the evidence rows carry no
-    ``event_id``. The finding's rule_id / title still name the event
-    (``windows-security-4648-...``, ``... (4648): ...``), which lets the
-    benign predicate apply to such rows.
+    This is a routing hint only. It cannot qualify evidence without the row's
+    event ID, channel, and provider.
     """
     blob = f"{rule_id or ''} {title or ''}"
     if not blob.strip():
@@ -100,32 +101,25 @@ def finding_is_auth_scoped(rule_id: Any, title: Any) -> bool:
     )
 
 
-def is_benign_local_auth(
-    evidence_row: dict, *, assume_auth_event: bool = False
-) -> bool:
+def is_benign_local_auth(evidence_row: dict) -> bool:
     """Return True if the evidence row represents benign local authentication.
 
-    Benign when the event is an authentication event (4624 / 4648, or an
-    auth-scoped finding via ``assume_auth_event``) AND ``src_ip`` is loopback
+    Benign when the row contains a catalog-qualified authentication event AND ``src_ip`` is loopback
     (127.0.0.1 / ::1 / localhost / empty). Loopback means the authentication
     originated on the local machine, so it is local system activity — not
     lateral movement, which cannot present as a loopback source.
 
     Non-loopback authentication is not treated as benign here.
 
-    ``assume_auth_event`` lets callers that already know the row comes from
-    an authentication-scoped finding (see :func:`finding_is_auth_scoped`)
-    apply the predicate to rows whose SELECT did not include ``event_id``.
-    A present-but-non-auth event_id is still rejected.
     """
     src_ip = normalise_ip(evidence_row.get("src_ip"))
     event_id = str(evidence_row.get("event_id") or "").strip()
 
     # Only meaningful for logon events
-    if event_id:
-        if event_id not in _load_auth_event_ids():
-            return False
-    elif not assume_auth_event:
+    if not event_id or event_id not in _load_auth_event_ids():
+        return False
+    channel, provider = event_context_from_row(evidence_row)
+    if not event_context_eligible(event_id, channel=channel, provider=provider):
         return False
 
     is_loopback = src_ip in _load_benign_auth_policy().local_source_values

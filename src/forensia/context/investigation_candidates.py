@@ -146,6 +146,7 @@ def _projection_sql(*, include_members: bool = False) -> str:
                {"list_sort(list(evidence_id)) AS all_evidence_ids," if include_members else ""}
                {"list_sort(list_distinct(flatten(list(rule_ids)))) AS all_rule_ids," if include_members else ""}
                list_slice(list_sort(list(evidence_id)), 1, 3) AS representative_ids,
+               min(evidence_id) AS anchor_evidence_id,
                list_slice(list_sort(list_distinct(flatten(list(rule_ids)))), 1, 20) AS rule_ids,
                len(list_distinct(flatten(list(rule_ids)))) AS rule_count,
                arg_min(representative_finding_id, evidence_id) AS representative_finding_id,
@@ -163,38 +164,43 @@ def _projection_sql(*, include_members: bool = False) -> str:
     SELECT rules_key, source_key, source_family, scope_host, day_scope,
            evidence_count, match_count, representative_ids, rule_ids,
            rule_count, representative_finding_id,
-           entity_key_fingerprint, entity_is_unknown,
+           entity_key_fingerprint, entity_is_unknown, anchor_evidence_id,
            severity_rank, confidence, membership_hash
            {", all_evidence_ids" if include_members else ""}
            {", all_rule_ids" if include_members else ""}
       FROM grouped
     ),
-    bucket_order AS (
-        SELECT rules_key, source_key, scope_host, day_scope,
-               max(severity_rank) AS bucket_severity,
+    rule_ranked AS (
+        SELECT *,
                row_number() OVER (
-                   ORDER BY max(severity_rank) DESC, rules_key, source_key,
-                            scope_host, day_scope
-               ) AS bucket_rank
+                   PARTITION BY source_family, list_extract(rule_ids, 1)
+                   ORDER BY severity_rank DESC, evidence_count DESC, anchor_evidence_id
+               ) AS rule_candidate_rank
           FROM ranked_candidates
-         GROUP BY rules_key, source_key, scope_host, day_scope
+    ),
+    family_ranked AS (
+        SELECT *,
+               row_number() OVER (
+                   PARTITION BY source_family
+                   ORDER BY rule_candidate_rank, list_extract(rule_ids, 1),
+                            anchor_evidence_id
+               ) AS family_candidate_rank
+          FROM rule_ranked
     ),
     ordered AS (
         SELECT c.*,
                row_number() OVER (
-                   PARTITION BY c.rules_key, c.source_key, c.scope_host, c.day_scope
-                   ORDER BY c.severity_rank DESC, c.evidence_count DESC,
-                            c.entity_key_fingerprint
-               ) AS bucket_item_rank,
-               b.bucket_rank,
+                   PARTITION BY c.family_candidate_rank
+                   ORDER BY c.source_family, list_extract(c.rule_ids, 1),
+                            c.anchor_evidence_id
+               ) AS family_diversity_rank,
                count(*) OVER () AS candidate_population_count,
                sum(c.match_count) OVER () AS match_population_count,
                sum(c.evidence_count) OVER () AS evidence_population_count
-          FROM ranked_candidates c
-          JOIN bucket_order b USING (rules_key, source_key, scope_host, day_scope)
+          FROM family_ranked c
     )
     SELECT * FROM ordered
-     ORDER BY bucket_item_rank, bucket_rank
+     ORDER BY family_candidate_rank, family_diversity_rank
     """
 
 

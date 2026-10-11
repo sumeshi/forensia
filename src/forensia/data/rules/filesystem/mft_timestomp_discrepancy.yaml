@@ -1,6 +1,6 @@
 id: "filesystem-mft-timestamp-discrepancy"
 title: "MFT timestamp discrepancy observed"
-severity: medium
+severity: low
 confidence: 0.55
 required_fields:
 - file_name

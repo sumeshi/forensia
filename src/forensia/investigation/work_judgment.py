@@ -38,7 +38,7 @@ from forensia.investigation.verification.sufficiency import (
 )
 from forensia.knowledge.coverage import (
     derive_required_capabilities,
-    observation_feasibility_error,
+    verification_feasibility_error,
 )
 
 #: Coverage states from which a retrieval may run.  Selection, stop, and
@@ -62,17 +62,17 @@ _BLOCKER_MESSAGES = {
     "prerequisite": "waiting for prerequisite {owner}",
     "external_task": "waiting for external investigation task",
     "capability_unavailable": "required evidence capability unavailable",
-    "observation_required_entity_unobservable": (
-        "typed observation requires schema or hypothesis review: {owner}"
+    "required_entity_unobservable": (
+        "required entities are absent from the query family schema: {owner}"
     ),
     "observation_min_count_exceeds_current_family_count": (
         "typed observation needs more evidence: {owner}"
     ),
 }
 
-OBSERVATION_INFEASIBLE_CODES = frozenset(
+VERIFICATION_INFEASIBLE_CODES = frozenset(
     {
-        "observation_required_entity_unobservable",
+        "required_entity_unobservable",
         "observation_min_count_exceeds_current_family_count",
     }
 )
@@ -115,8 +115,7 @@ class WorkJudgment:
         if self.external_task_ids:
             return "human_or_external_result"
         if any(
-            blocker.code == "observation_required_entity_unobservable"
-            for blocker in self.blockers
+            blocker.code == "required_entity_unobservable" for blocker in self.blockers
         ):
             return "human_or_external_result"
         if self.unavailable_capabilities:
@@ -317,8 +316,8 @@ def judge_work(
         capabilities = tuple(spec_capabilities(raw_spec, hypothesis_id=hid))
         spec_payload = json.loads(raw_spec) if isinstance(raw_spec, str) else raw_spec
         support = spec_payload.get("support_conditions") or {}
-        observation_reason = (
-            observation_feasibility_error(
+        feasibility_reason = (
+            verification_feasibility_error(
                 db,
                 support,
                 json.loads(raw_entities)
@@ -326,7 +325,7 @@ def judge_work(
                 else raw_entities,
                 family_counts,
             )
-            if isinstance(support, dict) and "observation" in support
+            if isinstance(support, dict)
             else None
         )
         not_ready, _ = coverage_readiness(db, list(capabilities))
@@ -338,8 +337,8 @@ def judge_work(
         persisted_reason = str(blocked_reason or "").strip()
         if persisted_reason:
             blockers.append(Blocker("blocked", persisted_reason))
-        if observation_reason:
-            blockers.append(Blocker(*observation_reason))
+        if feasibility_reason:
+            blockers.append(Blocker(*feasibility_reason))
         blockers.extend(Blocker("external_task", task_id) for task_id in external)
         if selection_gate:
             gate_blockers: list[Blocker] = []

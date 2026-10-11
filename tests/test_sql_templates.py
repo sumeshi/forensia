@@ -67,11 +67,22 @@ class RenderQueryTemplateTests(unittest.TestCase):
             ),
             "q_powershell_after_logon": (
                 {"user": "alice", "hours": 24},
-                ("event_id IN (4688, 4104)", "15 minutes", "JOIN logons"),
+                (
+                    "event_id = 4688",
+                    "event_id = 4104",
+                    "15 minutes",
+                    "JOIN logons",
+                ),
             ),
             "q_service_or_task_after_host_logon": (
                 {"computer": "PC-01", "hours": 6},
-                ("event_id IN (4697, 7045, 4698)", "lower('PC-01')", "6 hours"),
+                (
+                    "event_id = 4697",
+                    "event_id = 7045",
+                    "event_id = 4698",
+                    "lower('PC-01')",
+                    "6 hours",
+                ),
             ),
         }
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -82,6 +93,82 @@ class RenderQueryTemplateTests(unittest.TestCase):
                         self.assertEqual(sql, validate_select_sql_with_dryrun(sql, db))
                         for fragment in fragments:
                             self.assertIn(fragment, sql)
+
+    def test_powershell_recipe_excludes_reused_event_ids_from_other_contexts(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with CaseDB(Case.init(tmpdir)) as db:
+                db.execute(
+                    """
+                    INSERT INTO evtx_events (
+                        evidence_id, event_id, channel, timestamp, computer,
+                        target_user, raw_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "logon",
+                        4624,
+                        "Security",
+                        "2015-03-22 14:00:00",
+                        "PC-01",
+                        "alice",
+                        '{"winlog":{"provider":{"name":"Microsoft-Windows-Security-Auditing"}}}',
+                    ),
+                )
+                candidates = (
+                    (
+                        4104,
+                        "Application",
+                        "Microsoft-Windows-Winlogon",
+                        "wrong-channel",
+                    ),
+                    (
+                        4104,
+                        "Microsoft-Windows-PowerShell/Operational",
+                        "Microsoft-Windows-Winlogon",
+                        "wrong-provider",
+                    ),
+                    (
+                        4104,
+                        "Microsoft-Windows-PowerShell/Operational",
+                        "Microsoft-Windows-PowerShell",
+                        "powershell-event",
+                    ),
+                    (
+                        4688,
+                        "Security",
+                        "Microsoft-Windows-Security-Auditing",
+                        "process-event",
+                    ),
+                )
+                for event_id, channel, provider, evidence_id in candidates:
+                    db.execute(
+                        """
+                        INSERT INTO evtx_events (
+                            evidence_id, event_id, channel, timestamp, computer,
+                            process_name, raw_json
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            evidence_id,
+                            event_id,
+                            channel,
+                            "2015-03-22 14:05:00",
+                            "PC-01",
+                            evidence_id,
+                            f'{{"winlog":{{"provider":{{"name":"{provider}"}}}}}}',
+                        ),
+                    )
+
+                sql = render_query_template(
+                    "q_powershell_after_logon", {"user": "alice", "hours": 24}
+                )
+                rows = db.execute(sql).fetchall()
+
+            self.assertEqual(
+                {"powershell-event", "process-event"}, {row[4] for row in rows}
+            )
 
     def test_required_params_and_unknown_ids_are_rejected(self) -> None:
         cases = (

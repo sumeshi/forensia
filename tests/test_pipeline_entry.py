@@ -95,6 +95,53 @@ def test_direct_python_stop_request_and_signal_handler_restore(tmp_path) -> None
     assert signal.getsignal(signal.SIGINT) is original
 
 
+def test_loop_stops_when_operator_requests_stop_during_report(tmp_path) -> None:
+    import asyncio
+    from threading import Event
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, patch
+
+    import forensia.investigation.investigator as investigator
+    from forensia.core.control import stop_scope
+
+    stop = Event()
+    env = SimpleNamespace(
+        max_iter=1,
+        report_only=True,
+        state=SimpleNamespace(
+            iteration=0, active_hypotheses=[], resolved_hypotheses=[]
+        ),
+        ctx=SimpleNamespace(interrupted=False),
+        db=None,
+        case=None,
+        session_id="session-stop",
+        base_url="",
+        model="",
+        progress_callback=None,
+        max_queries_per_hypothesis=1,
+        case_profile=None,
+        report_every_n_cycles=1,
+        report_sections=[],
+        no_progress_limit=1,
+    )
+
+    async def report_phase(**_kwargs):
+        stop.set()
+        return {}, "ok"
+
+    with (
+        patch.object(investigator, "evaluation_snapshot", return_value={}),
+        patch.object(
+            investigator, "_run_cycle_body", new=AsyncMock(return_value=(True, []))
+        ),
+        patch.object(investigator, "_run_report_phase", side_effect=report_phase),
+        stop_scope(stop),
+    ):
+        result = asyncio.run(investigator._run_investigation_loop(env))
+
+    assert result == ("stopped", 0, "interrupted")
+
+
 def test_python_entry_pins_markdown_before_evidence_work(tmp_path, monkeypatch) -> None:
     import forensia.pipeline as pipeline
     from forensia.investigation.case_policy import load_recorded_policy
@@ -131,6 +178,204 @@ def test_python_entry_pins_markdown_before_evidence_work(tmp_path, monkeypatch) 
         manual_resume=True,
     )
     assert output.is_file()
+
+
+@pytest.mark.parametrize("proposal_case", ["accepted", "invalid_entity"])
+def test_public_run_records_provider_planned_query_or_bounded_rejection(
+    tmp_path, monkeypatch, proposal_case
+) -> None:
+    import httpx
+
+    import forensia.llm.llm_client as llm_client
+    from forensia.pipeline import run_investigation
+
+    class Provider:
+        def __init__(self) -> None:
+            self.schemas: list[str] = []
+            self.requests: list[dict] = []
+
+        def post(self, url, json, headers):
+            self.requests.append(json)
+            schema = (
+                json.get("response_format", {}).get("json_schema", {}).get("schema", {})
+            )
+            title = str(schema.get("title") or "")
+            self.schemas.append(title)
+            if title not in {
+                "GapIdentifier",
+                "HypothesisDrafter",
+                "QueryIntentResponse",
+                "VerdictReview",
+                "FindingExtractor",
+                "ParagraphNarrate",
+            }:
+                raise AssertionError(f"unexpected provider schema: {title}")
+            responses = {
+                "GapIdentifier": {"gap_areas": []},
+                "HypothesisDrafter": {
+                    "hypothesis": {
+                        "description": "A new service named Updater was installed on host-01.",
+                        "required_entities": (
+                            ["not_a_column"]
+                            if proposal_case == "invalid_entity"
+                            else ["computer", "service_name"]
+                        ),
+                        "source_rule_ids": ["seed-service-rule"],
+                        "confirm_when": {
+                            "co_observed_event_ids": [4697],
+                            "event_contexts": [
+                                {
+                                    "event_id": 4697,
+                                    "channel": "Security",
+                                    "provider": "Microsoft-Windows-Security-Auditing",
+                                }
+                            ],
+                        },
+                    }
+                },
+                "QueryIntentResponse": {
+                    "action": {
+                        "type": "sql.query",
+                        "intent": "Inspect observed service installation on host-01",
+                        "target_table": "evtx_events",
+                        "template_id": "q_service_or_task_after_host_logon",
+                        "params": {"computer": "host-01", "hours": 24},
+                        "sql": "",
+                        "filters_required": ["event_id = 4697", "computer = host-01"],
+                        "time_window": "24 hours",
+                        "expected_row_shape": "service installation evidence",
+                    }
+                },
+                "VerdictReview": {
+                    "verdict": "confirmed",
+                    "rationale": "The observed service installation matches the declared event condition.",
+                    "missing_questions": [],
+                    "confidence": 0.9,
+                },
+                "FindingExtractor": {"findings": []},
+                "ParagraphNarrate": {
+                    "body": "The evidence records a service installation on host-01 and supports the bounded event claim."
+                },
+            }
+            payload = responses.get(title, {})
+            request = httpx.Request("POST", url)
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {
+                            "message": {"content": json_module.dumps(payload)},
+                            "finish_reason": "stop",
+                        }
+                    ]
+                },
+                request=request,
+            )
+
+    import json as json_module
+
+    provider = Provider()
+    monkeypatch.setattr(llm_client, "_get_http_client", lambda: provider)
+    case_dir = tmp_path / "case"
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+
+    def seed_observation(_case, db):
+        db.execute(
+            "INSERT INTO evtx_events (evidence_id, source_file, computer, timestamp, "
+            "event_id, channel, service_name, command_line, raw_json) VALUES "
+            "('evtx-service-event-1', 'seed-service-source', 'host-01', "
+            "'2026-01-01T00:00:00', 4697, 'Security', "
+            '\'Updater\', \'updater.exe\', \'{"winlog":{"provider":{"name":"Microsoft-Windows-Security-Auditing"}}}\')'
+        )
+        db.execute(
+            "INSERT INTO evidence_sources (source_id, artifact_family, display_path, "
+            "ingest_status, parser_name, parser_version, row_count) VALUES "
+            "('seed-service-source', 'evtx', 'seeded.evtx', 'normalized', 'evtx', 'test', 1)"
+        )
+        db.execute(
+            "INSERT INTO findings (finding_id, rule_id, title, summary, severity, "
+            "confidence, status, evidence) VALUES ('F-service-seed', 'seed-service-rule', "
+            "'Observed service installation', 'Service installation on host-01', "
+            "'medium', 0.8, 'accepted', ?)",
+            [json_module.dumps([{"evidence_id": "evtx-service-event-1"}])],
+        )
+
+    report = run_investigation(
+        case_dir,
+        input_dir=str(input_dir),
+        llm_base_url="http://provider.test",
+        model="controlled-provider",
+        max_iter=1,
+        max_llm_calls=12,
+        pre_investigation=seed_observation,
+    )
+    assert report.is_file()
+    from forensia.core.case import Case
+    from forensia.db.database import CaseDB
+    from forensia.investigation.work_state import broad_plan_terminal_facts
+
+    with CaseDB(Case.open(case_dir), read_only=True) as db:
+        do_outputs = db.execute(
+            "SELECT output_json FROM trace.investigation_steps WHERE phase = 'do' "
+            "ORDER BY created_at"
+        ).fetchall()
+        session_id = db.execute(
+            "SELECT session_id FROM trace.investigation_sessions ORDER BY started_at DESC LIMIT 1"
+        ).fetchone()[0]
+        if proposal_case == "invalid_entity":
+            facts = broad_plan_terminal_facts(db, session_id)
+            candidate_attempts = db.execute(
+                "SELECT output_json FROM trace.investigation_steps "
+                "WHERE phase = 'plan-broad-candidate'"
+            ).fetchall()
+            assert "QueryIntentResponse" not in provider.schemas
+            assert [
+                title for title in provider.schemas if title == "HypothesisDrafter"
+            ] == [
+                "HypothesisDrafter",
+                "HypothesisDrafter",
+            ]
+            assert facts["awaiting_proposal_correction"]
+            assert any(
+                json_module.loads(row[0]).get("status") == "feasibility_rejected"
+                for row in candidate_attempts
+            )
+            correction_request = [
+                request
+                for title, request in zip(provider.schemas, provider.requests)
+                if title == "HypothesisDrafter"
+            ][1]
+            self_feedback = "\n".join(
+                str(message.get("content"))
+                for message in correction_request["messages"]
+            )
+            assert "required_entity_unobservable" in self_feedback
+            assert (
+                json_module.loads(candidate_attempts[0][0])["correction_calls_used"]
+                == 1
+            )
+        else:
+            check = db.execute(
+                "SELECT output_json FROM trace.investigation_steps WHERE phase = 'check' "
+                "ORDER BY created_at DESC LIMIT 1"
+            ).fetchone()
+            settlement = db.execute(
+                "SELECT status, reason FROM trace.progress_events "
+                "WHERE kind = 'investigation.settlement' ORDER BY created_at DESC LIMIT 1"
+            ).fetchone()
+            final_hypothesis = db.execute(
+                "SELECT status FROM hypotheses ORDER BY created_at DESC LIMIT 1"
+            ).fetchone()
+            receipts = [
+                json_module.loads(row[0]).get("tool_receipt") for row in do_outputs
+            ]
+            assert "QueryIntentResponse" in provider.schemas
+            assert "VerdictReview" in provider.schemas
+            assert any(receipt and receipt.get("receipt_id") for receipt in receipts)
+            assert check and json_module.loads(check[0])["assessment"]["assessment_id"]
+            assert settlement and settlement[0] == "completed" and settlement[1]
+            assert final_hypothesis == ("confirmed",)
 
 
 def test_mft_only_resume_uses_normalization_receipt_and_parser_revision() -> None:
@@ -504,11 +749,12 @@ def test_case_root_forensia_md_is_adopted_recorded_and_routed_to_investigation_r
         phases_with_policy = {
             phase for (phase, system) in captured if "CASE_INSTRUCTIONS" in system
         }
-        assert phases_with_policy == {"plan-broad-draft"}, phases_with_policy
-        assert any(
+        assert phases_with_policy
+        assert phases_with_policy <= set(_POLICY_ROLES), phases_with_policy
+        assert all(
             "GUIDANCE-SENTINEL-495a" in system
             for (phase, system) in captured
-            if phase in _POLICY_ROLES
+            if phase in phases_with_policy
         )
         for phase, system in captured:
             if phase in _POLICY_ROLES:

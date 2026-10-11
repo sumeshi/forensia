@@ -252,7 +252,7 @@ question_types:
 
     evidence_chain:
       - source: evtx_events
-        query: "SELECT event_id, timestamp, computer, user_name, logon_type FROM evtx_events WHERE event_id IN (6005, 6006, 6008, 4624, 4634, 4647, 4776) ORDER BY timestamp"
+        query: "SELECT event_id, timestamp, computer, user_name, logon_type FROM evtx_events WHERE {{event_context:6005,6006,6008,4624,4634,4647,4776}} ORDER BY timestamp"
 
   - name: daily_session_timeline
     answer_spec: daily_session_timeline
@@ -395,7 +395,7 @@ question_types:
 
     evidence_chain:
       - source: evtx_events
-        query: "SELECT event_id, timestamp, computer FROM evtx_events WHERE event_id IN (104, 1102, 1100)"
+        query: "SELECT event_id, timestamp, computer FROM evtx_events WHERE {{event_context:104,1102}}"
       - source: mft_entries
         query: "SELECT file_name, file_path, si_modified FROM mft_entries WHERE {{catalog_exe_sql:antiforensic_tools:file_name}} OR {{catalog_artifact_sql:antiforensic_tools:file_name}}"
       - source: mft_entries
@@ -485,7 +485,7 @@ question_types:
       note: "Return the latest human-user logon event. Do not return daily aggregate counts."
     evidence_chain:
       - source: evtx_events
-        query: "SELECT timestamp AS logon_time, computer, target_user AS user_name, logon_type, process_name, src_ip, evidence_id FROM evtx_events WHERE event_id = 4624 ORDER BY timestamp DESC LIMIT 20"
+        query: "SELECT timestamp AS logon_time, computer, target_user AS user_name, logon_type, process_name, src_ip, evidence_id FROM evtx_events WHERE {{event_context:4624}} ORDER BY timestamp DESC LIMIT 20"
 
   - name: accounts_summary
     keywords:
@@ -496,7 +496,7 @@ question_types:
       - account_observed_users
     evidence_chain:
       - source: evtx_events
-        query: "SELECT DISTINCT target_user FROM evtx_events WHERE event_id IN (4624, 4720) AND target_user IS NOT NULL"
+        query: "SELECT DISTINCT target_user FROM evtx_events WHERE ({{event_context:4624}} OR event_id = 4720) AND target_user IS NOT NULL"
 
   - name: investigation_window
     answer_spec: last_shutdown_event
@@ -529,4 +529,4 @@ question_types:
       note: "Return the latest shutdown-relevant event only; do not use the overall last event timestamp."
     evidence_chain:
       - source: evtx_events
-        query: "SELECT timestamp, event_id, computer FROM evtx_events WHERE event_id IN (1074, 6005, 6006, 6008, 6013, 7001, 7002) ORDER BY timestamp"
+        query: "SELECT timestamp, event_id, computer FROM evtx_events WHERE ({{event_context:6005,6006,6008}} OR event_id IN (1074, 6013, 7001, 7002)) ORDER BY timestamp"

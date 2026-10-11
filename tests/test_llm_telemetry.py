@@ -376,6 +376,7 @@ def test_client_creates_attempt_receipts_for_retry_then_success(
     # one failed 500 attempt + one success attempt
     assert rows[0][0] == "provider_error" and rows[0][1] == 500
     assert rows[1][0] == "success" and rows[1][1] == 200
+    assert [row[2] for row in rows] == [0, 1]
     assert json.loads(rows[0][3])["messages"] == [{"role": "user", "content": "go"}]
     assert rows[0][4] == "boom"
     assert json.loads(rows[1][4])["choices"][0]["message"]["content"] == '{"ok": true}'

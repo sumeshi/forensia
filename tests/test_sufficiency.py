@@ -36,6 +36,15 @@ from forensia.investigation.verification.sufficiency import (
 )
 from forensia.knowledge.coverage import canonical_observation_claim
 
+_LOGON_EVENT_CONTEXT = {
+    "event_id": 4624,
+    "channel": "Security",
+    "provider": "Microsoft-Windows-Security-Auditing",
+}
+_LOGON_RAW_JSON = json.dumps(
+    {"winlog": {"provider": {"name": _LOGON_EVENT_CONTEXT["provider"]}}}
+)
+
 
 class SufficiencyEvaluationTests(unittest.TestCase):
     """Test evidence sufficiency evaluation logic."""
@@ -249,12 +258,22 @@ class SufficiencyEvaluationTests(unittest.TestCase):
         self.assertEqual(result.status, "unobservable")
 
     def test_assessment_uses_spec_and_tracks_condition_version(self) -> None:
-        rows = [{"evidence_id": "evtx-1", "event_id": 4624}]
+        rows = [
+            {
+                "evidence_id": "evtx-1",
+                "event_id": 4624,
+                "channel": "Security",
+                "provider": "Microsoft-Windows-Security-Auditing",
+            }
+        ]
         first = assess_evidence_group(
             hypothesis=Hypothesis(
                 id="H-HASH",
                 description="same",
-                confirm_when={"co_observed_event_ids": [4624]},
+                confirm_when={
+                    "co_observed_event_ids": [4624],
+                    "event_contexts": [dict(_LOGON_EVENT_CONTEXT)],
+                },
             ),
             rows=rows,
             evidence_ids=["evtx-1"],
@@ -297,12 +316,22 @@ class SufficiencyEvaluationTests(unittest.TestCase):
         hypothesis = Hypothesis(
             id="H-WITNESS",
             description="A successful logon was observed",
-            confirm_when={"co_observed_event_ids": [4624]},
+            confirm_when={
+                "co_observed_event_ids": [4624],
+                "event_contexts": [dict(_LOGON_EVENT_CONTEXT)],
+            },
         )
         rows = [
             {"evidence_id": f"evtx-{index:02d}", "event_id": 4625}
             for index in range(10)
-        ] + [{"evidence_id": "evtx-witness", "event_id": 4624}]
+        ] + [
+            {
+                "evidence_id": "evtx-witness",
+                "event_id": 4624,
+                "channel": "Security",
+                "provider": "Microsoft-Windows-Security-Auditing",
+            }
+        ]
         first = assess_evidence_group(
             hypothesis=hypothesis,
             rows=rows,
@@ -834,9 +863,18 @@ class SufficiencyEvaluationTests(unittest.TestCase):
             hypothesis=Hypothesis(
                 id="H-UNLINKABLE-WITNESS",
                 description="A successful logon was observed",
-                confirm_when={"co_observed_event_ids": [4624]},
+                confirm_when={
+                    "co_observed_event_ids": [4624],
+                    "event_contexts": [dict(_LOGON_EVENT_CONTEXT)],
+                },
             ),
-            rows=[{"event_id": 4624}],
+            rows=[
+                {
+                    "event_id": 4624,
+                    "channel": "Security",
+                    "provider": "Microsoft-Windows-Security-Auditing",
+                }
+            ],
             evidence_ids=["evtx-unlinked"],
         )
 
@@ -1229,9 +1267,9 @@ class CurrentLinkTests(unittest.TestCase):
         verification_spec: dict[str, Any] | None = None,
     ) -> None:
         db.execute(
-            "INSERT INTO evtx_events (evidence_id, source_file, event_id) "
-            "VALUES ('evtx-1', ?, 4624)",
-            [source_file],
+            "INSERT INTO evtx_events (evidence_id, source_file, channel, event_id, raw_json) "
+            "VALUES ('evtx-1', ?, 'Security', 4624, ?)",
+            [source_file, _LOGON_RAW_JSON],
         )
         spec = verification_spec or {"spec_version": "1"}
         db.execute(
@@ -1260,7 +1298,14 @@ class CurrentLinkTests(unittest.TestCase):
             )
             assessment = assess_evidence_group(
                 hypothesis=hypothesis,
-                rows=[{"evidence_id": "evtx-1", "event_id": 4624}],
+                rows=[
+                    {
+                        "evidence_id": "evtx-1",
+                        "event_id": 4624,
+                        "channel": "Security",
+                        "provider": _LOGON_EVENT_CONTEXT["provider"],
+                    }
+                ],
                 evidence_ids=["evtx-1"],
                 derivation_group="evtx-1",
             )
@@ -1323,8 +1368,9 @@ class CurrentLinkTests(unittest.TestCase):
                 # conservatively excluded from current support.
                 db.execute("DELETE FROM evtx_events WHERE evidence_id = 'evtx-1'")
                 db.execute(
-                    "INSERT INTO evtx_events (evidence_id, source_file, event_id) "
-                    "VALUES ('evtx-1', 'sha-new', 4624)"
+                    "INSERT INTO evtx_events (evidence_id, source_file, channel, event_id, raw_json) "
+                    "VALUES ('evtx-1', 'sha-new', 'Security', 4624, ?)",
+                    [_LOGON_RAW_JSON],
                 )
                 self.assertEqual(self._assess(db).status, "insufficient")
 
@@ -1333,8 +1379,9 @@ class CurrentLinkTests(unittest.TestCase):
                 # the link counts as current without re-assessment.
                 db.execute("DELETE FROM evtx_events WHERE evidence_id = 'evtx-1'")
                 db.execute(
-                    "INSERT INTO evtx_events (evidence_id, source_file, event_id) "
-                    "VALUES ('evtx-1', 'sha-a', 4624)"
+                    "INSERT INTO evtx_events (evidence_id, source_file, channel, event_id, raw_json) "
+                    "VALUES ('evtx-1', 'sha-a', 'Security', 4624, ?)",
+                    [_LOGON_RAW_JSON],
                 )
                 self.assertEqual(self._assess(db).status, "sufficient")
                 self.assertEqual(self._link_count(db), 1)
@@ -1440,7 +1487,10 @@ class CurrentLinkTests(unittest.TestCase):
             with CaseDB(Case.init(tmpdir)) as db:
                 original_spec = {
                     "spec_version": "1",
-                    "support_conditions": {"co_observed_event_ids": [4624]},
+                    "support_conditions": {
+                        "co_observed_event_ids": [4624],
+                        "event_contexts": [dict(_LOGON_EVENT_CONTEXT)],
+                    },
                 }
                 self._seed(db, verification_spec=original_spec)
                 before = load_evidence_links(db, "H-CUR", current_only=True)
@@ -1448,7 +1498,10 @@ class CurrentLinkTests(unittest.TestCase):
 
                 changed_spec = {
                     "spec_version": "1",
-                    "support_conditions": {"co_observed_event_ids": [4624]},
+                    "support_conditions": {
+                        "co_observed_event_ids": [4624],
+                        "event_contexts": [dict(_LOGON_EVENT_CONTEXT)],
+                    },
                     "refute_conditions": {"zero_rows": True},
                 }
                 db.execute(
@@ -1478,7 +1531,14 @@ class CurrentLinkTests(unittest.TestCase):
                 )
                 assessment = assess_evidence_group(
                     hypothesis=hypothesis,
-                    rows=[{"evidence_id": "evtx-1", "event_id": 4624}],
+                    rows=[
+                        {
+                            "evidence_id": "evtx-1",
+                            "event_id": 4624,
+                            "channel": "Security",
+                            "provider": _LOGON_EVENT_CONTEXT["provider"],
+                        }
+                    ],
                     evidence_ids=["evtx-1"],
                     derivation_group="evtx-1",
                 )
@@ -1546,17 +1606,25 @@ class CurrentLinkTests(unittest.TestCase):
 
         first_spec = {
             "spec_version": "1",
-            "support_conditions": {"co_observed_event_ids": [4624]},
+            "support_conditions": {
+                "co_observed_event_ids": [4624],
+                "event_contexts": [dict(_LOGON_EVENT_CONTEXT)],
+            },
         }
         changed_spec = {
             "spec_version": "1",
-            "support_conditions": {"co_observed_event_ids": [4624], "same_host": True},
+            "support_conditions": {
+                "co_observed_event_ids": [4624],
+                "event_contexts": [dict(_LOGON_EVENT_CONTEXT)],
+                "same_host": True,
+            },
         }
         with tempfile.TemporaryDirectory() as tmpdir:
             with CaseDB(Case.init(tmpdir)) as db:
                 db.execute(
-                    "INSERT INTO evtx_events (evidence_id, source_file, event_id) "
-                    "VALUES ('evtx-1', 'sha-a', 4624)"
+                    "INSERT INTO evtx_events (evidence_id, source_file, channel, event_id, raw_json) "
+                    "VALUES ('evtx-1', 'sha-a', 'Security', 4624, ?)",
+                    [_LOGON_RAW_JSON],
                 )
                 db.execute(
                     "INSERT INTO hypotheses (hypothesis_id, status, created_at, "
@@ -1580,7 +1648,15 @@ class CurrentLinkTests(unittest.TestCase):
                     )
 
                 assessment = _assess_under(
-                    first_spec, [{"evidence_id": "evtx-1", "event_id": 4624}]
+                    first_spec,
+                    [
+                        {
+                            "evidence_id": "evtx-1",
+                            "event_id": 4624,
+                            "channel": "Security",
+                            "provider": _LOGON_EVENT_CONTEXT["provider"],
+                        }
+                    ],
                 )
                 self.assertEqual(assessment.role, "supporting")
                 create_hypothesis_evidence_link(
@@ -1602,7 +1678,7 @@ class CurrentLinkTests(unittest.TestCase):
                 self.assertEqual(grounds[0][0], "matched support conditions")
                 self.assertEqual(
                     json.loads(grounds[0][1]),
-                    ["co_observed_event_ids"],
+                    ["co_observed_event_ids", "event_contexts"],
                 )
 
                 # Re-evaluation under a narrowed Spec: new assessment id,
@@ -1618,6 +1694,8 @@ class CurrentLinkTests(unittest.TestCase):
                         {
                             "evidence_id": "evtx-1",
                             "event_id": 4624,
+                            "channel": "Security",
+                            "provider": _LOGON_EVENT_CONTEXT["provider"],
                             "computer": "host-a",
                         }
                     ],
@@ -1647,11 +1725,11 @@ class CurrentLinkTests(unittest.TestCase):
                 )
                 self.assertEqual(
                     json.loads(rows[0][3]),
-                    ["co_observed_event_ids"],
+                    ["co_observed_event_ids", "event_contexts"],
                 )
                 self.assertEqual(
                     json.loads(rows[1][3]),
-                    ["co_observed_event_ids", "same_host"],
+                    ["co_observed_event_ids", "event_contexts", "same_host"],
                 )
                 self.assertNotEqual(rows[0][0], rows[1][0])
 
@@ -1671,7 +1749,9 @@ class CrossQueryIndependenceTests(unittest.TestCase):
             "INSERT INTO hypotheses (hypothesis_id, status, created_at, "
             "updated_at, verification_spec) VALUES ('H-XQ', 'active', now(), "
             'now(), \'{"spec_version": "1", "support_conditions": '
-            '{"co_observed_event_ids": [4624]}}\')'
+            '{"co_observed_event_ids": [4624], "event_contexts": '
+            + json.dumps([_LOGON_EVENT_CONTEXT])
+            + "}}')"
         )
 
     def _observed_rows(self, source: str, evidence_id: str) -> list[dict]:
@@ -1680,6 +1760,7 @@ class CrossQueryIndependenceTests(unittest.TestCase):
                 "evidence_id": evidence_id,
                 "event_id": 4624,
                 "channel": "Security",
+                "provider": _LOGON_EVENT_CONTEXT["provider"],
                 "source_file": source,
             }
         ]
@@ -1695,7 +1776,10 @@ class CrossQueryIndependenceTests(unittest.TestCase):
         hypothesis = Hypothesis(
             id="H-XQ",
             description="logon was observed",
-            confirm_when={"co_observed_event_ids": [4624]},
+            confirm_when={
+                "co_observed_event_ids": [4624],
+                "event_contexts": [dict(_LOGON_EVENT_CONTEXT)],
+            },
         )
         for row in rows:
             db.execute(
@@ -1704,12 +1788,13 @@ class CrossQueryIndependenceTests(unittest.TestCase):
             )
             db.execute(
                 "INSERT INTO evtx_events (evidence_id, source_file, "
-                "channel, event_id) VALUES (?, ?, ?, ?)",
+                "channel, event_id, raw_json) VALUES (?, ?, ?, ?, ?)",
                 [
                     row["evidence_id"],
                     row["source_file"],
                     row["channel"],
                     row["event_id"],
+                    _LOGON_RAW_JSON,
                 ],
             )
         assessment = assess_evidence_group(
@@ -1739,7 +1824,10 @@ class CrossQueryIndependenceTests(unittest.TestCase):
             llm_verdict="confirmed",
             verification_spec={
                 "spec_version": "1",
-                "support_conditions": {"co_observed_event_ids": [4624]},
+                "support_conditions": {
+                    "co_observed_event_ids": [4624],
+                    "event_contexts": [dict(_LOGON_EVENT_CONTEXT)],
+                },
             },
         )
         return result
@@ -1748,7 +1836,10 @@ class CrossQueryIndependenceTests(unittest.TestCase):
         hypothesis = Hypothesis(
             id="H-XQ",
             description="logon was observed",
-            confirm_when={"co_observed_event_ids": [4624]},
+            confirm_when={
+                "co_observed_event_ids": [4624],
+                "event_contexts": [dict(_LOGON_EVENT_CONTEXT)],
+            },
         )
         si = build_settlement_input_from_confirm_when(
             hypothesis=hypothesis,

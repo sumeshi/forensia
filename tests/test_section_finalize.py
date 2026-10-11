@@ -26,6 +26,7 @@ from forensia.report.sections.report_input import (
 )
 from forensia.report.sections.section_assembly import prepare_section_request
 from forensia.report.sections.section_finalize import finalize_section
+from forensia.report.sections.section_refresher import _record_projection
 from forensia.report.sections.section_run_store import replace_section_evidence
 from forensia.report.template_export import export_packaged_report_templates
 
@@ -111,6 +112,22 @@ class SectionFinalizeTests(unittest.TestCase):
                         ('ev-2', 'a.evtx', 'Security', 4624, 2, now(), 'host1', 'user1', NULL, NULL, '10.0.0.1', 'info'),
                         ('ev-3', 'a.evtx', 'Security', 4624, 3, now(), 'host1', 'user2', NULL, NULL, '10.0.0.2', 'info')
                     """
+                )
+                db.execute(
+                    "UPDATE evtx_events SET raw_json = ? "
+                    "WHERE evidence_id IN ('ev-1', 'ev-2', 'ev-3')",
+                    [
+                        json.dumps(
+                            {
+                                "winlog": {
+                                    "channel": "Security",
+                                    "provider": {
+                                        "name": "Microsoft-Windows-Security-Auditing"
+                                    },
+                                }
+                            }
+                        )
+                    ],
                 )
                 prepare_section_request(
                     case,
@@ -242,6 +259,32 @@ class SectionFinalizeTests(unittest.TestCase):
             )
             self.assertEqual(["01_overview"], [s.section_key for s in sources])
 
+    def test_default_template_headings_follow_language_but_report_md_is_preserved(
+        self,
+    ) -> None:
+        from forensia.config import Settings, settings_scope
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with settings_scope(Settings(llm_output_language="ja")):
+                japanese = resolve_report_sources(case, None)
+            with settings_scope(Settings(llm_output_language="en")):
+                english = resolve_report_sources(case, None)
+
+            self.assertIn("# 調査概要と対象", japanese[0].body)
+            self.assertEqual("調査概要と対象", japanese[0].meta.title)
+            self.assertIn("# Summary and Scope", english[0].body)
+            self.assertEqual("Summary and Scope", english[0].meta.title)
+
+            report_spec = case.path / "REPORT.md"
+            authored = "# Incident Review\n\n## Scope\n\nKeep this wording."
+            report_spec.write_text(authored, encoding="utf-8")
+            with settings_scope(Settings(llm_output_language="ja")):
+                custom = resolve_report_sources(case, None)
+            self.assertEqual("01_incident_review", custom[0].section_key)
+            self.assertIn("# Incident Review", custom[0].body)
+            self.assertIn("Keep this wording.", custom[0].body)
+
     def test_question_marker_enables_structured_mode_without_explicit_mode(
         self,
     ) -> None:
@@ -366,8 +409,11 @@ class SectionFinalizeTests(unittest.TestCase):
                 )
 
                 self.assertTrue(
-                    any("cautious wording" in str(gap) for gap in result["gaps"]),
-                    msg=f"Expected strength gap in {result['gaps']}",
+                    any(
+                        "cautious wording" in str(diagnostic)
+                        for diagnostic in result["diagnostics"]
+                    ),
+                    msg=f"Expected strength diagnostic in {result['diagnostics']}",
                 )
 
     def test_claims_use_current_adjudicated_evidence_roles(self) -> None:
@@ -637,6 +683,55 @@ class SectionFinalizeTests(unittest.TestCase):
             self.assertNotIn("**Status:** partial", markdown)
             self.assertNotIn("raw_sql", markdown)
 
+    def test_projection_receipt_keeps_table_query_revision_and_source_count(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                _record_projection(
+                    db,
+                    {
+                        "request": {"section_key": "01_summary"},
+                        "input_signature": "input-signature",
+                        "projection_signature": "projection-signature",
+                        "evidence_results": [
+                            {
+                                "kind": "rows",
+                                "source_ref": "table:overview_evidence_scope",
+                                "query_ref": "overview_evidence_scope",
+                                "source_kind": "deterministic_table",
+                                "block_heading": "Evidence Coverage",
+                                "row_count": 5,
+                                "evidence_ids": [],
+                                "source_state_signature": "case-source-state",
+                            }
+                        ],
+                    },
+                    iteration=2,
+                    report_input_digest="report-input",
+                    narration_status="unchanged",
+                )
+                coverage = db.execute(
+                    "SELECT source_query, evidence_table, row_count, used_in_answer "
+                    "FROM section_run_coverage"
+                ).fetchone()
+                payload = db.execute(
+                    "SELECT payload FROM section_runs WHERE phase = 'query'"
+                ).fetchone()[0]
+
+            self.assertEqual(
+                (
+                    "table:overview_evidence_scope",
+                    "table:overview_evidence_scope",
+                    5,
+                    "Yes",
+                ),
+                tuple(coverage),
+            )
+            self.assertIn('"query_ref": "overview_evidence_scope"', payload)
+            self.assertIn('"source_state_signature": "case-source-state"', payload)
+
     def test_build_report_markdown_rebuilds_non_question_sections_with_tables(
         self,
     ) -> None:
@@ -760,7 +855,7 @@ class SectionFinalizeTests(unittest.TestCase):
             self.assertFalse(any(path.name == "6_appendix.md" for path in written))
             self.assertFalse((Path(tmpdir) / "6_appendix.md").exists())
 
-    def test_finalize_section_flags_duplicate_finding_mentions(self) -> None:
+    def test_report_quality_diagnostics_do_not_become_investigation_gaps(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             now = datetime.now(UTC).replace(tzinfo=None)
@@ -792,13 +887,43 @@ class SectionFinalizeTests(unittest.TestCase):
                     db=db,
                     section_key="3_technical",
                     title="Persistence and Execution",
-                    body="# Persistence and Execution\n\nSuspicious Service\n\nSuspicious Service\n\nSuspicious Service",
+                    body=(
+                        "# Persistence and Execution\n\n"
+                        "Suspicious Service. Suspicious Service. Suspicious Service. "
+                        "According to the evidence, this needs review."
+                    ),
+                    evidence_results=[],
+                    session_id="S-1",
+                )
+                diagnostics = db.execute(
+                    "SELECT payload FROM section_runs WHERE section_key = ? "
+                    "AND phase = 'validation'",
+                    ["3_technical"],
+                ).fetchone()
+                missing_id = "registry-" + "a" * 64
+                missing_reference = finalize_section(
+                    db=db,
+                    section_key="4_appendix",
+                    title="Appendix",
+                    body=f"# Appendix\n\nSource reference: {missing_id}",
                     evidence_results=[],
                     session_id="S-1",
                 )
 
-            self.assertTrue(any("repeated too often" in gap for gap in result["gaps"]))
-            self.assertLessEqual(result["confidence"], 0.6)
+            self.assertEqual([], result["gaps"])
+            self.assertFalse(
+                any("Suspicious Service" in item for item in result["diagnostics"])
+            )
+            self.assertIsNotNone(diagnostics)
+            self.assertIn('"diagnostics"', str(diagnostics[0]))
+            self.assertIn("evidence/finding language", str(diagnostics[0]))
+            self.assertFalse(missing_reference["gaps"])
+            self.assertTrue(
+                any(
+                    "cited evidence ids not found" in diagnostic
+                    for diagnostic in missing_reference["diagnostics"]
+                )
+            )
 
 
 if __name__ == "__main__":

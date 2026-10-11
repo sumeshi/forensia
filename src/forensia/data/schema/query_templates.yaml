@@ -14,13 +14,12 @@ templates:
   q_failed_logon_by_ip_window:
     description: Failed logons grouped by src_ip within a recent time window.
     parameters:
-      event_id: {type: integer, default: 4625}
       hours: {type: integer, required: true, default: 24, minimum: 1}
       threshold: {type: integer, required: true, default: 5, minimum: 1}
     sql: |-
       SELECT src_ip, COUNT(*) AS failed_count
       FROM evtx_events
-      WHERE event_id = {event_id}
+      WHERE {{event_context:4625}}
         AND timestamp >= (SELECT MAX(timestamp) FROM evtx_events) - INTERVAL '{hours} hours'
         AND coalesce(src_ip, '') != ''
       GROUP BY src_ip
@@ -30,13 +29,12 @@ templates:
   q_logon_by_user_window:
     description: Recent successful logons for one user.
     parameters:
-      event_id: {type: integer, default: 4624}
       hours: {type: integer, required: true, default: 24, minimum: 1}
       user: {type: text, required: true}
     sql: |-
       SELECT timestamp, computer, src_ip, logon_type, target_user
       FROM evtx_events
-      WHERE event_id = {event_id}
+      WHERE {{event_context:4624}}
         AND timestamp >= (SELECT MAX(timestamp) FROM evtx_events) - INTERVAL '{hours} hours'
         AND lower(coalesce(target_user, '')) = lower('{user}')
       ORDER BY timestamp DESC
@@ -57,7 +55,7 @@ templates:
       ps AS (
           SELECT timestamp, computer, process_name, command_line, evidence_id
           FROM evtx_events
-          WHERE event_id IN (4688, 4104)
+          WHERE {{event_context:4688,4104}}
       )
       SELECT ps.timestamp, ps.computer, ps.process_name, ps.command_line, ps.evidence_id
       FROM ps
@@ -74,7 +72,7 @@ templates:
     sql: |-
       SELECT timestamp, event_id, service_name, process_name, command_line, evidence_id
       FROM evtx_events
-      WHERE event_id IN (4697, 7045, 4698)
+      WHERE {{event_context:4697,7045,4698}}
         AND timestamp >= (SELECT MAX(timestamp) FROM evtx_events) - INTERVAL '{hours} hours'
         AND lower(coalesce(computer, '')) = lower('{computer}')
       ORDER BY timestamp DESC

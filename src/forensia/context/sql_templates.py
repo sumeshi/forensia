@@ -14,6 +14,7 @@ import sqlglot
 from sqlglot.optimizer.scope import Scope, traverse_scope
 
 from forensia.context.sql_schema import QUERY_TABLES
+from forensia.knowledge.catalog import expand_catalog_sql_placeholders
 from forensia.knowledge.resources import schema_dir
 
 _SQL_FENCE_RE = re.compile(r"```(?:sql)?\s*(.*?)```", re.DOTALL | re.IGNORECASE)
@@ -85,7 +86,7 @@ def _load_query_templates() -> dict[str, QueryTemplateSpec]:
         if not isinstance(raw, dict):
             raise ValueError(f"{path}: {template_id} must be a mapping")
         description = str(raw.get("description") or "").strip()
-        sql = str(raw.get("sql") or "").strip()
+        sql = expand_catalog_sql_placeholders(str(raw.get("sql") or "").strip())
         parameters = raw.get("parameters") or {}
         if not description or not sql or not isinstance(parameters, dict):
             raise ValueError(f"{path}: {template_id} has invalid metadata")

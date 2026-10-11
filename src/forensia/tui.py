@@ -131,7 +131,8 @@ def _case_status(snapshot: dict[str, Any]) -> str:
 
 def _format_header(snapshot: dict[str, Any]) -> Text:
     status = _case_status(snapshot)
-    work = snapshot.get("current_work") or snapshot.get("pipeline") or {}
+    session = snapshot.get("session") or {}
+    work = snapshot.get("current_work") or snapshot.get("pipeline") or session
     elapsed = snapshot.get("elapsed_seconds")
     duration = "—"
     if elapsed is not None:
@@ -152,6 +153,16 @@ def _format_header(snapshot: dict[str, Any]) -> Text:
     )
     if work:
         text.append(f" / {work.get('stage') or work.get('phase') or 'working'}")
+    provider_wait = session.get("provider_wait") or {}
+    if provider_wait.get("stop_requested"):
+        text.append(
+            " · stop accepted; waiting for provider"
+            if provider_wait.get("waiting")
+            else " · stop accepted",
+            style="yellow",
+        )
+    elif provider_wait.get("waiting"):
+        text.append(" · waiting for provider", style="yellow")
     text.append(f"  ·  elapsed {duration}", style="white")
     return text
 

@@ -365,8 +365,12 @@ def gap_identifier_schema(available_keypoints: list[str]) -> dict[str, Any]:
     }
 
 
-def hypothesis_drafter_schema() -> dict[str, Any]:
-    return {
+def hypothesis_drafter_schema(
+    *,
+    observation_only: bool = False,
+    allowed_entities: list[str] | None = None,
+) -> dict[str, Any]:
+    schema = {
         "title": "HypothesisDrafter",
         "type": "object",
         "additionalProperties": False,
@@ -387,7 +391,11 @@ def hypothesis_drafter_schema() -> dict[str, Any]:
                     },
                     "required_entities": {
                         "type": "array",
-                        "items": {"enum": SNAKE_CASE_COLUMNS},
+                        "items": {
+                            "enum": allowed_entities
+                            if allowed_entities
+                            else SNAKE_CASE_COLUMNS
+                        },
                     },
                     "source_rule_ids": {"type": "array", "items": {"type": "string"}},
                     **_verification_declaration_fields(),
@@ -395,6 +403,22 @@ def hypothesis_drafter_schema() -> dict[str, Any]:
             },
         },
     }
+    confirm = schema["properties"]["hypothesis"]["properties"]["confirm_when"]
+    required_entities = schema["properties"]["hypothesis"]["properties"][
+        "required_entities"
+    ]
+    if allowed_entities == []:
+        required_entities["maxItems"] = 0
+    if observation_only:
+        confirm_properties = confirm["properties"]
+        confirm["properties"] = {
+            key: value
+            for key, value in confirm_properties.items()
+            if key in {"min_count", "observation"}
+        }
+        if "observation" in confirm["properties"]:
+            confirm["required"] = ["observation"]
+    return schema
 
 
 PARAGRAPH_NARRATE_SCHEMA: dict[str, Any] = {

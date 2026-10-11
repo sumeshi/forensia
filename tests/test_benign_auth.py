@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import unittest
 
 from forensia.report.benign_auth import (
@@ -48,9 +49,26 @@ class LocalAuthClassificationTests(unittest.TestCase):
         )
         for row, expected in cases:
             with self.subTest(row=row):
-                self.assertIs(expected, is_benign_local_auth(row))
+                event_id = row.get("event_id")
+                contextual = {
+                    **row,
+                    "channel": "Security",
+                    "raw_json": json.dumps(
+                        {
+                            "winlog": {
+                                "provider": {
+                                    "name": "Microsoft-Windows-Security-Auditing"
+                                }
+                            }
+                        }
+                    ),
+                }
+                self.assertIs(
+                    expected,
+                    is_benign_local_auth(contextual if event_id else row),
+                )
 
-    def test_missing_event_id_requires_auth_scope_assumption(self) -> None:
+    def test_missing_or_mismatched_context_cannot_be_assumed_from_finding(self) -> None:
         base = {
             "computer": "informant-PC",
             "target_user": "informant",
@@ -59,14 +77,24 @@ class LocalAuthClassificationTests(unittest.TestCase):
             "process_name": r"C:\Windows\System32\winlogon.exe",
         }
         self.assertFalse(is_benign_local_auth(base))
-        self.assertTrue(is_benign_local_auth(base, assume_auth_event=True))
+        self.assertTrue(finding_is_auth_scoped("windows-security-4648-logon", ""))
         self.assertFalse(
-            is_benign_local_auth({**base, "event_id": "4688"}, assume_auth_event=True)
+            is_benign_local_auth(
+                {
+                    **base,
+                    "event_id": "4648",
+                    "channel": "Application",
+                    "raw_json": '{"winlog":{"provider":{"name":"Microsoft-Windows-Security-Auditing"}}}',
+                }
+            )
         )
         self.assertFalse(
             is_benign_local_auth(
-                {**base, "subject_user": "OTHER-PC$", "src_ip": "10.0.0.5"},
-                assume_auth_event=True,
+                {
+                    **base,
+                    "event_id": "4648",
+                    "channel": "Security",
+                }
             )
         )
 

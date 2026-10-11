@@ -41,6 +41,8 @@ class ReportSafetyContracts(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
+            stale_brief = case.reports_dir / "report_brief.json"
+            stale_brief.write_text('{"report_complete": false}', encoding="utf-8")
             with CaseDB(case) as db:
                 db.execute(
                     "INSERT INTO trace.investigation_steps "
@@ -75,6 +77,7 @@ class ReportSafetyContracts(unittest.TestCase):
                     validation = json.loads(
                         (case.reports_dir / "report_validation.json").read_text()
                     )
+            self.assertFalse(stale_brief.exists())
 
             markdown = markdown_path.read_text(encoding="utf-8")
             html = html_path.read_text(encoding="utf-8")
@@ -374,6 +377,54 @@ class ReportInputGuardContracts(unittest.TestCase):
                 self.assertEqual(
                     3, db.execute("SELECT count(*) FROM report_sections").fetchone()[0]
                 )
+
+    def test_recorded_default_templates_follow_language_without_repinning(self) -> None:
+        from forensia.config import Settings, settings_scope
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                with settings_scope(Settings(llm_output_language="ja")):
+                    first = decide_report_sources(case, db, None)
+                db.execute(
+                    "INSERT INTO trace.investigation_steps (step_id, phase, output_json, created_at) "
+                    "VALUES ('a', 'report-input', ?, TIMESTAMP '2026-01-01')",
+                    (json.dumps(first.record),),
+                )
+
+                with settings_scope(Settings(llm_output_language="en")):
+                    resumed = decide_report_sources(case, db, None)
+
+            self.assertEqual(
+                [section.section_key for section in first.sections],
+                [section.section_key for section in resumed.sections],
+            )
+            self.assertIn("# Summary and Scope", resumed.sections[0].body)
+            self.assertNotIn("# 調査概要と対象", resumed.sections[0].body)
+            self.assertIsNone(resumed.notice)
+            self.assertEqual("Summary and Scope", resumed.sections[0].meta.title)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            spec = case.path / "REPORT.md"
+            authored = "# Custom Findings\n\n## Evidence\n\nKeep this wording.\n"
+            spec.write_text(authored, encoding="utf-8")
+            with CaseDB(case) as db:
+                with settings_scope(Settings(llm_output_language="ja")):
+                    first = decide_report_sources(case, db, None)
+                db.execute(
+                    "INSERT INTO trace.investigation_steps (step_id, phase, output_json, created_at) "
+                    "VALUES ('a', 'report-input', ?, TIMESTAMP '2026-01-01')",
+                    (json.dumps(first.record),),
+                )
+                with settings_scope(Settings(llm_output_language="en")):
+                    resumed = decide_report_sources(case, db, None)
+
+            self.assertEqual(
+                ["01_custom_findings"], [s.section_key for s in resumed.sections]
+            )
+            self.assertEqual(authored.strip(), resumed.sections[0].body)
+            self.assertIsNone(resumed.notice)
 
 
 class SharedPolicyContracts(unittest.TestCase):

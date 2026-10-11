@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
-from forensia.report.answers.event_semantics import LOG_CLEAR_EVENT_SQL
+from forensia.report.answers.event_semantics import (
+    EXECUTION_EVENT_SQL,
+    LOG_CLEAR_EVENT_SQL,
+    SERVICE_TASK_EVENT_SQL,
+    SESSION_EVENT_SQL,
+    SYSTEM_SHUTDOWN_EVENT_SQL,
+    SYSTEM_STARTUP_EVENT_SQL,
+)
 from forensia.report.answers.keypoint_sql import (
     _BROWSER_EXE_SQL,
     _CLOUD_FILE_SQL,
@@ -96,10 +103,10 @@ OVERVIEW_IOC_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
         "Distinct suspicious processes or command lines.",
         lambda db: _report_keypoint_rows(
             db,
-            """
+            f"""
             SELECT DISTINCT process_name, command_line, computer, evidence_id
             FROM evtx_events
-            WHERE event_id IN (4688,4104) AND process_name IS NOT NULL
+            WHERE ({EXECUTION_EVENT_SQL}) AND process_name IS NOT NULL
             ORDER BY evidence_id
             LIMIT 30
             """,
@@ -109,10 +116,10 @@ OVERVIEW_IOC_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
         "Distinct suspicious services observed.",
         lambda db: _report_keypoint_rows(
             db,
-            """
+            f"""
             SELECT DISTINCT service_name, computer, evidence_id
             FROM evtx_events
-            WHERE event_id IN (4697,7045) AND service_name IS NOT NULL
+            WHERE ({SERVICE_TASK_EVENT_SQL}) AND service_name IS NOT NULL
             """,
         ),
     ),
@@ -179,11 +186,10 @@ OVERVIEW_IOC_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
         "Last shutdown/startup event from System event log (event 1074/6006/6008/6013).",
         lambda db: _report_keypoint_rows(
             db,
-            """
+            f"""
             SELECT timestamp, event_id, computer, message
             FROM evtx_events
-            WHERE (event_id = 1074)
-               OR (event_id IN (6006, 6008, 6013) AND (channel IS NULL OR LOWER(channel) LIKE '%system%'))
+            WHERE ({SYSTEM_SHUTDOWN_EVENT_SQL}) OR event_id = 6013
             ORDER BY timestamp DESC LIMIT 1
         """,
         ),
@@ -192,11 +198,12 @@ OVERVIEW_IOC_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
         "Daily user activity: logon/logoff/shutdown counts per date.",
         lambda db: _report_keypoint_rows(
             db,
-            """
+            f"""
             SELECT DATE(timestamp) AS date, event_id, COUNT(*) AS n
             FROM evtx_events
-            WHERE (event_id IN (4624, 4634, 4647))
-               OR (event_id IN (6005, 6006) AND (channel IS NULL OR LOWER(channel) LIKE '%system%'))
+            WHERE ({SESSION_EVENT_SQL})
+               OR {SYSTEM_STARTUP_EVENT_SQL}
+               OR {SYSTEM_SHUTDOWN_EVENT_SQL}
             GROUP BY 1, 2 ORDER BY 1
         """,
         ),

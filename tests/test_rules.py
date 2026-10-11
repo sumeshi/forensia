@@ -991,6 +991,61 @@ class SigmaCompilerTests(unittest.TestCase):
 
 
 class RuleAndFindingTests(unittest.TestCase):
+    def test_prefetch_dll_reference_requires_one_matching_array_element(self) -> None:
+        rule = next(
+            rule for rule in load_rules() if rule.id == "prefetch-dll-path-reference"
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                for evidence_id, filenames in (
+                    (
+                        "split-match",
+                        [
+                            r"C:\Windows\System32\normal.dll",
+                            r"C:\Users\Alice\AppData\Local\Temp\note.txt",
+                        ],
+                    ),
+                    (
+                        "same-element-match",
+                        [r"C:\Users\Alice\AppData\Local\Temp\helper.dll"],
+                    ),
+                    (
+                        "dll-directory-suffix",
+                        [r"C:\Users\Alice\AppData\Local\Temp\helper.dllfolder"],
+                    ),
+                    (
+                        "dll-backup-suffix",
+                        [r"C:\Users\Alice\AppData\Local\Temp\helper.dll.bak"],
+                    ),
+                    ("empty-array", []),
+                    ("missing-array", None),
+                ):
+                    db.execute(
+                        "INSERT INTO prefetch_executions "
+                        "(evidence_id, executable_name, exec_count, last_exec_time, filenames) "
+                        "VALUES (?, 'APP.EXE', 1, '2026-01-01 00:00:00', ?)",
+                        [
+                            evidence_id,
+                            json.dumps(filenames) if filenames is not None else None,
+                        ],
+                    )
+
+                rows = [
+                    row for batch in iter_rule_row_batches(db, rule) for row in batch
+                ]
+                findings = generate_findings(rule, rows)
+
+        self.assertEqual(["same-element-match"], [row["evidence_id"] for row in rows])
+        self.assertIn(
+            r"C:\Users\Alice\AppData\Local\Temp\helper.dll", findings[0].summary
+        )
+        self.assertEqual("same-element-match", findings[0].evidence[0]["evidence_id"])
+        self.assertEqual(
+            r"C:\Users\Alice\AppData\Local\Temp\helper.dll",
+            findings[0].evidence[0]["matched_filename"],
+        )
+
     def test_bulk_finding_insert_preserves_json_text_values(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)

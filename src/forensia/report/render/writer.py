@@ -114,6 +114,8 @@ def render_written_report(
             else case.reports_dir / "report.html",
         ),
     )
+    # This projection has no repository consumer and can lag the final section state.
+    (case.reports_dir / "report_brief.json").unlink(missing_ok=True)
     publication_state = derive_publication_state(db)
     report_status = build_report_status(db)
     report_body = build_report_markdown_from_db(db, case=case)

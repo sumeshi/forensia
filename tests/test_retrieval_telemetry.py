@@ -287,6 +287,19 @@ def test_checker_sample_prioritizes_witness_outside_default_sample() -> None:
         {
             "evidence_id": f"evtx-{index:02d}",
             "event_id": 4624 if index == 10 else 4625,
+            **(
+                {
+                    "channel": "Security",
+                    "raw_json": {
+                        "winlog": {
+                            "channel": "Security",
+                            "provider": {"name": "Microsoft-Windows-Security-Auditing"},
+                        }
+                    },
+                }
+                if index == 10
+                else {}
+            ),
         }
         for index in range(20)
     ]
@@ -294,7 +307,16 @@ def test_checker_sample_prioritizes_witness_outside_default_sample() -> None:
     hypothesis = Hypothesis(
         id="H-sample-witness",
         description="A successful logon was observed",
-        confirm_when={"co_observed_event_ids": [4624]},
+        confirm_when={
+            "co_observed_event_ids": [4624],
+            "event_contexts": [
+                {
+                    "event_id": 4624,
+                    "channel": "Security",
+                    "provider": "Microsoft-Windows-Security-Auditing",
+                }
+            ],
+        },
     )
 
     assessment = assess_evidence_group(

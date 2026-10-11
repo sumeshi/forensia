@@ -26,6 +26,16 @@ from forensia.report.sections.section_quality import validate_body_evidence_ids
 
 
 class PromptMessageTests(unittest.TestCase):
+    def test_prompt_projection_decodes_and_bounds_json_arrays(self) -> None:
+        from forensia.context.prompt_context import prompt_value_projection
+
+        projected = prompt_value_projection('["a", "b", "c", "d"]')
+
+        self.assertEqual(
+            projected,
+            {"count": 4, "sample": ["a", "b", "c"], "omitted_count": 1},
+        )
+
     """Prompt message content: truncation, guidance blocks, language handling."""
 
     def test_common_fitter_drops_whole_optional_template_context(self) -> None:
@@ -97,7 +107,7 @@ class PromptMessageTests(unittest.TestCase):
         with patch.object(
             prompts, "_org_knowledge_block", side_effect=capture_knowledge
         ):
-            messages, _schema = prompts.build_hypothesis_drafter_messages(
+            messages, schema = prompts.build_hypothesis_drafter_messages(
                 {"keypoint_id": "host_execution_activity"},
                 rules,
                 observed_candidate=candidate,
@@ -117,6 +127,11 @@ class PromptMessageTests(unittest.TestCase):
         self.assertIn("Remote Service Installation", captured["extra_words"])
         self.assertIn("attack.t1543.003", captured["extra_words"])
         self.assertIn("Suspicious service creation", captured["extra_words"])
+        required_entity_items = schema["properties"]["hypothesis"]["properties"][
+            "required_entities"
+        ]["items"]
+        self.assertNotIn("evidence_id", required_entity_items["enum"])
+        self.assertNotIn("source_file", required_entity_items["enum"])
 
     def test_hypothesis_drafter_only_discloses_observed_eligible_event_contexts(
         self,
@@ -195,11 +210,23 @@ class PromptMessageTests(unittest.TestCase):
         self.assertIn(
             "Typed observations use fields from canonical evidence records", joined
         )
-        self.assertIn(
-            '[{"event_id": 104, "channel": "System", "provider": "Microsoft-Windows-Eventlog"}, '
-            '{"event_id": 4104, "channel": "Microsoft-Windows-PowerShell/Operational", '
-            '"provider": "Microsoft-Windows-PowerShell"}]',
-            joined,
+        event_contexts = joined.split("<AVAILABLE_EVENT_CONTEXTS>\n", 1)[1].split(
+            "\nUse only listed", 1
+        )[0]
+        self.assertEqual(
+            json.loads(event_contexts),
+            [
+                {
+                    "event_id": 104,
+                    "channel": "System",
+                    "provider": "Microsoft-Windows-Eventlog",
+                },
+                {
+                    "event_id": 4104,
+                    "channel": "Microsoft-Windows-PowerShell/Operational",
+                    "provider": "Microsoft-Windows-PowerShell",
+                },
+            ],
         )
         ids_schema = schema["properties"]["hypothesis"]["properties"]["confirm_when"][
             "properties"
@@ -241,13 +268,12 @@ class PromptMessageTests(unittest.TestCase):
             .split("\nUse only listed", 1)[0]
         )
         disclosed_contexts = json.loads(limited_contexts)
-        self.assertEqual(len(disclosed_contexts), 24)
-        self.assertIn(25, [item["event_id"] for item in disclosed_contexts])
+        self.assertEqual(disclosed_contexts, [])
         self.assertEqual(
             limited_schema["properties"]["hypothesis"]["properties"]["confirm_when"][
                 "properties"
-            ]["co_observed_event_ids"]["items"]["enum"],
-            list(range(1, 26)),
+            ]["co_observed_event_ids"]["maxItems"],
+            0,
         )
         db.close()
 
@@ -338,6 +364,18 @@ class PromptMessageTests(unittest.TestCase):
         self.assertNotIn("observation(s) has/have", joined)
         self.assertNotIn('"exec_time":', joined)
         self.assertNotIn('"timestamp": "derived timeline value"', joined)
+
+        with patch.object(prompts, "_org_knowledge_block", return_value=""):
+            observation_messages, _ = prompts.build_hypothesis_drafter_messages(
+                {"keypoint_id": "host_execution_activity"},
+                [],
+                observed_candidate={"evidence": [candidate["evidence"][1]]},
+            )
+        observation_prompt = "\n".join(
+            message["content"] for message in observation_messages
+        )
+        self.assertIn('"confirm_when": {"observation": {', observation_prompt)
+        self.assertNotIn('"observation": {"observation":', observation_prompt)
 
         observation_schema = schema["properties"]["hypothesis"]["properties"][
             "confirm_when"

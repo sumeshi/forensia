@@ -18,6 +18,7 @@ from forensia.context.prompt_context import (
     _org_knowledge_guidance,
     _time_range_guidance,
     capture_prompt_retrieval,
+    prompt_value_projection,
 )
 from forensia.context.sql_templates import query_template_catalog_for_tables
 from forensia.core.session import Hypothesis
@@ -32,6 +33,7 @@ from forensia.knowledge.coverage import (
 from forensia.knowledge.retrieval import knowledge_terms_for_hypothesis, select_snippets
 from forensia.llm.schemas import (
     FINDING_EXTRACTOR_SCHEMA,
+    SNAKE_CASE_COLUMNS,
     VERDICT_REVIEW_SCHEMA,
     gap_identifier_schema,
     hypothesis_drafter_schema,
@@ -315,7 +317,7 @@ def _result_summary_prompt_projection(
         if not isinstance(source_row, dict):
             continue
         row = {
-            key: value
+            key: prompt_value_projection(value)
             for key, value in source_row.items()
             if key not in _PROMPT_ROW_NOISE_FIELDS
         }
@@ -716,8 +718,15 @@ def build_hypothesis_drafter_messages(
     observed_candidate: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, str]], dict]:
     """Draft one testable hypothesis from a real observation or existing gap."""
-    schema = hypothesis_drafter_schema()
     typed_catalog = observation_catalog()
+    candidate_family = (
+        str(((observed_candidate or {}).get("scope") or {}).get("source_family") or "")
+        .strip()
+        .lower()
+    )
+    observation_only = candidate_family in typed_catalog and candidate_family != "evtx"
+    if observation_only:
+        typed_catalog = {candidate_family: typed_catalog[candidate_family]}
     evidence_fields = (
         "evidence_id",
         "_source",
@@ -759,6 +768,21 @@ def build_hypothesis_drafter_messages(
         "value_data",
         "object_dn",
     )
+    if candidate_family:
+        evidence_fields = tuple(
+            field
+            for field in evidence_fields
+            if field in typed_catalog.get(candidate_family, {}).get("fields", [])
+            or field
+            in {
+                "evidence_id",
+                "_source",
+                "source_file",
+                "event_id",
+                "channel",
+                "provider",
+            }
+        )
     typed_observations: dict[str, dict[str, Any]] = {}
     typed_observation_examples: dict[tuple[str, str, str], dict[str, Any]] = {}
     for row in (observed_candidate or {}).get("evidence", [])[:3]:
@@ -840,6 +864,33 @@ def build_hypothesis_drafter_messages(
             if claim:
                 typed_claim_examples.append(claim)
                 break
+    from forensia.db.schema import declared_schema
+
+    canonical_table = (
+        canonical_record_table(candidate_family) if candidate_family else None
+    )
+    canonical_columns = (
+        set(declared_schema().get(canonical_table, ())) if canonical_table else set()
+    )
+    allowed_entities = (
+        sorted(
+            canonical_columns
+            & (set(SNAKE_CASE_COLUMNS) - {"evidence_id"})
+            & {
+                str(key)
+                for row in (observed_candidate or {}).get("evidence", [])
+                if isinstance(row, dict)
+                for key, value in row.items()
+                if value not in (None, "", [])
+            }
+        )
+        if canonical_table
+        else None
+    )
+    schema = hypothesis_drafter_schema(
+        observation_only=observation_only,
+        allowed_entities=allowed_entities,
+    )
     confirm_properties = schema["properties"]["hypothesis"]["properties"][
         "confirm_when"
     ]["properties"]
@@ -871,33 +922,49 @@ def build_hypothesis_drafter_messages(
     else:
         confirm_properties.pop("observation", None)
     eligible_event_contexts: list[dict[str, Any]] = []
-    if (
-        case_profile is not None
-        and case_profile.event_ids is not None
-        and db is not None
-    ):
-        eligible_event_contexts = observed_event_contexts(db, case_profile.event_ids)
-
-        ids_schema = schema["properties"]["hypothesis"]["properties"]["confirm_when"][
-            "properties"
-        ]["co_observed_event_ids"]
-        eligible_ids = sorted({item["event_id"] for item in eligible_event_contexts})
-        if eligible_ids:
-            ids_schema["items"] = {"enum": eligible_ids}
-        else:
-            ids_schema["maxItems"] = 0
     observed_event_ids: set[int] = set()
+    candidate_event_contexts: set[tuple[int, str, str]] = set()
     if observed_candidate:
         for row in observed_candidate.get("evidence") or []:
             if not isinstance(row, dict):
                 continue
             raw_event_id = row.get("event_id")
-            if isinstance(raw_event_id, bool):
-                continue
             try:
-                observed_event_ids.add(int(raw_event_id))
+                event_id = int(raw_event_id)
             except TypeError, ValueError:
                 continue
+            if isinstance(raw_event_id, bool):
+                continue
+            observed_event_ids.add(event_id)
+            channel = str(row.get("channel") or "").strip()
+            provider = str(row.get("provider") or "").strip()
+            if channel and provider:
+                candidate_event_contexts.add((event_id, channel, provider))
+    if candidate_family == "evtx" and observed_event_ids and db is not None:
+        eligible_event_contexts = [
+            item
+            for item in observed_event_contexts(db, observed_event_ids)
+            if (item["event_id"], item["channel"], item["provider"])
+            in candidate_event_contexts
+        ]
+    elif (
+        not observed_candidate
+        and case_profile is not None
+        and case_profile.event_ids is not None
+        and db is not None
+    ):
+        eligible_event_contexts = observed_event_contexts(db, case_profile.event_ids)
+    allowed_event_ids = sorted({item["event_id"] for item in eligible_event_contexts})
+    confirm_schema_properties = schema["properties"]["hypothesis"]["properties"][
+        "confirm_when"
+    ]["properties"]
+    if "co_observed_event_ids" in confirm_schema_properties:
+        ids_schema = confirm_schema_properties["co_observed_event_ids"]
+        if observed_candidate or case_profile is not None:
+            if allowed_event_ids:
+                ids_schema["items"] = {"enum": allowed_event_ids}
+            else:
+                ids_schema["maxItems"] = 0
     event_contexts = sorted(
         eligible_event_contexts,
         key=lambda item: (
@@ -925,7 +992,7 @@ def build_hypothesis_drafter_messages(
             ) == canonical_record_table(family)
             canonical_fields = typed_catalog.get(family or "", {}).get("fields", [])
             displayed_fields = {
-                key: row[key]
+                key: prompt_value_projection(row[key])
                 for key in evidence_fields
                 if row.get(key) is not None
                 and (
@@ -999,18 +1066,46 @@ def build_hypothesis_drafter_messages(
     observation_schema_hint = (
         '"observation": {"family": "listed family", "capability": "listed capability", '
         '"field": "listed field", "operator": "equals|contains|greater_than", '
-        '"value": str|number}, '
+        '"value": str|number|bool}, '
         if typed_observation_entries
         else ""
     )
-    confirm_when_schema_hint = (
-        '    "confirm_when": {'
-        + observation_schema_hint
-        + '"min_count": optional positive int, "co_observed_event_ids": [int, ...], '
-        + '"event_contexts": [{"event_id": int, "channel": str, "provider": str}], '
-        + '"same_host": bool, "within_minutes": int, '
-        + '"same_entities": ["src_ip", "target_user"]},\n'
-    )
+    if observation_only:
+        confirm_when_schema_hint = (
+            '    "confirm_when": {'
+            + observation_schema_hint.removesuffix(", ")
+            + ', "min_count": optional positive int},\n'
+        )
+    else:
+        confirm_when_schema_hint = (
+            '    "confirm_when": {'
+            + observation_schema_hint
+            + '"min_count": optional positive int, "co_observed_event_ids": [listed IDs], '
+            + '"event_contexts": [{"event_id": int, "channel": str, "provider": str}], '
+            + '"same_host": bool, "within_minutes": int, '
+            + '"same_entities": [listed evidence columns]},\n'
+        )
+    family_scope_block = ""
+    if candidate_family and canonical_table and db is not None:
+        family_id_column = (
+            "artifact_id" if candidate_family == "registry" else "evidence_id"
+        )
+        family_population = int(
+            db.execute(
+                f"SELECT COUNT(DISTINCT {family_id_column}) FROM {canonical_table}"
+            ).fetchone()[0]
+            or 0
+        )
+        family_scope_block = (
+            "<OBSERVATION_SCOPE>\n"
+            f"family={candidate_family}; canonical_table={canonical_table}; "
+            f"canonical_columns={json.dumps(allowed_entities or [], ensure_ascii=False)}; "
+            f"distinct_evidence_ids_in_case={family_population}; "
+            f"candidate_distinct_evidence_ids={int((observed_candidate or {}).get('evidence_count') or 0)}.\n"
+            "The candidate sample is not the family population. min_count means distinct matching canonical evidence IDs; "
+            "it is not an execution count such as Prefetch exec_count.\n"
+            "</OBSERVATION_SCOPE>\n"
+        )
     system = (
         (f"{case_policy_block(case_policy)}" if case_policy is not None else "")
         + "<TASK>You are a hypothesis_drafter. Draft ONE falsifiable, SQL-testable hypothesis from the supplied observation or existing gap.</TASK>\n"
@@ -1020,7 +1115,9 @@ def build_hypothesis_drafter_messages(
         "{\n"
         '  "hypothesis": {\n'
         '    "description": "str (one investigative claim that can be confirmed or refuted by SQL evidence)",\n'
-        '    "required_entities": ["snake_case column names such as src_ip, target_user, computer, logon_type, process_name, file_path"],\n'
+        '    "required_entities": '
+        + json.dumps((allowed_entities or [])[:12], ensure_ascii=False)
+        + ",\n"
         '    "source_rule_ids": ["an id from the host-supplied matched_rule_ids, or empty list"],\n'
         + confirm_when_schema_hint
         + '    "refute_when": {"zero_rows": true}\n'
@@ -1033,9 +1130,14 @@ def build_hypothesis_drafter_messages(
             + "\nUse only listed event_id/channel/provider combinations. If none are listed, "
             "do not use event IDs; use available non-EVTX evidence instead.\n"
             "</AVAILABLE_EVENT_CONTEXTS>\n"
-            if case_profile is not None and case_profile.event_ids is not None
+            if (
+                not observation_only
+                and case_profile is not None
+                and case_profile.event_ids is not None
+            )
             else ""
         )
+        + family_scope_block
         + typed_observations_block
         + "<RULES>\n"
         "Treat supplied observations as leads, not proof. For an observed candidate, describe a question that tests that candidate and use only fields/ref IDs shown there. Do not infer facts from match counts, severity, titles, or rule names.\n"
@@ -1043,8 +1145,12 @@ def build_hypothesis_drafter_messages(
         "For a gap without an observed candidate, stay within its stated objective, gap, keypoint, and available evidence. Do not invent an event, entity, or source.\n"
         "required_entities must be valid snake_case evidence column names. Keep verification conditions explicit and use only event ID/context combinations supplied by the host.\n"
         "Typed observations use fields from canonical evidence records, not derived timeline projections such as prefetch_timeline.exec_time or mft_timeline.timestamp.\n"
-        "If confirm_when uses observation, do not mix it with event or correlation conditions. Copy a valid description example from AVAILABLE_TYPED_OBSERVATIONS, changing only values and counts to match the proposed observation. The host requires the canonical singular/plural wording exactly; do not use placeholders or add causal or broader prose. If the supplied hypothesis needs broader interpretation, preserve it for review instead of rewriting it as a narrower typed observation. min_count defaults to 1 and, when supplied, counts distinct canonical evidence IDs.\n"
-        "confirm_when and refute_when must be JSON objects. Output JSON only.\n"
+        + (
+            "This candidate uses one canonical artifact family. Use only its listed columns and capability. confirm_when is observation-only in this mode; the schema rejects event/correlation mixes. Keep the description equal to the shown canonical observation wording. A broader causal interpretation must remain unconfirmed for review, not be replaced by this narrow observation.\n"
+            if observation_only
+            else "If confirm_when uses observation, do not mix it with event or correlation conditions. Use only the listed family, capability, and fields. The host requires canonical observation wording; do not use placeholders or add causal or broader prose. If the supplied hypothesis needs broader interpretation, preserve it for review instead of rewriting it as a narrower typed observation. min_count defaults to 1 and counts distinct canonical evidence IDs.\n"
+        )
+        + "confirm_when and refute_when must be JSON objects. Output JSON only.\n"
         "</RULES>\n"
     )
     # Only rules that actually matched this candidate may be disclosed.
@@ -1070,6 +1176,7 @@ def build_hypothesis_drafter_messages(
         )
     user = (
         f"gap_area: {json.dumps(gap_area, ensure_ascii=False, default=str)}\n"
+        f"draft_feedback: {json.dumps(gap_area.get('draft_feedback') or {}, ensure_ascii=False, default=str)}\n"
         f"matched_rule_ids: {json.dumps(matched_rule_ids, ensure_ascii=False)}\n"
         f"{observed_block}"
         f"available_rules: {json.dumps(slim_rules, ensure_ascii=False, default=str)}\n"

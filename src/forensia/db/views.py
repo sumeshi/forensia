@@ -146,6 +146,30 @@ def case_snapshot(case: Case, db: CaseDB) -> dict[str, Any]:
             if session_row
             else None
         )
+        if session:
+            open_attempt = _row(
+                db,
+                "SELECT a.attempt_id, a.phase, a.start_time "
+                "FROM trace.llm_provider_attempts a "
+                "JOIN trace.llm_logical_calls c USING (logical_call_id) "
+                "WHERE c.session_id = ? AND a.status = 'open' "
+                "ORDER BY a.retry_ordinal DESC, a.start_time DESC LIMIT 1",
+                (session["session_id"],),
+            )
+            stop_command = _row(
+                db,
+                "SELECT command_id, status, reason FROM trace.runtime_commands "
+                "WHERE operation = 'stop' ORDER BY created_at DESC LIMIT 1",
+                (),
+            )
+            session["provider_wait"] = {
+                "waiting": open_attempt is not None,
+                "attempt": open_attempt,
+                "stop_requested": bool(
+                    stop_command and stop_command["status"] in {"accepted", "applying"}
+                ),
+                "stop_command": stop_command,
+            }
         usage = None
         if session:
             aggregate = llm_session_aggregates(db, session["session_id"])
@@ -424,7 +448,7 @@ def llm_session_aggregates(db: CaseDB, session_id: str) -> dict[str, Any]:
         """
         SELECT
             COUNT(*),
-            SUM(CASE WHEN error_type IS NOT NULL OR http_status >= 400 THEN 1 ELSE 0 END),
+            SUM(CASE WHEN status != 'application_discard' AND (error_type IS NOT NULL OR http_status >= 400) THEN 1 ELSE 0 END),
             SUM(CASE WHEN retry_ordinal > 0 THEN 1 ELSE 0 END),
             SUM(CASE WHEN duplicate_of IS NOT NULL THEN 1 ELSE 0 END),
             SUM(CASE WHEN input_tokens_source = 'provider_actual' THEN input_tokens ELSE 0 END),
@@ -445,11 +469,17 @@ def llm_session_aggregates(db: CaseDB, session_id: str) -> dict[str, Any]:
         "SELECT COUNT(*) FROM trace.llm_deterministic_ops WHERE session_id = ?",
         (sid,),
     ).fetchone()[0]
+    interrupted = db.execute(
+        "SELECT COUNT(*) FROM trace.llm_provider_attempts "
+        "WHERE session_id = ? AND error_type = 'process_interrupted'",
+        (sid,),
+    ).fetchone()[0]
     return {
         "session_id": sid,
         "logical_call_count": logical,
         "provider_attempt_count": row[0] or 0,
         "provider_attempt_failures": row[1] or 0,
+        "interrupted_attempts": interrupted or 0,
         "provider_attempt_retries": row[2] or 0,
         "duplicate_attempts": row[3] or 0,
         "actual_input_tokens": row[4] if row[10] else None,

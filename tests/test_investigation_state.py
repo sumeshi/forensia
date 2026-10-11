@@ -24,6 +24,239 @@ from forensia.investigation.report_gap import (
 class InvestigationStateTests(unittest.TestCase):
     """Test investigation_state singleton table."""
 
+    def test_exhausted_early_gap_drafts_do_not_starve_later_persisted_gaps(
+        self,
+    ) -> None:
+        from forensia.investigation.investigation_cycle import (
+            _BroadPlanContext,
+            _persisted_gap_drafts,
+            _select_gap_drafts,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                for index in range(5):
+                    db.execute(
+                        "INSERT INTO report_gaps (gap_id, description, kind, status, origin) "
+                        "VALUES (?, ?, 'needs_review', 'open', 'test')",
+                        [f"GAP-{index}", f"Persisted gap {index}"],
+                    )
+                ctx = _BroadPlanContext(
+                    state=SessionState(session_id="gap-starvation"),
+                    db=db,
+                    session_id="gap-starvation",
+                    base_url="unused",
+                    model="unused",
+                    plan_cycle=1,
+                    observed_keypoints=[],
+                    observed_keypoint_labels=[],
+                    emit_fn=None,
+                    llm_status_fn=lambda _: None,
+                    progress_callback=None,
+                    case_profile=None,
+                )
+
+                selected, _ = _select_gap_drafts(
+                    ctx, _persisted_gap_drafts(ctx), limit=4
+                )
+                self.assertEqual(len(selected), 4)
+                for index, item in enumerate(selected):
+                    candidate = item["candidate"]
+                    db.execute(
+                        "INSERT INTO trace.investigation_steps "
+                        "(step_id, session_id, iteration, phase, input_json, output_json, created_at) "
+                        "VALUES (?, 'gap-starvation', 1, 'plan-broad-candidate', ?, ?, now())",
+                        [
+                            f"gap-attempt-{index}",
+                            json.dumps(
+                                {
+                                    "candidate_ref": candidate["candidate_ref"],
+                                    "candidate_fingerprint": candidate[
+                                        "candidate_fingerprint"
+                                    ],
+                                    "input_fingerprint": item["input_fingerprint"],
+                                }
+                            ),
+                            json.dumps(
+                                {"status": "admission_rejected", "draft_calls_used": 1}
+                            ),
+                        ],
+                    )
+
+                remaining, exhausted = _select_gap_drafts(
+                    ctx, _persisted_gap_drafts(ctx), limit=1
+                )
+
+        self.assertEqual(exhausted, 4)
+        self.assertEqual(remaining[0]["candidate"]["candidate_ref"], "gap-GAP-4")
+
+    def test_family_rule_fairness_and_gap_draft_survive_finding_flood(self) -> None:
+        from forensia.context.investigation_candidates import (
+            build_investigation_candidates,
+        )
+        from forensia.investigation.investigation_cycle import (
+            _BroadPlanContext,
+            _select_candidate_drafts,
+            _select_gap_drafts,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with CaseDB(Case.init(tmpdir)) as db:
+                for index in range(12):
+                    evidence_id = f"flood-{index:02d}"
+                    db.execute(
+                        "INSERT INTO evtx_events (evidence_id, source_file, computer, timestamp, event_id) "
+                        "VALUES (?, ?, 'host-a', '2026-01-02 03:04:05', 4624)",
+                        [evidence_id, f"source-{index:02d}"],
+                    )
+                    db.execute(
+                        "INSERT INTO findings (finding_id, rule_id, title, status, evidence) "
+                        "VALUES (?, 'flood-rule', 'Repeated login', 'accepted', ?)",
+                        [
+                            f"flood-finding-{index:02d}",
+                            json.dumps([{"evidence_id": evidence_id}]),
+                        ],
+                    )
+                for index in range(2):
+                    evidence_id = f"rare-{index}"
+                    db.execute(
+                        "INSERT INTO evtx_events (evidence_id, source_file, computer, timestamp, event_id) "
+                        "VALUES (?, ?, 'host-b', '2026-01-02 03:04:05', 1102)",
+                        [evidence_id, f"rare-source-{index}"],
+                    )
+                    db.execute(
+                        "INSERT INTO findings (finding_id, rule_id, title, status, evidence) "
+                        "VALUES (?, ?, 'Rare event', 'accepted', ?)",
+                        [
+                            f"rare-finding-{index}",
+                            f"rare-rule-{index}",
+                            json.dumps([{"evidence_id": evidence_id}]),
+                        ],
+                    )
+                db.execute(
+                    "INSERT INTO mft_entries (evidence_id, source_file, record_number, file_path) "
+                    "VALUES ('mft-1', 'mft-source', 1, 'C:/Temp/payload.exe')"
+                )
+                db.execute(
+                    "INSERT INTO findings (finding_id, rule_id, title, status, evidence) "
+                    "VALUES ('mft-finding', 'mft-rule', 'File activity', 'accepted', '[{\"evidence_id\":\"mft-1\"}]')"
+                )
+                ctx = _BroadPlanContext(
+                    state=SessionState(session_id="fairness"),
+                    db=db,
+                    session_id="fairness",
+                    base_url="unused",
+                    model="unused",
+                    plan_cycle=1,
+                    observed_keypoints=[],
+                    observed_keypoint_labels=["host_execution_activity (rows=3)"],
+                    emit_fn=None,
+                    llm_status_fn=lambda _: None,
+                    progress_callback=None,
+                    case_profile=None,
+                )
+
+                projection = build_investigation_candidates(db, limit=5)
+                selected, _counts = _select_candidate_drafts(ctx, limit=3)
+                gap_selected, _exhausted = _select_gap_drafts(
+                    ctx,
+                    [{"keypoint_id": "host_execution_activity"}],
+                    limit=1,
+                )
+
+        self.assertEqual(
+            [item["scope"]["source_family"] for item in projection["candidates"][:2]],
+            ["evtx", "mft"],
+        )
+        selected_rules = {
+            rule_id for item in selected for rule_id in item["candidate"]["rule_ids"]
+        }
+        self.assertIn("flood-rule", selected_rules)
+        self.assertIn("mft-rule", selected_rules)
+        self.assertTrue(selected_rules.intersection({"rare-rule-0", "rare-rule-1"}))
+        self.assertEqual(len(gap_selected), 1)
+
+    def test_interrupted_candidate_attempt_consumes_draft_budget_on_resume(
+        self,
+    ) -> None:
+        from forensia.context.investigation_candidates import (
+            build_investigation_candidates,
+        )
+        from forensia.investigation.investigation_cycle import (
+            _BroadPlanContext,
+            _select_candidate_drafts,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with CaseDB(Case.init(tmpdir)) as db:
+                evidence_id = "evtx-interrupted"
+                row = {
+                    "evidence_id": evidence_id,
+                    "source_file": "source-interrupted",
+                    "computer": "host-a",
+                    "timestamp": "2026-01-02T03:04:05",
+                    "event_id": 4624,
+                }
+                db.execute(
+                    "INSERT INTO evtx_events (evidence_id, source_file, computer, timestamp, event_id) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    [
+                        evidence_id,
+                        row["source_file"],
+                        row["computer"],
+                        row["timestamp"],
+                        row["event_id"],
+                    ],
+                )
+                db.execute(
+                    "INSERT INTO findings (finding_id, rule_id, title, status, evidence) "
+                    "VALUES ('finding-interrupted', 'rule-interrupted', 'Observed', 'accepted', ?)",
+                    [json.dumps([row])],
+                )
+                ctx = _BroadPlanContext(
+                    state=SessionState(session_id="resume"),
+                    db=db,
+                    session_id="resume",
+                    base_url="unused",
+                    model="unused",
+                    plan_cycle=2,
+                    observed_keypoints=[],
+                    observed_keypoint_labels=[],
+                    emit_fn=None,
+                    llm_status_fn=lambda _: None,
+                    progress_callback=None,
+                    case_profile=None,
+                )
+                candidate = build_investigation_candidates(db, limit=1)["candidates"][0]
+                from forensia.investigation.investigation_cycle import (
+                    _candidate_input_fingerprint,
+                )
+
+                fingerprint = _candidate_input_fingerprint(candidate, ctx, {})
+                db.execute(
+                    "INSERT INTO trace.investigation_steps "
+                    "(step_id, session_id, iteration, phase, input_json, output_json, created_at) "
+                    "VALUES ('prior-attempt', 'prior-session', 1, 'plan-broad-candidate', ?, ?, now())",
+                    [
+                        json.dumps(
+                            {
+                                "candidate_ref": candidate["candidate_ref"],
+                                "candidate_fingerprint": candidate[
+                                    "candidate_fingerprint"
+                                ],
+                                "input_fingerprint": fingerprint,
+                            }
+                        ),
+                        json.dumps({"status": "interrupted", "draft_calls_used": 1}),
+                    ],
+                )
+
+                selected, counts = _select_candidate_drafts(ctx, limit=1)
+
+        self.assertEqual(selected, [])
+        self.assertEqual(counts["attempt_exhausted_count"], 1)
+
     def test_resume_preserves_objective_and_json_policy(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -270,16 +503,13 @@ class InvestigationStateTests(unittest.TestCase):
             )
             self.assertFalse(severity_diverse["counts"]["eligibility_complete"])
             self.assertIsNone(severity_diverse["counts"]["eligible_candidate_count"])
-            self.assertEqual(
-                [item["severity"] for item in severity_diverse["candidates"]],
-                ["high", "medium"],
-            )
+            self.assertEqual(len(severity_diverse["candidates"]), 2)
             self.assertEqual(severity_diverse["candidates"][1]["match_count"], 2)
             self.assertEqual(eligible_only["counts"]["candidate_count"], 5)
             self.assertIsNone(eligible_only["counts"]["eligible_candidate_count"])
-            self.assertEqual(eligible_only["counts"]["eligibility_evaluated_count"], 2)
+            self.assertEqual(eligible_only["counts"]["eligibility_evaluated_count"], 3)
             self.assertFalse(eligible_only["counts"]["eligibility_complete"])
-            self.assertEqual(eligible_only["counts"]["excluded_count"], 1)
+            self.assertEqual(eligible_only["counts"]["excluded_count"], 2)
             self.assertIn("rare-rule", eligible_only["candidates"][0]["rule_ids"])
             changed_flood = next(
                 item for item in changed["candidates"] if item["evidence_count"] == 26

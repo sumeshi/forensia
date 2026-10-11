@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from forensia.core.case import Case
 from forensia.core.textutil import normalize_localized_dates
@@ -22,6 +24,134 @@ from forensia.report.sections.section_finalize import (
 
 class SectionNarrativeTests(unittest.TestCase):
     """Narration fallbacks, block assembly, markdown preprocessing, question routing."""
+
+    def test_disabled_narration_persists_current_default_report_sections(self) -> None:
+        import asyncio
+
+        from forensia.report.sections import section_refresher
+        from forensia.report.sections.report_input import resolve_report_sources
+        from forensia.report.template_export import seed_case_report_templates
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            seed_case_report_templates(case)
+            events: list[dict] = []
+            with CaseDB(case) as db:
+                sources = resolve_report_sources(case, case.report_template_dir)
+                evidence_id = "evtx-" + "b" * 64 + "-security-000000000001"
+                db.execute(
+                    """
+                    INSERT INTO evtx_events (
+                        evidence_id, event_id, timestamp, computer, channel, raw_json
+                    ) VALUES (?, 4624, '2026-10-12 10:00:00', 'HOST-1', 'Security', '{}')
+                    """,
+                    [evidence_id],
+                )
+                db.execute(
+                    """
+                    INSERT INTO findings (
+                        finding_id, title, summary, severity, confidence, status, evidence
+                    ) VALUES (
+                        'finding-refresh-test-1', 'Accepted logon finding',
+                        'Grounded default overview result', 'high', 0.9, 'accepted', ?
+                    )
+                    """,
+                    [json.dumps([{"evidence_id": evidence_id}])],
+                )
+                with patch.object(section_refresher, "_narrate_projection") as narrate:
+                    result = asyncio.run(
+                        section_refresher.async_refresh_report_sections(
+                            case=case,
+                            db=db,
+                            session_id="default-report-refresh",
+                            iteration=1,
+                            base_url="",
+                            model="",
+                            sections=sources,
+                            progress_callback=events.append,
+                            focus_sections=[],
+                            allow_narration=False,
+                        )
+                    )
+                    stored = db.execute(
+                        "SELECT section_key, body, stale FROM report_sections"
+                    ).fetchall()
+                    status = result["report_status"]
+
+            self.assertEqual(5, len(sources))
+            self.assertEqual(5, result["updated_sections"])
+            self.assertEqual(5, len(stored))
+            self.assertEqual(
+                {source.section_key for source in sources},
+                {row[0] for row in stored},
+            )
+            self.assertTrue(all(row[1] and not row[2] for row in stored))
+            self.assertEqual([], status["missing_section_keys"])
+            self.assertEqual([], status["stale_section_keys"])
+            self.assertFalse(
+                any(
+                    event.get("kind") == "report.section"
+                    and event.get("status") == "failed"
+                    for event in events
+                ),
+                events,
+            )
+            narrate.assert_not_called()
+
+    def test_stop_during_narration_propagates_through_report_refresh(self) -> None:
+        import asyncio
+        from types import SimpleNamespace
+
+        from forensia.core.control import InvestigationStopped
+        from forensia.report.sections import section_refresher
+
+        projection = {
+            "request": {"section_key": "1_overview", "title": "Overview"},
+            "body": "Deterministic projection",
+            "rendered": ["Deterministic projection"],
+            "first_narrative_index": 0,
+            "block_projections": [{"results": [{"row_count": 1}]}],
+            "evidence_results": [],
+            "input_signature": "signature",
+        }
+
+        async def stopped_narration(*_args, **_kwargs):
+            raise InvestigationStopped("operator requested stop")
+
+        with (
+            patch("forensia.report.report_brief.build_report_brief", return_value={}),
+            patch.object(
+                section_refresher, "_case_evidence_signature", return_value=""
+            ),
+            patch.object(section_refresher, "_report_input_digest", return_value=""),
+            patch.object(
+                section_refresher, "_prepare_projection", return_value=projection
+            ),
+            patch.object(section_refresher, "_section_is_current", return_value=False),
+            patch.object(
+                section_refresher,
+                "_persist_projection",
+                return_value=projection["body"],
+            ),
+            patch.object(section_refresher, "_record_projection"),
+            patch.object(section_refresher.asyncio, "to_thread", new=stopped_narration),
+            patch.object(section_refresher, "_emit_section_completed"),
+            patch.object(section_refresher, "_emit_narration_outcome"),
+            self.assertRaises(InvestigationStopped),
+        ):
+            asyncio.run(
+                section_refresher.async_refresh_report_sections(
+                    case=None,
+                    db=None,
+                    session_id="session-stop",
+                    iteration=1,
+                    base_url="",
+                    model="",
+                    sections=[SimpleNamespace(section_key="1_overview")],
+                    progress_callback=None,
+                    focus_sections=[],
+                )
+            )
 
     def test_template_dir_overrides_report_wording_and_headings(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -81,6 +211,77 @@ structured_answer:
 
         self.assertTrue(
             any(reason.startswith("claim_traceability:") for reason in reasons)
+        )
+
+    def test_narration_appends_unverified_text_without_replacing_material(self) -> None:
+        from forensia.report.sections.section_refresher import (
+            _body_with_narration,
+            _narration_admission_reasons,
+        )
+
+        table = (
+            "## Execution activity\n\n"
+            "| Executable | Count |\n|---|---|\n| cleanup.exe | 2 |"
+        )
+        projection = {
+            "body": table,
+            "rendered": [table],
+            "blocks": [{"heading": "Execution activity"}],
+            "first_narrative_index": 0,
+            "block_projections": [{"results": []}],
+            "evidence_results": [],
+            "request": {
+                "section_key": "3_technical",
+                "title": "Technical Details",
+                "template_dir": None,
+                "template_preamble": "",
+            },
+        }
+        with patch(
+            "forensia.config.get_llm_settings", return_value={"output_language": "ja"}
+        ):
+            accepted = _body_with_narration(
+                projection, "This pattern needs correlation."
+            )
+            rejected = _body_with_narration(
+                projection,
+                "## Replacement table\n\n| Claim | Result |\n|---|---|\n| proved | yes |",
+            )
+
+        self.assertIn(table, accepted)
+        self.assertIn("**未確認のモデル解釈:**", accepted)
+        self.assertIn(table, rejected)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                reasons = _narration_admission_reasons(
+                    db,
+                    projection,
+                    table,
+                    rejected,
+                    "## Replacement table\n\n| Claim | Result |\n|---|---|\n| proved | yes |",
+                )
+        self.assertIn("narration_contains_protected_block_structure", reasons)
+
+        allowed = "evtx-" + "a" * 64 + "-security-000000000001"
+        other_block = "evtx-" + "b" * 64 + "-security-000000000002"
+        projection["block_projections"][0]["results"] = [{"evidence_ids": [allowed]}]
+        outside_id_paragraph = f"This may be related to {other_block}."
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                reasons = _narration_admission_reasons(
+                    db,
+                    projection,
+                    table,
+                    _body_with_narration(projection, outside_id_paragraph),
+                    outside_id_paragraph,
+                )
+        self.assertTrue(
+            any(
+                reason.startswith("evidence_outside_narrative_block:")
+                for reason in reasons
+            )
         )
 
     def test_localized_numeric_date_is_normalized(self) -> None:

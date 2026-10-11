@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
 from forensia.config import get_llm_settings, get_settings
 from forensia.context.prompt_context import fit_prompt_messages
-from forensia.core.control import check_stop
+from forensia.core.control import InvestigationStopped, check_stop
 from forensia.core.progress_event import progress_event
 from forensia.llm.attempt import _post_attempt
 from forensia.llm.request_metadata import (
@@ -201,6 +201,21 @@ def _close_logical_call_if_owned(
         telemetry.close_logical_call(logical_call_id=logical_call_id, status=status)  # type: ignore[arg-type]
 
 
+def _check_stop_for_owned_call(
+    telemetry: LLMTelemetry | None,
+    logical_call_id: str | None,
+    *,
+    owned: bool,
+) -> None:
+    try:
+        check_stop()
+    except InvestigationStopped:
+        _close_logical_call_if_owned(
+            telemetry, logical_call_id, owned=owned, status="discarded"
+        )
+        raise
+
+
 def _record_wait(
     telemetry: LLMTelemetry | None, duration_s: float, target: str
 ) -> None:
@@ -239,7 +254,7 @@ def chat_completion(
     json_schema: dict | None = None,
     *,
     logical_call_id: str | None = None,
-    attempt_ordinal: int = 0,
+    attempt_ordinal: int | list[int] = 0,
     phase: str | None = None,
     retry_class: str | None = None,
     retry_reason: str | None = None,
@@ -290,6 +305,9 @@ def chat_completion(
             body["response_format"] = _schema_response_format(json_schema, strict=False)
 
     request_fingerprint = _request_fingerprint(messages) if telemetry else None
+    ordinal = (
+        attempt_ordinal if isinstance(attempt_ordinal, list) else [attempt_ordinal]
+    )
     input_chars = sum(len(item.get("content", "")) for item in messages)
     prompt_metadata = _prompt_metadata(messages)
 
@@ -298,6 +316,9 @@ def chat_completion(
         response = None
         while downgrade_tries <= 2:
             try:
+                check_stop()
+                current_ordinal = ordinal[0]
+                ordinal[0] += 1
                 response, att_id, duration, started = _post_attempt(
                     _get_http_client(),
                     url=url,
@@ -305,7 +326,7 @@ def chat_completion(
                     headers=_auth_headers(),
                     telemetry=telemetry,
                     logical_call_id=logical_call_id,
-                    ordinal=attempt_ordinal,
+                    ordinal=current_ordinal,
                     model=model,
                     schema_mode=schema_mode,
                     request_fingerprint=request_fingerprint,
@@ -323,6 +344,13 @@ def chat_completion(
                     prompt_metadata=prompt_metadata,
                 )
             except httpx.TimeoutException as exc:
+                try:
+                    check_stop()
+                except InvestigationStopped:
+                    _close_logical_call_if_owned(
+                        telemetry, logical_call_id, owned=owned, status="discarded"
+                    )
+                    raise
                 _close_logical_call_if_owned(
                     telemetry, logical_call_id, owned=owned, status="failed"
                 )
@@ -332,6 +360,7 @@ def chat_completion(
                     )
                 raise LLMRequestTimeoutError("LLM request timed out") from exc
             except httpx.ConnectError:
+                _check_stop_for_owned_call(telemetry, logical_call_id, owned=owned)
                 if attempt == _LLM_HTTP_RETRY_MAX:
                     _close_logical_call_if_owned(
                         telemetry, logical_call_id, owned=owned, status="failed"
@@ -347,12 +376,21 @@ def chat_completion(
                 _record_wait(telemetry, wait_s, "http_retry_backoff")
                 time.sleep(wait_s)
                 break
+            except InvestigationStopped:
+                _close_logical_call_if_owned(
+                    telemetry, logical_call_id, owned=owned, status="discarded"
+                )
+                raise
             except Exception:
                 _close_logical_call_if_owned(
                     telemetry, logical_call_id, owned=owned, status="failed"
                 )
                 raise
-            if response.status_code == 400 and json_schema:
+            if (
+                response.status_code == 400
+                and json_schema
+                and not _is_context_window_error(400, _redacted_error_body(response))
+            ):
                 next_mode = _downgrade_schema_mode(
                     body,
                     json_schema,
@@ -375,6 +413,7 @@ def chat_completion(
                         )
                     schema_mode = next_mode
                     downgrade_tries += 1
+                    _check_stop_for_owned_call(telemetry, logical_call_id, owned=owned)
                     continue
             break
         if response is None:
@@ -395,6 +434,7 @@ def chat_completion(
                     retry_class="context_window",
                     retry_reason="provider rejected request context",
                 )
+            _check_stop_for_owned_call(telemetry, logical_call_id, owned=owned)
             _close_logical_call_if_owned(
                 telemetry, logical_call_id, owned=owned, status="failed"
             )
@@ -414,6 +454,7 @@ def chat_completion(
                     error_body_summary=error_body,
                     duration_ms=duration,
                 )
+            _check_stop_for_owned_call(telemetry, logical_call_id, owned=owned)
             if json_schema and "Failed to parse input" in response.text:
                 next_mode = _downgrade_schema_mode(
                     body,
@@ -452,6 +493,7 @@ def chat_completion(
                     duration_ms=duration,
                     discarded_reason="http_error",
                 )
+            _check_stop_for_owned_call(telemetry, logical_call_id, owned=owned)
             _close_logical_call_if_owned(
                 telemetry, logical_call_id, owned=owned, status="failed"
             )
@@ -512,10 +554,10 @@ def chat_completion(
                 finish_reason=str(finish_reason) if finish_reason is not None else None,
                 input_tokens=completion.input_tokens if completion else None,
                 output_tokens=completion.output_tokens if completion else None,
-                input_tokens_source=completion.usage_source
+                input_tokens_source=completion.input_tokens_source
                 if completion
                 else "unknown",
-                output_tokens_source=completion.usage_source
+                output_tokens_source=completion.output_tokens_source
                 if completion
                 else "unknown",
                 output_chars=len(content),
@@ -528,6 +570,7 @@ def chat_completion(
                 accepted=not unusable_truncation,
                 discarded_reason=truncation_reason if unusable_truncation else None,
             )
+        _check_stop_for_owned_call(telemetry, logical_call_id, owned=owned)
         if complete_json:
             _close_logical_call_if_owned(
                 telemetry, logical_call_id, owned=owned, status="success"
@@ -585,6 +628,7 @@ async def outage_wait_until_recovered(
                 headers=_auth_headers(),
             )
             if r.status_code == 200:
+                check_stop()
                 return
         except httpx.HTTPError, httpx.RequestError:
             pass

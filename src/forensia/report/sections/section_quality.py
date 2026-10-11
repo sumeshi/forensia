@@ -36,28 +36,6 @@ def _title_from_template_body(template_body: str, fallback: str) -> str:
     return title or fallback
 
 
-def _duplicate_finding_titles(db: CaseDB, body: str) -> list[str]:
-    """Detect finding titles that appear more than twice in a section body."""
-    lowered_body = body.casefold()
-    duplicates: list[str] = []
-    rows = fetch_records(
-        db,
-        """
-        SELECT DISTINCT title
-        FROM findings
-        WHERE COALESCE(title, '') != ''
-        """,
-    )
-    for row in rows:
-        title = str(row.get("title") or "").strip()
-        if len(title) < 5:
-            continue
-        count = lowered_body.count(title.casefold())
-        if count > 2:
-            duplicates.append(title)
-    return duplicates
-
-
 def _correlation_finding_ids(finding_ids: list[str], db: CaseDB) -> list[str]:
     """Filter a list of finding IDs to those belonging to correlation rules."""
     if not finding_ids:

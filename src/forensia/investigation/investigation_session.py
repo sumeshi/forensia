@@ -46,6 +46,7 @@ from forensia.llm.llm_client import (
     LLMServerUnavailableError,
     outage_wait_until_recovered,
 )
+from forensia.llm.telemetry import interrupt_open_calls
 from forensia.report.sections.report_input import REPORT_INPUT_PHASE
 from forensia.report.sections.status import build_report_status, overlay_report_status
 from forensia.report.template_export import seed_case_report_templates
@@ -173,6 +174,7 @@ def reconcile_stale_sessions(db: CaseDB, *, recovered_owner: bool = False) -> in
             terminal_reason=format_terminal_reason("abandoned"),
             finished_at=finish,
         )
+        interrupt_open_calls(db, str(session_id))
         reconciled += 1
     if active:
         raise RuntimeError(

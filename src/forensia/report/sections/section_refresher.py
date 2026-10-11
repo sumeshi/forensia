@@ -10,6 +10,7 @@ from dataclasses import asdict
 from typing import Any
 
 from forensia.core.case import Case
+from forensia.core.control import InvestigationStopped
 from forensia.core.log import log as _log
 from forensia.core.progress_event import progress_event
 from forensia.core.session import LLMBudgetExceededError
@@ -22,6 +23,7 @@ from forensia.report.answers.keypoint_catalog import _default_keypoints_for_sect
 from forensia.report.answers.table_registry import (
     TABLE_BLOCKS,
     render_table_block,
+    source_receipt_metadata,
 )
 from forensia.report.evidence_refs import (
     EVIDENCE_ID_PATTERN,
@@ -29,7 +31,6 @@ from forensia.report.evidence_refs import (
 )
 from forensia.report.render.formats import load_report_formats
 from forensia.report.render.markdown import _markdown_table
-from forensia.report.report_brief import write_report_brief
 from forensia.report.sections.prompts import build_paragraph_narrate_messages
 from forensia.report.sections.report_input import SectionSource
 from forensia.report.sections.section_assembly import (
@@ -227,22 +228,60 @@ def _block_projection(
 
     builder = str(block.get("builder") or "").strip()
     if mode == "table" and builder:
-        table_body = render_table_block(db, builder)
-        rows = TABLE_BLOCKS.get(builder)
+        table_spec = TABLE_BLOCKS.get(builder)
+        table_rows = table_spec.builder(db) if table_spec else []
+        table_body = render_table_block(db, builder, rows=table_rows)
         evidence_results: list[dict[str, Any]] = []
-        if rows is not None:
-            rendered_ids = sorted(set(EVIDENCE_ID_PATTERN.findall(table_body or "")))
+        if table_spec is not None:
+            source_metadata = source_receipt_metadata(db, table_spec)
+            rendered_ids = sorted(
+                {
+                    evidence_id
+                    for row in table_rows
+                    for evidence_id in _extract_evidence_ids_from_value(row)
+                }
+            )
             evidence_results.append(
                 {
                     "kind": "rows",
                     "source_ref": f"table:{builder}",
+                    "query_ref": builder,
+                    "source_kind": "deterministic_table",
                     "block_heading": heading,
-                    "row_count": len(rendered_ids),
+                    "row_count": len(table_rows),
                     "evidence_ids": rendered_ids,
+                    "sample_rows": table_rows[:10],
+                    "table_rows_sha256": _canonical_hash(table_rows),
+                    **source_metadata,
+                    "case_refs": sorted(
+                        {
+                            str(row[key])
+                            for row in table_rows
+                            for key in ("gap_id", "task_id", "hypothesis_id")
+                            if row.get(key)
+                            and row[key] not in {"Not admitted", "未登録（未採用）"}
+                        }
+                    ),
                 }
             )
         body = table_body or "_No rows available._"
-        projection.update({"builder": builder, "body": body})
+        projection.update(
+            {
+                "builder": builder,
+                "body": body,
+                "table_rows_sha256": (
+                    evidence_results[0]["table_rows_sha256"] if evidence_results else ""
+                ),
+                "source_ids": (
+                    evidence_results[0]["source_ids"] if evidence_results else []
+                ),
+                "source_receipt_sha256": (
+                    evidence_results[0]["source_receipt_sha256"]
+                    if evidence_results
+                    else ""
+                ),
+            }
+        )
         return body, evidence_results, projection
 
     answer_spec = str(block.get("answer_spec") or "").strip()
@@ -304,6 +343,13 @@ def _block_projection(
         source_ref, result = _execute_keypoint(case, db, keypoint)
         result["source_ref"] = source_ref
         result["block_heading"] = heading
+        result["case_refs"] = sorted(
+            {
+                str(value)
+                for value in result.get("hypothesis_ids") or []
+                if str(value).strip()
+            }
+        )
         result_rows.append(result)
     rendered = []
     for result in result_rows:
@@ -333,6 +379,42 @@ def _prepare_projection(
         body, block_results, block_projection = _block_projection(
             case, db, source.section_key, block
         )
+        for result in block_results:
+            result["source_state_signature"] = case_signature
+            if result.get("source_kind") == "keypoint":
+                result["keypoint_result_sha256"] = _canonical_hash(
+                    {
+                        key: value
+                        for key, value in result.items()
+                        if key not in {"keypoint_result_sha256", "block_body_sha256"}
+                    }
+                )
+        if str(block.get("mode") or "").strip().casefold() == "table" and block_results:
+            result = block_results[0]
+            source_ids = result.get("source_ids") or []
+            from forensia.config import get_llm_settings
+
+            formats = load_report_formats(case.report_template_dir)["table_provenance"]
+            language = str(get_llm_settings().get("output_language", "ja")).casefold()
+            provenance = formats.get(language) or formats["en"]
+            tables = (
+                ", ".join(f"`{value}`" for value in result.get("source_tables") or [])
+                or "—"
+            )
+            families = (
+                ", ".join(f"`{value}`" for value in result.get("source_families") or [])
+                or "—"
+            )
+            shown_source_ids = ", ".join(f"`{value}`" for value in source_ids[:3])
+            if len(source_ids) > 3:
+                shown_source_ids += f", … +{len(source_ids) - 3}"
+            body += "\n\n" + provenance.format(
+                query=result["query_ref"],
+                tables=tables,
+                families=families,
+                source_count=len(source_ids),
+                source_ids=f" ({shown_source_ids})" if shown_source_ids else "",
+            )
         heading = str(block.get("heading") or "").strip()
         if heading and not body_starts_with_heading(body, heading):
             body = f"## {heading}\n\n{body}"
@@ -343,6 +425,11 @@ def _prepare_projection(
         ):
             first_narrative_index = index
         rendered.append(body)
+        if block_results:
+            for result in block_results:
+                result["block_body_sha256"] = hashlib.sha256(
+                    body.encode("utf-8")
+                ).hexdigest()
         evidence_results.extend(block_results)
         block_projections.append(block_projection)
     deterministic_body = assemble_section_body(
@@ -370,7 +457,6 @@ def _prepare_projection(
                 "body": source.body,
                 "meta": asdict(source.meta),
             },
-            "case_evidence_signature": case_signature,
             "projection": projection,
         }
     )
@@ -380,51 +466,12 @@ def _prepare_projection(
         "rendered": rendered,
         "body": deterministic_body,
         "evidence_results": evidence_results,
-        "projection": projection,
+        "block_projections": block_projections,
         "input_signature": signature,
         "projection_signature": _canonical_hash(projection),
         "report_context": report_context,
         "first_narrative_index": first_narrative_index,
     }
-
-
-def _fallback_paragraph(
-    heading: str, evidence_results: list[dict[str, Any]], template_dir: Any
-) -> str:
-    formats = load_report_formats(template_dir)["narrative_fallback"]
-    evidence_ids = _evidence_ids(evidence_results)
-    rows = [row for result in evidence_results for row in _result_rows(result)]
-    if not rows:
-        return str(formats["unsupported"]).format(heading=heading)
-    observations = []
-    for row in rows[:3]:
-        parts = [
-            str(row.get(key) or "").strip()
-            for key in (
-                "timestamp",
-                "date",
-                "computer",
-                "host",
-                "event_id",
-                "process_name",
-                "file_path",
-            )
-            if str(row.get(key) or "").strip()
-        ]
-        if parts:
-            observations.append(" ".join(parts))
-    reference = (
-        " (evidence: " + ", ".join(evidence_ids[:3]) + ")" if evidence_ids else ""
-    )
-    if observations:
-        return str(formats["observed"]).format(
-            heading=heading,
-            observations="; ".join(observations),
-            reference=reference,
-        )
-    return str(formats["insufficient_detail"]).format(
-        heading=heading, reference=reference
-    )
 
 
 def _narrate_projection(
@@ -437,7 +484,10 @@ def _narrate_projection(
     session_id: str,
 ) -> str:
     request = projection["request"]
-    results = projection["evidence_results"]
+    index = projection["first_narrative_index"]
+    block = projection["blocks"][index]
+    block_projection = projection["block_projections"][index]
+    results = block_projection.get("results") or []
     key_points = []
     for result in results:
         description = str(
@@ -446,34 +496,10 @@ def _narrate_projection(
         count = int(result.get("row_count") or 0)
         key_points.append(f"{description}: {count} matching records")
     evidence_rows = [row for result in results for row in _result_rows(result)]
-    template_body = (
-        str(request.get("template_preamble") or "")
-        + "\n\n"
-        + "\n\n".join(
-            str(block.get("template_body") or "") for block in projection["blocks"]
-        )
-    )
-    digest_parts: list[str] = []
-    omitted_blocks = 0
-    selected_chars = 0
-    for item in projection["rendered"]:
-        if not item.strip():
-            continue
-        extra = len(item) + (2 if digest_parts else 0)
-        if selected_chars + extra > 4000:
-            omitted_blocks += 1
-            continue
-        digest_parts.append(item)
-        selected_chars += extra
-    if omitted_blocks:
-        digest_parts.append(
-            f"[{omitted_blocks} complete deterministic block(s) omitted from narration context.]"
-        )
-    structured_digest = "\n\n".join(digest_parts)
+    template_body = str(block.get("template_body") or "")
+    structured_digest = str(block_projection.get("body") or "")
     messages, schema = build_paragraph_narrate_messages(
-        heading=str(
-            request.get("title") or request.get("section_key") or "Report section"
-        ),
+        heading=str(block.get("heading") or request.get("title") or "Report section"),
         key_points=key_points,
         evidence_rows=evidence_rows[:10],
         template_body=template_body,
@@ -497,8 +523,22 @@ def _body_with_narration(projection: dict[str, Any], paragraph: str) -> str:
     if index is None or not paragraph:
         return projection["body"]
     rendered = list(projection["rendered"])
-    heading = str(projection["blocks"][index].get("heading") or "").strip()
-    rendered[index] = f"## {heading}\n\n{paragraph}" if heading else paragraph
+    from forensia.config import get_llm_settings
+    from forensia.report.render.formats import load_report_formats
+
+    language = str(get_llm_settings().get("output_language", "ja")).casefold()
+    labels = (
+        load_report_formats(projection["request"].get("template_dir"))[
+            "narration_labels"
+        ].get("model_interpretation")
+        or {}
+    )
+    label = str(
+        labels.get(language) or labels.get("en") or "Unverified model interpretation"
+    )
+    interpreted = f"**{label}:** {paragraph}"
+    preserved = rendered[index].rstrip()
+    rendered[index] = f"{preserved}\n\n{interpreted}" if preserved else interpreted
     request = projection["request"]
     return assemble_section_body(str(request.get("template_preamble") or ""), rendered)
 
@@ -508,6 +548,7 @@ def _narration_admission_reasons(
     projection: dict[str, Any],
     fallback: str,
     candidate: str,
+    narrated_paragraph: str | None = None,
 ) -> list[str]:
     """Reject narration that adds section-gate gaps or fatal claim-traceability findings."""
     request = projection["request"]
@@ -525,10 +566,25 @@ def _narration_admission_reasons(
         for gap in candidate_assessment["gaps"]
         if gap not in baseline_gaps
     ]
+    index = projection.get("first_narrative_index")
+    if index is not None and narrated_paragraph:
+        if any(
+            line.lstrip().startswith(("#", "|", "```", "~~~"))
+            for line in narrated_paragraph.splitlines()
+        ):
+            reasons.append("narration_contains_protected_block_structure")
+        results = projection.get("block_projections", [{}])[index].get("results") or []
+        allowed_ids = set(_evidence_ids(results))
+        used_ids = set(EVIDENCE_ID_PATTERN.findall(narrated_paragraph))
+        out_of_block_ids = sorted(used_ids - allowed_ids)
+        if out_of_block_ids:
+            reasons.append(
+                "evidence_outside_narrative_block:" + ", ".join(out_of_block_ids[:5])
+            )
     from forensia.report.report_validation import check_claim_traceability
 
-    baseline_findings = check_claim_traceability(fallback_assessment["body"])
-    candidate_findings = check_claim_traceability(candidate_assessment["body"])
+    baseline_findings = check_claim_traceability(fallback_assessment["body"], db)
+    candidate_findings = check_claim_traceability(candidate_assessment["body"], db)
     baseline_fingerprints = {
         (finding.check_name, finding.message, finding.details)
         for finding in baseline_findings
@@ -582,9 +638,21 @@ def _projection_receipts(
     return [
         {
             "source_ref": str(result.get("source_ref") or ""),
+            "query_ref": str(result.get("query_ref") or result.get("source_ref") or ""),
+            "source_kind": str(result.get("source_kind") or ""),
             "block_heading": str(result.get("block_heading") or ""),
             "row_count": int(result.get("row_count") or 0),
             "evidence_count": len(_evidence_ids([result])),
+            "source_state_signature": str(result.get("source_state_signature") or ""),
+            "keypoint_result_sha256": str(result.get("keypoint_result_sha256") or ""),
+            "table_rows_sha256": str(result.get("table_rows_sha256") or ""),
+            "block_body_sha256": str(result.get("block_body_sha256") or ""),
+            "source_tables": list(result.get("source_tables") or []),
+            "source_families": list(result.get("source_families") or []),
+            "source_ids": list(result.get("source_ids") or []),
+            "source_receipt_sha256": str(result.get("source_receipt_sha256") or ""),
+            "query_description": str(result.get("query_description") or ""),
+            "case_refs": list(result.get("case_refs") or []),
         }
         for result in evidence_results
     ]
@@ -638,6 +706,43 @@ def _record_projection(
             "narration_rejection_reasons": narration_rejection_reasons or [],
         },
     )
+    for result in projection["evidence_results"]:
+        _store_section_run(
+            db,
+            section_key=str(request.get("section_key") or ""),
+            block_heading=str(result.get("block_heading") or ""),
+            iteration=iteration,
+            phase="query",
+            payload={
+                "source_kind": str(result.get("source_kind") or "keypoint"),
+                "source_ref": str(result.get("source_ref") or ""),
+                "query_ref": str(
+                    result.get("query_ref") or result.get("source_ref") or ""
+                ),
+                "source_state_signature": str(
+                    result.get("source_state_signature") or ""
+                ),
+                "keypoint_result_sha256": str(
+                    result.get("keypoint_result_sha256") or ""
+                ),
+                "table_rows_sha256": str(result.get("table_rows_sha256") or ""),
+                "block_body_sha256": str(result.get("block_body_sha256") or ""),
+                "source_tables": list(result.get("source_tables") or []),
+                "source_families": list(result.get("source_families") or []),
+                "source_ids": list(result.get("source_ids") or []),
+                "source_receipt_sha256": str(result.get("source_receipt_sha256") or ""),
+                "query_description": str(result.get("query_description") or ""),
+                "case_refs": list(result.get("case_refs") or []),
+                "result": {
+                    "kind": str(result.get("kind") or "rows"),
+                    "source_ref": str(result.get("source_ref") or ""),
+                    "row_count": int(result.get("row_count") or 0),
+                    "evidence_ids": _evidence_ids([result]),
+                    "evidence_count": len(_evidence_ids([result])),
+                    "hypothesis_ids": list(result.get("hypothesis_ids") or []),
+                },
+            },
+        )
 
 
 def _emit_section_completed(
@@ -725,6 +830,7 @@ async def _refresh_section(
     base_url: str,
     model: str,
     progress_callback: Callable[[dict[str, Any]], None] | None,
+    allow_narration: bool,
 ) -> tuple[str, bool]:
     projection = _prepare_projection(case, db, source, report_brief, case_signature)
     request = projection["request"]
@@ -784,16 +890,23 @@ async def _refresh_section(
             f"[report] {section_key} deterministic projection persisted",
         )
         narrated = False
-        narration_status = "skipped:no_evidence"
+        narration_status = (
+            "skipped:disabled" if not allow_narration else "skipped:no_evidence"
+        )
         narration_rejection_reasons: list[str] = []
         narrative_index = projection["first_narrative_index"]
+        narrative_results = (
+            projection["block_projections"][narrative_index].get("results") or []
+            if narrative_index is not None
+            else []
+        )
         has_evidence = any(
             int(result.get("row_count") or 0) > 0
             or bool(result.get("evidence_ids"))
             or bool(_result_rows(result))
-            for result in projection["evidence_results"]
+            for result in narrative_results
         )
-        if narrative_index is not None and has_evidence:
+        if allow_narration and narrative_index is not None and has_evidence:
             narration_status = "fallback:empty_response"
             try:
                 paragraph = await asyncio.to_thread(
@@ -838,6 +951,8 @@ async def _refresh_section(
                 )
                 narration_status = "fallback:llm_unavailable"
                 paragraph = ""
+            except InvestigationStopped:
+                raise
             except Exception as exc:
                 _log(
                     "REPORT",
@@ -849,7 +964,7 @@ async def _refresh_section(
             narrated_body = _body_with_narration(projection, paragraph)
             if paragraph and narrated_body != fallback:
                 narration_rejection_reasons = _narration_admission_reasons(
-                    db, projection, fallback, narrated_body
+                    db, projection, fallback, narrated_body, paragraph
                 )
                 if narration_rejection_reasons:
                     narration_status = "rejected:quality_gate"
@@ -907,9 +1022,9 @@ async def async_refresh_report_sections(
     sections: list[SectionSource],
     progress_callback: Callable[[dict[str, Any]], None] | None,
     focus_sections: list[str] | None,
+    allow_narration: bool = True,
 ) -> dict[str, Any]:
     """Recompute every adopted section; narrate changed sections once at most."""
-    write_report_brief(case, db)
     from forensia.report.report_brief import build_report_brief
 
     report_brief = build_report_brief(db, case)
@@ -944,8 +1059,11 @@ async def async_refresh_report_sections(
                 base_url=base_url,
                 model=model,
                 progress_callback=progress_callback,
+                allow_narration=allow_narration,
             )
         except asyncio.CancelledError:
+            raise
+        except InvestigationStopped:
             raise
         except Exception as exc:
             _emit_section_failure(

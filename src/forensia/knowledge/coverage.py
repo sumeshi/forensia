@@ -330,17 +330,34 @@ def canonical_observation_claim(spec: VerificationSpec | dict[str, Any]) -> str 
     )
 
 
-def observation_feasibility_error(
+def verification_feasibility_error(
     db: CaseDB,
     condition: dict[str, Any],
     required_entities: list[str] | None = None,
     family_counts: dict[str, int] | None = None,
 ) -> tuple[str, str] | None:
-    """Report typed-observation limits provable from the current canonical rows."""
-    if observation_condition_error(condition):
+    """Report verification limits provable from the current canonical rows.
+
+    Typed observations name their artifact family directly. Event-based specs
+    name EVTX through ``co_observed_event_ids`` or ``event_constraints``; their
+    required entities must therefore exist on canonical EVTX records.
+    """
+    observation = condition.get("observation")
+    event_ids = condition.get("co_observed_event_ids") or []
+    event_constraints = condition.get("event_constraints") or {}
+    has_event_query = (
+        isinstance(event_ids, list)
+        and any(str(event_id).strip().isdigit() for event_id in event_ids)
+    ) or (
+        isinstance(event_constraints, dict)
+        and any(str(event_id).strip().isdigit() for event_id in event_constraints)
+    )
+    if isinstance(observation, dict) and not observation_condition_error(condition):
+        family = observation["family"].strip().lower()
+    elif has_event_query:
+        family = "evtx"
+    else:
         return None
-    observation = condition["observation"]
-    family = observation["family"].strip().lower()
     from forensia.db.evidence_lookup import canonical_record_table
 
     table = canonical_record_table(family)
@@ -348,20 +365,23 @@ def observation_feasibility_error(
         return None
     from forensia.db.schema import declared_schema
 
+    family_entities = set(declared_schema()[table])
     unavailable_entities = sorted(
         {
             str(entity).strip()
             for entity in (required_entities or [])
-            if str(entity).strip()
-            and str(entity).strip() not in declared_schema()[table]
+            if str(entity).strip() and str(entity).strip() not in family_entities
         }
     )
     if unavailable_entities:
         return (
-            "observation_required_entity_unobservable",
-            "required entity columns absent from canonical schema: "
+            "required_entity_unobservable",
+            "required entity columns absent from canonical query-family schema: "
             + ",".join(unavailable_entities),
         )
+
+    if not isinstance(observation, dict) or observation_condition_error(condition):
+        return None
 
     id_column = "artifact_id" if family == "registry" else "evidence_id"
     if family_counts is not None and family in family_counts:

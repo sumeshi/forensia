@@ -9,12 +9,13 @@ derived retry condition, blocker owners) are read from the shared judgment in
 from __future__ import annotations
 
 import hashlib
+import json
 from typing import Any
 
 from forensia.core.session import Hypothesis
 from forensia.db.database import CaseDB
 from forensia.investigation.work_judgment import (
-    OBSERVATION_INFEASIBLE_CODES,
+    VERIFICATION_INFEASIBLE_CODES,
     coverage_readiness,
     judge_work,
 )
@@ -210,7 +211,7 @@ def classify_active_hypotheses_on_stop(
                 unavailable_capabilities=list(judgment.unavailable_capabilities),
                 external_task_ids=judgment.external_task_ids,
                 observation_infeasible=any(
-                    blocker.code in OBSERVATION_INFEASIBLE_CODES
+                    blocker.code in VERIFICATION_INFEASIBLE_CODES
                     for blocker in judgment.blockers
                 ),
             )
@@ -218,7 +219,7 @@ def classify_active_hypotheses_on_stop(
             observation_blockers = [
                 blocker.owner
                 for blocker in judgment.blockers
-                if blocker.code in OBSERVATION_INFEASIBLE_CODES
+                if blocker.code in VERIFICATION_INFEASIBLE_CODES
             ]
             reason = {
                 "deferred": f"Not investigated before {stop_reason_code}",
@@ -378,7 +379,7 @@ def reopen_retryable_work(db: CaseDB, *, manual_resume: bool = False) -> list[st
                 judgment = judge_work(db, [hypothesis_id]).get(hypothesis_id)
                 if judgment is not None:
                     should_reopen = not any(
-                        blocker.code in OBSERVATION_INFEASIBLE_CODES
+                        blocker.code in VERIFICATION_INFEASIBLE_CODES
                         for blocker in judgment.blockers
                     )
             if not should_reopen:
@@ -434,6 +435,158 @@ def stop_summary(db: CaseDB) -> dict[str, int]:
     }
 
 
+def broad_plan_terminal_facts(db: CaseDB, session_id: str) -> dict[str, Any]:
+    """Read durable planner facts for explanations of planner-only stops."""
+
+    def decode(value: Any) -> dict[str, Any]:
+        if isinstance(value, dict):
+            return value
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except json.JSONDecodeError:
+                return {}
+            return parsed if isinstance(parsed, dict) else {}
+        return {}
+
+    row = db.execute(
+        "SELECT output_json FROM trace.investigation_steps "
+        "WHERE session_id = ? AND phase = 'plan-broad' "
+        "ORDER BY iteration DESC, created_at DESC, step_id DESC LIMIT 1",
+        [session_id],
+    ).fetchone()
+    output = decode(row[0]) if row else {}
+    summary = output.get("candidate_summary")
+    summary = summary if isinstance(summary, dict) else {}
+    outcomes = output.get("candidate_outcomes")
+    outcomes = outcomes if isinstance(outcomes, list) else []
+
+    # Include the last per-candidate receipt if interruption occurred before
+    # the enclosing plan step wrote its final candidate_outcomes projection.
+    attempt_rows = db.execute(
+        "SELECT input_json, output_json FROM trace.investigation_steps "
+        "WHERE session_id = ? AND phase = 'plan-broad-candidate' "
+        "ORDER BY created_at DESC, step_id DESC",
+        [session_id],
+    ).fetchall()
+    latest_by_ref = {
+        str(item.get("candidate_ref")): item
+        for item in outcomes
+        if isinstance(item, dict) and item.get("candidate_ref")
+    }
+    for item in attempt_rows:
+        attempt = decode(item[0])
+        attempt.update(decode(item[1]))
+        candidate_ref = str(attempt.get("candidate_ref") or "")
+        if candidate_ref and candidate_ref not in latest_by_ref:
+            latest_by_ref[candidate_ref] = attempt
+
+    rejection_reasons: dict[str, int] = {}
+    rejected_statuses = {"admission_rejected", "feasibility_rejected", "invalid_draft"}
+    awaiting_proposal_correction = False
+    for attempt in latest_by_ref.values():
+        status = str(attempt.get("status") or "")
+        reason = str(attempt.get("reason") or "").strip()
+        if status in rejected_statuses and reason:
+            reason = reason[:240]
+            rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
+        if status == "correcting" or (
+            status in rejected_statuses
+            and int(attempt.get("correction_calls_used") or 0) >= 1
+        ):
+            awaiting_proposal_correction = True
+
+    waits = db.execute(
+        "SELECT kind, hypothesis_id, required_capability, required_source, "
+        "retry_condition, updated_at FROM investigation_tasks "
+        "WHERE status IN ('open', 'in_progress') "
+        "AND kind IN ('blocked', 'untestable', 'external_lookup', 'evidence_acquisition')"
+    ).fetchall()
+    capability_waits = 0
+    external_waits = 0
+    for (
+        kind,
+        hypothesis_id,
+        raw_caps,
+        raw_sources,
+        retry_condition,
+        updated_at,
+    ) in waits:
+        task_kind = str(kind or "")
+        condition = str(retry_condition or "")
+        capabilities = [item for item in str(raw_caps or "").split(",") if item]
+        sources = [item for item in str(raw_sources or "").split(",") if item]
+        judgment = (
+            judge_work(db, [str(hypothesis_id)]).get(str(hypothesis_id))
+            if hypothesis_id
+            else None
+        )
+        capability_blocked = False
+        if condition == "required_capability_available" and capabilities:
+            not_ready, _ = coverage_readiness(db, capabilities)
+            capability_blocked = bool(not_ready) or bool(
+                judgment
+                and any(
+                    blocker.code == "capability_unavailable"
+                    for blocker in judgment.blockers
+                )
+            )
+        if capability_blocked:
+            capability_waits += 1
+
+        waits_for_new_source = condition in {
+            "new_evidence_or_coverage",
+            "new_evidence_or_human_review",
+            "new_evidence_or_manual_resume",
+        }
+        min_count_needs_evidence = bool(
+            judgment
+            and any(
+                blocker.code == "observation_min_count_exceeds_current_family_count"
+                for blocker in judgment.blockers
+            )
+        )
+        if (
+            task_kind in {"external_lookup", "evidence_acquisition"}
+            or waits_for_new_source
+            or min_count_needs_evidence
+        ):
+            query = (
+                "SELECT 1 FROM evidence_sources WHERE updated_at > ? "
+                "AND ingest_status IN ('normalized', 'parsed')"
+            )
+            params: list[Any] = [updated_at]
+            if sources:
+                query += (
+                    " AND artifact_family IN (" + ", ".join("?" for _ in sources) + ")"
+                )
+                params.extend(sources)
+            has_new_source = (
+                db.execute(query + " LIMIT 1", params).fetchone() is not None
+            )
+            if not has_new_source:
+                external_waits += 1
+
+    def count_or_none(key: str) -> int | None:
+        value = summary.get(key)
+        return int(value) if isinstance(value, (int, float)) else None
+
+    return {
+        "planner_status": str(output.get("status") or "unknown"),
+        "candidate_count": count_or_none("candidate_count"),
+        "eligible_candidate_count": count_or_none("eligible_candidate_count"),
+        "unexamined_candidate_count": count_or_none("unexamined_candidate_count"),
+        "draft_cap_omitted_count": count_or_none("draft_cap_omitted_count"),
+        "attempt_exhausted_count": count_or_none("attempt_exhausted_count"),
+        "rejection_reasons": dict(sorted(rejection_reasons.items())),
+        "awaiting_proposal_correction": awaiting_proposal_correction,
+        "awaiting_external_evidence": external_waits > 0,
+        "awaiting_capability": capability_waits > 0,
+        "external_wait_task_count": external_waits,
+        "capability_wait_task_count": capability_waits,
+    }
+
+
 def format_stop_reason(status: str, code: str, summary: dict[str, int]) -> str:
     details = ", ".join(f"{key}={value}" for key, value in summary.items())
     return f"Investigation {status}: {code or 'unspecified'} ({details})"
@@ -444,7 +597,7 @@ def format_stop_reason(status: str, code: str, summary: dict[str, int]) -> str:
 # carries a human-readable cause even when the harness did not emit one.
 _SESSION_TERMINAL_REASONS = {
     "completed": "completed: investigation loop finished normally",
-    "stopped": "stopped: user/operator halted the investigation",
+    "stopped": "stopped: investigation stopped before completion",
     "failed": "failed: investigation terminated on an unhandled exception",
     "cancelled": "cancelled: investigation cancelled before completion",
     "abandoned": "abandoned: process terminated without a terminal receipt",

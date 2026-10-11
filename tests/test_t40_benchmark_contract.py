@@ -40,7 +40,7 @@ class BenchmarkTimelineTest(unittest.TestCase):
         case = _init_case()
         with CaseDB(case) as db:
             db.execute(
-                "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer, target_user, logon_type) VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer, target_user, logon_type, channel, raw_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     "evtx-early",
                     4624,
@@ -48,10 +48,12 @@ class BenchmarkTimelineTest(unittest.TestCase):
                     "HOST1",
                     "alice",
                     "2",
+                    "Security",
+                    '{"winlog":{"provider":{"name":"Microsoft-Windows-Security-Auditing"}}}',
                 ),
             )
             db.execute(
-                "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer, target_user, logon_type) VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer, target_user, logon_type, channel, raw_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     "evtx-in",
                     4624,
@@ -59,11 +61,20 @@ class BenchmarkTimelineTest(unittest.TestCase):
                     "HOST1",
                     "alice",
                     "2",
+                    "Security",
+                    '{"winlog":{"provider":{"name":"Microsoft-Windows-Security-Auditing"}}}',
                 ),
             )
             db.execute(
-                "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer) VALUES (?, ?, ?, ?)",
-                ("evtx-down", 1074, datetime(2015, 3, 22, 17, 30, 0), "HOST1"),
+                "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer, channel, raw_json) VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    "evtx-down",
+                    1074,
+                    datetime(2015, 3, 22, 17, 30, 0),
+                    "HOST1",
+                    "System",
+                    '{"winlog":{"provider":{"name":"User32"}}}',
+                ),
             )
             answer = build_structured_answer(
                 case,

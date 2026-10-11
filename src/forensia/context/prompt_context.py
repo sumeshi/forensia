@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from contextvars import ContextVar
@@ -162,6 +163,34 @@ _OPTIONAL_PROMPT_BLOCKS = (
     "ORG_KNOWLEDGE_INDEX",
     "TEMPLATE_CONTEXT",
 )
+
+
+def prompt_value_projection(value: Any, *, max_items: int = 3) -> Any:
+    """Decode JSON arrays and disclose bounded samples with their omitted count."""
+    if isinstance(value, str) and value.lstrip().startswith("["):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return value
+    if isinstance(value, list):
+        if len(value) <= max_items:
+            return [
+                prompt_value_projection(item, max_items=max_items) for item in value
+            ]
+        return {
+            "count": len(value),
+            "sample": [
+                prompt_value_projection(item, max_items=max_items)
+                for item in value[:max_items]
+            ],
+            "omitted_count": len(value) - max_items,
+        }
+    if isinstance(value, dict):
+        return {
+            key: prompt_value_projection(item, max_items=max_items)
+            for key, item in value.items()
+        }
+    return value
 
 
 def fit_prompt_messages(

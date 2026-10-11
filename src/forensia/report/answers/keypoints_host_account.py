@@ -2,6 +2,20 @@
 
 from __future__ import annotations
 
+from forensia.report.answers.event_semantics import (
+    EXECUTION_EVENT_SQL,
+    FAILED_LOGON_EVENT_SQL,
+    LOG_CLEAR_EVENT_SQL,
+    LOGOFF_EVENT_SQL,
+    LOGON_EVENT_SQL,
+    SECURITY_BOOT_EVENT_SQL,
+    SECURITY_SERVICE_TASK_EVENT_SQL,
+    SERVICE_TASK_EVENT_SQL,
+    SESSION_EVENT_SQL,
+    SUCCESS_LOGON_EVENT_SQL,
+    SYSTEM_SHUTDOWN_EVENT_SQL,
+    SYSTEM_STARTUP_EVENT_SQL,
+)
 from forensia.report.evidence_refs import (
     EvidenceResolver,
     _report_keypoint_rows,
@@ -12,11 +26,15 @@ HOST_ACCOUNT_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
         "Hosts with logon, execution, persistence, or log-clear activity (case/whitespace canonicalized).",
         lambda db: _report_keypoint_rows(
             db,
-            """
+            f"""
             WITH raw AS (
               SELECT computer, COUNT(*) AS cnt, MIN(timestamp) AS first_seen, MAX(timestamp) AS last_seen
               FROM evtx_events
-              WHERE event_id IN (4624,4625,4648,4688,4697,4698,5140,1102)
+              WHERE ({LOGON_EVENT_SQL})
+                 OR ({EXECUTION_EVENT_SQL})
+                 OR ({SECURITY_SERVICE_TASK_EVENT_SQL})
+                 OR {LOG_CLEAR_EVENT_SQL}
+                 OR event_id = 5140
               GROUP BY computer
             )
             SELECT
@@ -35,10 +53,10 @@ HOST_ACCOUNT_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
         "Suspicious remote or explicit logons by host.",
         lambda db: _report_keypoint_rows(
             db,
-            """
+            f"""
             SELECT computer, src_ip, target_user, logon_type, timestamp, evidence_id
             FROM evtx_events
-            WHERE event_id = 4624 AND logon_type IN ('3','10','9')
+            WHERE ({SUCCESS_LOGON_EVENT_SQL}) AND logon_type IN ('3','10','9')
             ORDER BY timestamp
             LIMIT 40
             """,
@@ -48,10 +66,10 @@ HOST_ACCOUNT_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
         "Observed process execution activity per host.",
         lambda db: _report_keypoint_rows(
             db,
-            """
+            f"""
             SELECT computer, process_name, command_line, target_user, timestamp, evidence_id
             FROM evtx_events
-            WHERE event_id IN (4688,4104)
+            WHERE {EXECUTION_EVENT_SQL}
             ORDER BY timestamp
             LIMIT 30
             """,
@@ -61,10 +79,10 @@ HOST_ACCOUNT_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
         "Observed service and task persistence activity per host.",
         lambda db: _report_keypoint_rows(
             db,
-            """
+            f"""
             SELECT computer, service_name, target_user, timestamp, evidence_id
             FROM evtx_events
-            WHERE event_id IN (4697,7045,4698)
+            WHERE {SERVICE_TASK_EVENT_SQL}
             ORDER BY timestamp
             """,
         ),
@@ -73,10 +91,10 @@ HOST_ACCOUNT_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
         "Observed account logon patterns for suspicious remote access.",
         lambda db: _report_keypoint_rows(
             db,
-            """
-            SELECT target_user, src_ip, computer, logon_type, COUNT(*) AS count, MIN(timestamp) AS first, MAX(timestamp) AS last
+            f"""
+            SELECT target_user, src_ip, computer, logon_type, COUNT(*) AS count, MIN(timestamp) AS first, MAX(timestamp) AS last, MIN(evidence_id) AS evidence_id
             FROM evtx_events
-            WHERE event_id = 4624 AND logon_type IN ('3','9','10') AND target_user NOT LIKE '%$'
+            WHERE ({SUCCESS_LOGON_EVENT_SQL}) AND logon_type IN ('3','9','10') AND target_user NOT LIKE '%$'
             GROUP BY target_user, src_ip, computer, logon_type
             ORDER BY count DESC
             LIMIT 30
@@ -87,10 +105,10 @@ HOST_ACCOUNT_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
         "4625 failure clusters that may indicate brute force or password spray.",
         lambda db: _report_keypoint_rows(
             db,
-            """
+            f"""
             SELECT src_ip, target_user, computer, COUNT(*) AS fail_count
             FROM evtx_events
-            WHERE event_id = 4625
+            WHERE {FAILED_LOGON_EVENT_SQL}
             GROUP BY src_ip, target_user, computer
             HAVING COUNT(*) >= 5
             ORDER BY fail_count DESC
@@ -114,10 +132,10 @@ HOST_ACCOUNT_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
         "Explicit credential usage events.",
         lambda db: _report_keypoint_rows(
             db,
-            """
+            f"""
             SELECT timestamp, computer, target_user, subject_user, evidence_id
             FROM evtx_events
-            WHERE event_id = 4648
+            WHERE {LOGON_EVENT_SQL} AND event_id = 4648
             ORDER BY timestamp
             LIMIT 20
             """,
@@ -127,10 +145,10 @@ HOST_ACCOUNT_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
         "Chronological logon, logoff, and system startup/shutdown events.",
         lambda db: _report_keypoint_rows(
             db,
-            """
+            f"""
             SELECT timestamp, computer, target_user, event_id, evidence_id
             FROM evtx_events
-            WHERE (event_id IN (4624,4634,4647,4608,4609))
+            WHERE ({SESSION_EVENT_SQL}) OR ({SECURITY_BOOT_EVENT_SQL})
                OR (event_id IN (6005,6006,6008) AND (channel IS NULL OR LOWER(channel) LIKE '%system%'))
             ORDER BY timestamp
             LIMIT 30
@@ -154,10 +172,10 @@ HOST_ACCOUNT_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
         "All logon event counts grouped by user, computer, and logon type.",
         lambda db: _report_keypoint_rows(
             db,
-            """
-            SELECT target_user, computer, logon_type, COUNT(*) AS count, MIN(timestamp) AS first, MAX(timestamp) AS last
+            f"""
+            SELECT target_user, computer, logon_type, COUNT(*) AS count, MIN(timestamp) AS first, MAX(timestamp) AS last, MIN(evidence_id) AS evidence_id
             FROM evtx_events
-            WHERE event_id = 4624 AND target_user NOT LIKE '%$'
+            WHERE ({SUCCESS_LOGON_EVENT_SQL}) AND target_user NOT LIKE '%$'
             GROUP BY target_user, computer, logon_type
             ORDER BY count DESC
             LIMIT 30
@@ -168,10 +186,10 @@ HOST_ACCOUNT_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
         "Raw logon, logoff, and session-disconnect events with evidence IDs.",
         lambda db: _report_keypoint_rows(
             db,
-            """
+            f"""
             SELECT timestamp, computer, target_user, logon_type, evidence_id
             FROM evtx_events
-            WHERE event_id IN (4624,4634,4647)
+            WHERE {SESSION_EVENT_SQL}
             ORDER BY timestamp
             LIMIT 200
             """,
@@ -193,11 +211,10 @@ HOST_ACCOUNT_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
         "System shutdown events (event 1074/6006/6008).",
         lambda db: _report_keypoint_rows(
             db,
-            """
+            f"""
             SELECT timestamp, event_id, computer, message, evidence_id
             FROM evtx_events
-            WHERE (event_id = 1074)
-               OR (event_id IN (6006, 6008) AND (channel IS NULL OR LOWER(channel) LIKE '%system%'))
+            WHERE {SYSTEM_SHUTDOWN_EVENT_SQL}
             ORDER BY timestamp DESC
             LIMIT 50
         """,
@@ -207,11 +224,10 @@ HOST_ACCOUNT_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
         "System startup events (event 6005).",
         lambda db: _report_keypoint_rows(
             db,
-            """
+            f"""
             SELECT timestamp, event_id, computer, evidence_id
             FROM evtx_events
-            WHERE (channel IS NULL OR LOWER(channel) LIKE '%system%')
-               AND event_id = 6005
+            WHERE {SYSTEM_STARTUP_EVENT_SQL}
             ORDER BY timestamp
             LIMIT 50
         """,
@@ -221,10 +237,10 @@ HOST_ACCOUNT_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
         "Interactive and remote-interactive logon events (4624 logon_type=2/10).",
         lambda db: _report_keypoint_rows(
             db,
-            """
+            f"""
             SELECT timestamp, computer, target_user, logon_type, src_ip, evidence_id
             FROM evtx_events
-            WHERE event_id = 4624 AND logon_type IN ('2', '10')
+            WHERE ({SUCCESS_LOGON_EVENT_SQL}) AND logon_type IN ('2', '10')
             ORDER BY timestamp
             LIMIT 80
         """,
@@ -234,10 +250,10 @@ HOST_ACCOUNT_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
         "Logoff and session-disconnect events (4634/4647).",
         lambda db: _report_keypoint_rows(
             db,
-            """
+            f"""
             SELECT timestamp, computer, target_user, evidence_id
             FROM evtx_events
-            WHERE event_id IN (4634, 4647)
+            WHERE {LOGOFF_EVENT_SQL}
             ORDER BY timestamp
             LIMIT 80
         """,
