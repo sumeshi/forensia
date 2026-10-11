@@ -147,6 +147,7 @@ class IngestTests(unittest.TestCase):
                     ingest_counts=first_ingest,
                     push_progress=lambda *args, **kwargs: None,
                     status=None,
+                    run_id="test-run",
                 )
                 first_id = f"evtx-{first_source}-security-000000000007"
                 self.assertEqual(
@@ -170,6 +171,7 @@ class IngestTests(unittest.TestCase):
                     ingest_counts=replacement_ingest,
                     push_progress=lambda *args, **kwargs: None,
                     status=None,
+                    run_id="test-run",
                 )
 
                 self.assertNotEqual(first_source, replacement_source)

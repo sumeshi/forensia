@@ -167,8 +167,12 @@ def test_mft_only_resume_uses_normalization_receipt_and_parser_revision() -> Non
                 return normalized
 
             with mock.patch("forensia.pipeline.normalize_all", side_effect=normalize):
-                _run_normalize_stage(case, db, False, {"new_files": 1}, push, None)
-                _run_normalize_stage(case, db, False, {"new_files": 0}, push, None)
+                _run_normalize_stage(
+                    case, db, False, {"new_files": 1}, push, None, "test-run"
+                )
+                _run_normalize_stage(
+                    case, db, False, {"new_files": 0}, push, None, "test-run"
+                )
                 assert len(calls) == 1, calls
                 db.execute(
                     "DELETE FROM evidence_sources WHERE source_id = 'mft-source'"
@@ -183,7 +187,9 @@ def test_mft_only_resume_uses_normalization_receipt_and_parser_revision() -> Non
                 with mock.patch(
                     "forensia.pipeline._parser_revision", return_value="new-parser"
                 ):
-                    _run_normalize_stage(case, db, False, {"new_files": 0}, push, None)
+                    _run_normalize_stage(
+                        case, db, False, {"new_files": 0}, push, None, "test-run"
+                    )
                 assert len(calls) == 2, calls
                 db.execute(
                     "INSERT INTO evidence_sources "
@@ -205,6 +211,7 @@ def test_mft_only_resume_uses_normalization_receipt_and_parser_revision() -> Non
                         {"new_files": 1, "new_source_keys": ["new-mft-source"]},
                         push,
                         None,
+                        "test-run",
                     )
                 assert len(calls) == 3 and calls[-1] is None, calls
 

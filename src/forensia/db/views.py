@@ -26,10 +26,22 @@ DetailKind = Literal[
     "retrieval",
     "llm_call",
     "llm_attempt",
+    "event",
 ]
 DETAIL_KINDS = frozenset(get_args(DetailKind))
 _DETAIL_LIMIT = 100
 _VALUE_LIMIT = 16_384
+
+# Select explicit parent pipeline lifecycle transitions, not child progress.
+_PIPELINE_STAGE_EVENT_SQL = """
+    SELECT event_index, kind, stage, status, summary, reason, refs, created_at,
+           json_extract_string(payload, '$.run_id') AS run_id
+    FROM trace.progress_events
+    WHERE json_extract_string(payload, '$.scope') = 'pipeline_stage'
+      AND kind IN ('pipeline.ingest', 'pipeline.normalize', 'pipeline.analyze')
+    ORDER BY event_index DESC
+    LIMIT 1
+"""
 
 
 def _json_value(value: Any) -> Any:
@@ -77,6 +89,27 @@ def _row(
     }
 
 
+def _elapsed_seconds(started_at: Any, ended_at: Any = None) -> int | None:
+    """Return elapsed whole seconds between bounded timestamps."""
+    try:
+        started = (
+            datetime.fromisoformat(started_at)
+            if isinstance(started_at, str)
+            else started_at
+        )
+        ended = (
+            datetime.fromisoformat(ended_at) if isinstance(ended_at, str) else ended_at
+        )
+        if not isinstance(started, datetime):
+            return None
+        ended = ended if isinstance(ended, datetime) else datetime.now(UTC)
+        started = started.replace(tzinfo=started.tzinfo or UTC).astimezone(UTC)
+        ended = ended.replace(tzinfo=ended.tzinfo or UTC).astimezone(UTC)
+        return max(0, int((ended - started).total_seconds()))
+    except ValueError:
+        return None
+
+
 def case_snapshot(case: Case, db: CaseDB) -> dict[str, Any]:
     """Read one consistent, non-authoritative view of case progress."""
     with db.read_snapshot():
@@ -122,29 +155,15 @@ def case_snapshot(case: Case, db: CaseDB) -> dict[str, Any]:
             "SELECT status, stale, COUNT(*) FROM report_sections GROUP BY status, stale ORDER BY status, stale"
         ).fetchall()
         latest_step = None
-        latest_event = _row(
+        pipeline_event = _row(
             db,
-            "SELECT event_index, kind, stage, status, summary, reason, refs, created_at "
-            "FROM trace.progress_events ORDER BY event_index DESC LIMIT 1",
+            _PIPELINE_STAGE_EVENT_SQL,
             (),
-        )
-        ingest_work = (
-            latest_event
-            if latest_event
-            and latest_event.get("kind")
-            in {"pipeline.ingest", "pipeline.normalize", "pipeline.analyze"}
-            and latest_event.get("status") == "running"
-            else None
         )
         if session:
             settings = _row(
                 db,
                 "SELECT output_json FROM trace.investigation_steps WHERE session_id = ? AND phase = 'session-settings' ORDER BY created_at DESC LIMIT 1",
-                (session["session_id"],),
-            )
-            latest_event = _row(
-                db,
-                "SELECT event_index, kind, stage, status, summary, reason, refs, created_at FROM trace.progress_events WHERE session_id = ? ORDER BY event_index DESC LIMIT 1",
                 (session["session_id"],),
             )
             latest_step = _row(
@@ -154,25 +173,6 @@ def case_snapshot(case: Case, db: CaseDB) -> dict[str, Any]:
             )
             if session.get("status") != "running":
                 latest_step = None
-            if not ingest_work and (
-                session.get("status") == "running"
-                and latest_event
-                and latest_event.get("status") == "running"
-                and latest_event.get("stage") in {"ingest", "normalize", "analyze"}
-            ):
-                latest_step = {
-                    key: latest_event[key]
-                    for key in (
-                        "event_index",
-                        "kind",
-                        "stage",
-                        "status",
-                        "summary",
-                        "reason",
-                        "refs",
-                        "created_at",
-                    )
-                }
             budget_remaining = None
             budget_limit = None
             if settings and isinstance(settings.get("output_json"), dict):
@@ -187,34 +187,53 @@ def case_snapshot(case: Case, db: CaseDB) -> dict[str, Any]:
                         ).fetchone()[0]
                     )
                     budget_remaining = max(0, max_calls - used)
-            started_at = session.get("started_at")
-            finished_at = session.get("finished_at")
-            elapsed_seconds = None
-            try:
-                started = (
-                    datetime.fromisoformat(started_at)
-                    if isinstance(started_at, str)
-                    else started_at
-                )
-                end = (
-                    datetime.fromisoformat(finished_at)
-                    if isinstance(finished_at, str)
-                    else finished_at
-                )
-                if isinstance(started, datetime):
-                    if started.tzinfo is not None:
-                        started = started.astimezone(UTC).replace(tzinfo=None)
-                    if not isinstance(end, datetime):
-                        end = datetime.now(UTC).replace(tzinfo=None)
-                    elif end.tzinfo is not None:
-                        end = end.astimezone(UTC).replace(tzinfo=None)
-                    elapsed_seconds = max(0, int((end - started).total_seconds()))
-            except ValueError:
-                pass
+            elapsed_seconds = _elapsed_seconds(
+                session.get("started_at"), session.get("finished_at")
+            )
         else:
             budget_remaining = budget_limit = elapsed_seconds = None
-        if ingest_work:
-            latest_step = ingest_work
+        session_anchor = None
+        if session:
+            session_anchor = session.get("started_at")
+            if session.get("status") != "running":
+                session_anchor = session.get("finished_at") or session_anchor
+        pipeline_projection = (
+            pipeline_event
+            if pipeline_event
+            and (
+                not session
+                or session_anchor is None
+                or pipeline_event.get("created_at") >= session_anchor
+            )
+            else None
+        )
+        if pipeline_projection:
+            pipeline_started_at = pipeline_projection.get("created_at")
+            run_id = pipeline_projection.get("run_id")
+            if run_id:
+                run_start = _row(
+                    db,
+                    "SELECT MIN(created_at) AS created_at "
+                    "FROM trace.progress_events "
+                    "WHERE json_extract_string(payload, '$.scope') = 'pipeline_stage' "
+                    "AND json_extract_string(payload, '$.run_id') = ?",
+                    (run_id,),
+                )
+                if run_start and run_start.get("created_at") is not None:
+                    pipeline_started_at = run_start["created_at"]
+            pipeline_projection["elapsed_seconds"] = _elapsed_seconds(
+                pipeline_started_at,
+                None
+                if pipeline_projection.get("status") == "running"
+                else pipeline_projection.get("created_at"),
+            )
+            elapsed_seconds = pipeline_projection["elapsed_seconds"]
+        if pipeline_projection:
+            latest_step = (
+                pipeline_projection
+                if pipeline_projection.get("status") == "running"
+                else None
+            )
         highwater = int(
             db.execute(
                 "SELECT COALESCE(MAX(event_index), 0) FROM trace.progress_events"
@@ -232,6 +251,7 @@ def case_snapshot(case: Case, db: CaseDB) -> dict[str, Any]:
             "case_name": case.path.name,
             "state": state,
             "session": session,
+            "pipeline": pipeline_projection,
             "current_work": latest_step,
             "counts": {
                 "findings": finding_count,
@@ -325,6 +345,10 @@ def case_detail(
         "llm_attempt": (
             "SELECT * FROM trace.llm_provider_attempts WHERE attempt_id = ?",
             "attempt_id",
+        ),
+        "event": (
+            "SELECT * FROM trace.progress_events WHERE event_index = TRY_CAST(? AS BIGINT)",
+            "event_index",
         ),
     }
     if kind == "evidence":

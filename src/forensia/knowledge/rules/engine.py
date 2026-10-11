@@ -38,6 +38,28 @@ _ALLOWED_FALLBACK_TABLES = {
 
 
 RULE_RESULT_BATCH_SIZE = 500
+FINDING_INSERT_BATCH_SIZE = 500
+_FINDING_INSERT_SQL = """
+INSERT INTO findings (
+    finding_id, rule_id, title, summary, severity, confidence,
+    status, tags, attack, evidence, ai_summary, missing_checks, created_at
+)
+SELECT
+    json_extract_string(row.value, '$[0]'),
+    json_extract_string(row.value, '$[1]'),
+    json_extract_string(row.value, '$[2]'),
+    json_extract_string(row.value, '$[3]'),
+    json_extract_string(row.value, '$[4]'),
+    CAST(json_extract_string(row.value, '$[5]') AS DOUBLE),
+    json_extract_string(row.value, '$[6]'),
+    json_extract_string(row.value, '$[7]'),
+    json_extract_string(row.value, '$[8]'),
+    json_extract_string(row.value, '$[9]'),
+    json_extract_string(row.value, '$[10]'),
+    json_extract_string(row.value, '$[11]'),
+    CAST(json_extract_string(row.value, '$[12]') AS TIMESTAMP)
+FROM json_each(?) AS row
+"""
 
 
 def iter_rule_row_batches(
@@ -424,7 +446,7 @@ def save_findings(
                 finding.title,
                 finding.summary,
                 finding.severity,
-                finding.confidence,
+                str(finding.confidence),
                 finding.status,
                 json.dumps(finding.tags, ensure_ascii=False),
                 json.dumps(
@@ -438,15 +460,12 @@ def save_findings(
         )
     if rows:
         with db.transaction():
-            db.insert_many(
-                """
-            INSERT INTO findings (
-                finding_id, rule_id, title, summary, severity, confidence,
-                status, tags, attack, evidence, ai_summary, missing_checks, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                rows,
-            )
+            for offset in range(0, len(rows), FINDING_INSERT_BATCH_SIZE):
+                batch = rows[offset : offset + FINDING_INSERT_BATCH_SIZE]
+                db.execute(
+                    _FINDING_INSERT_SQL,
+                    [json.dumps(batch, ensure_ascii=False, default=str)],
+                )
     if feed_timeline:
         feed_findings_to_timeline(db)
 

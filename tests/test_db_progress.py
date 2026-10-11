@@ -11,6 +11,7 @@ from forensia.core.progress_event import progress_event
 from forensia.db.database import CaseDB
 from forensia.db.progress import list_progress_events, record_progress_event
 from forensia.db.views import case_events, case_snapshot
+from forensia.pipeline import _run_evidence_stages
 
 
 def test_progress_events_append_page_and_preserve_structured_fields() -> None:
@@ -91,6 +92,94 @@ def test_progress_events_are_not_pruned_after_one_thousand_rows() -> None:
             first = list_progress_events(db, limit=1)[0]
             assert first["event_index"] == 1
             assert first["summary"] == "stage 1"
+
+
+@pytest.mark.parametrize(
+    "terminal_status", [None, "completed", "failed", "interrupted"]
+)
+def test_pipeline_projection_preserves_elapsed_through_terminal_event(
+    terminal_status: str | None,
+) -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        case = Case.init(tmpdir)
+        with CaseDB(case) as db:
+            first = record_progress_event(
+                db,
+                progress_event(
+                    "pipeline.ingest",
+                    "running",
+                    stage="ingest",
+                    scope="pipeline_stage",
+                    run_id="run-1",
+                    summary="Scanning input files",
+                ),
+            )
+            record_progress_event(
+                db,
+                progress_event(
+                    "pipeline.normalize",
+                    "running",
+                    stage="normalize",
+                    scope="pipeline_stage",
+                    run_id="run-1",
+                    summary="Started",
+                ),
+            )
+            db.execute(
+                "UPDATE trace.progress_events SET created_at = now() - INTERVAL 45 SECOND "
+                "WHERE event_index = ?",
+                [first],
+            )
+            if terminal_status:
+                record_progress_event(
+                    db,
+                    progress_event(
+                        "pipeline.normalize",
+                        terminal_status,  # type: ignore[arg-type]
+                        stage="normalize",
+                        scope="pipeline_stage",
+                        run_id="run-1",
+                        summary="Normalization finished",
+                        reason="normalize_exception"
+                        if terminal_status == "failed"
+                        else None,
+                        error_type="RuntimeError"
+                        if terminal_status in {"failed", "interrupted"}
+                        else None,
+                    ),
+                )
+            snapshot = case_snapshot(case, db)
+            assert snapshot["pipeline"]["status"] == (terminal_status or "running")
+            if terminal_status:
+                assert snapshot["current_work"] is None
+            else:
+                assert snapshot["current_work"]["kind"] == "pipeline.normalize"
+            assert (
+                snapshot["elapsed_seconds"] == snapshot["pipeline"]["elapsed_seconds"]
+            )
+            assert snapshot["elapsed_seconds"] >= 30
+
+
+def test_evidence_stage_failure_records_terminal_lifecycle_event(monkeypatch) -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        case = Case.init(tmpdir)
+        with CaseDB(case) as db:
+
+            def push(event: dict[str, object]) -> int:
+                return record_progress_event(db, event)  # type: ignore[arg-type]
+
+            def fail_ingest(*_args, **_kwargs):
+                raise RuntimeError("ingest broke")
+
+            monkeypatch.setattr("forensia.pipeline.ingest_all", fail_ingest)
+            with pytest.raises(RuntimeError, match="ingest broke"):
+                _run_evidence_stages(case, db, tmpdir, False, push, None)
+            events = list_progress_events(db)
+            assert [event["status"] for event in events] == ["running", "failed"]
+            assert events[-1]["kind"] == "pipeline.ingest"
+            assert events[-1]["reason"] == "ingest_exception"
+            assert events[-1]["payload"]["error_type"] == "RuntimeError"
+            assert events[-1]["payload"]["run_id"] == events[0]["payload"]["run_id"]
 
 
 def test_storage_rejects_unknown_event_vocabulary() -> None:
@@ -191,6 +280,8 @@ def test_case_snapshot_reports_ingest_work_elapsed_and_remaining_llm_budget() ->
                     "pipeline.ingest",
                     "running",
                     stage="ingest",
+                    scope="pipeline_stage",
+                    run_id="run-new",
                     summary="Scanning input files",
                 ),
             )
@@ -206,3 +297,155 @@ def test_case_snapshot_reports_ingest_work_elapsed_and_remaining_llm_budget() ->
         assert snapshot["budget_usage"]["actual_input_tokens"] == 12
         assert snapshot["budget_usage"]["estimated_input_tokens"] == 7
         assert snapshot["budget_usage"]["unknown_input_usage_attempts"] == 1
+
+
+@pytest.mark.parametrize(
+    "terminal_status", [None, "completed", "failed", "interrupted"]
+)
+def test_case_snapshot_uses_parent_analysis_lifecycle_across_child_events(
+    terminal_status: str | None,
+) -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        case = Case.init(tmpdir)
+        with CaseDB(case) as db:
+            record_progress_event(
+                db,
+                progress_event(
+                    "pipeline.analyze",
+                    "running",
+                    stage="analyze",
+                    scope="pipeline_stage",
+                    summary="Rule analysis started",
+                    rule_count=12,
+                ),
+            )
+            record_progress_event(
+                db,
+                progress_event("finding.created", "completed", stage="analyze"),
+            )
+            record_progress_event(
+                db,
+                progress_event("rule.completed", "completed", stage="analyze"),
+            )
+            record_progress_event(
+                db,
+                progress_event(
+                    "investigation.search", "completed", stage="investigate"
+                ),
+            )
+            if terminal_status:
+                payload = (
+                    {"finding_count": 1}
+                    if terminal_status == "completed"
+                    else {"error_type": "RuntimeError"}
+                )
+                record_progress_event(
+                    db,
+                    progress_event(
+                        "pipeline.analyze",
+                        terminal_status,  # type: ignore[arg-type]
+                        stage="analyze",
+                        scope="pipeline_stage",
+                        summary="Rule analysis finished",
+                        reason="rule_analysis_exception"
+                        if terminal_status == "failed"
+                        else None,
+                        **payload,
+                    ),
+                )
+
+            snapshot = case_snapshot(case, db)
+
+        if terminal_status is None:
+            assert snapshot["current_work"]["kind"] == "pipeline.analyze"
+            assert snapshot["current_work"]["status"] == "running"
+            assert snapshot["current_work"]["summary"] == "Rule analysis started"
+        else:
+            assert snapshot["current_work"] is None
+
+
+def test_case_snapshot_ignores_per_file_ingest_events_and_supersedes_old_session() -> (
+    None
+):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        case = Case.init(tmpdir)
+        with CaseDB(case) as db:
+            db.execute(
+                "INSERT INTO trace.investigation_sessions "
+                "(session_id, started_at, finished_at, status, terminal_reason) "
+                "VALUES ('S-old', now() - INTERVAL 1 MINUTE, now() - INTERVAL 10 SECOND, "
+                "'stopped', 'operator stopped')"
+            )
+            record_progress_event(
+                db,
+                progress_event(
+                    "pipeline.ingest",
+                    "running",
+                    stage="ingest",
+                    scope="pipeline_stage",
+                    run_id="run-old-session",
+                    summary="Scanning input files",
+                ),
+            )
+            record_progress_event(
+                db,
+                progress_event(
+                    "pipeline.ingest",
+                    "running",
+                    stage="ingest",
+                    summary="Ingesting one source",
+                    source_id="source-1",
+                ),
+            )
+            record_progress_event(
+                db,
+                progress_event(
+                    "pipeline.ingest",
+                    "completed",
+                    stage="ingest",
+                    summary="One source ingested",
+                    source_id="source-1",
+                ),
+            )
+
+            snapshot = case_snapshot(case, db)
+
+        assert snapshot["current_work"]["kind"] == "pipeline.ingest"
+        assert snapshot["current_work"]["status"] == "running"
+        assert snapshot["current_work"]["summary"] == "Scanning input files"
+
+
+def test_case_snapshot_prefers_newer_running_session_over_old_stage_event() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        case = Case.init(tmpdir)
+        with CaseDB(case) as db:
+            record_progress_event(
+                db,
+                progress_event(
+                    "pipeline.analyze",
+                    "running",
+                    stage="analyze",
+                    scope="pipeline_stage",
+                    run_id="run-old",
+                    summary="Rule analysis started",
+                    rule_count=12,
+                ),
+            )
+            db.execute(
+                "INSERT INTO trace.investigation_sessions "
+                "(session_id, started_at, status) VALUES ('S-new', now() + INTERVAL 1 SECOND, 'running')"
+            )
+            db.execute(
+                "INSERT INTO trace.investigation_steps "
+                "(step_id, session_id, phase, created_at) "
+                "VALUES ('step-new', 'S-new', 'search', now() + INTERVAL 1 SECOND)"
+            )
+
+            snapshot = case_snapshot(case, db)
+
+        assert snapshot["current_work"] == {
+            "phase": "search",
+            "hypothesis_id": None,
+            "iteration": None,
+        }
+        assert snapshot["pipeline"] is None

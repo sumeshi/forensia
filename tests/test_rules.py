@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import tempfile
 import unittest
 from pathlib import Path
@@ -145,7 +146,9 @@ class RuleDeclarationTests(unittest.TestCase):
                 )
                 from forensia.pipeline import _run_analyze_stage
 
-                _run_analyze_stage(case, db, True, True, lambda *a, **kw: None, None)
+                _run_analyze_stage(
+                    case, db, True, True, lambda *a, **kw: None, None, "test-run"
+                )
                 row = db.execute(
                     "SELECT evidence FROM findings WHERE finding_id = ?",
                     ("prefetch-finding-antiforensic-tools-0001",),
@@ -328,18 +331,20 @@ class SigmaRuleBoundaryTests(unittest.TestCase):
                     ),
                 ):
                     finding_count = _run_analyze_stage(
-                        case, db, True, True, progress, None
+                        case, db, True, True, progress, None, "test-run"
                     )
                     progress_messages.clear()
                     self.assertEqual(
                         finding_count,
-                        _run_analyze_stage(case, db, False, False, progress, None),
+                        _run_analyze_stage(
+                            case, db, False, False, progress, None, "test-run"
+                        ),
                     )
                     false_positive_rules.write_text(
                         "# revision two\n", encoding="utf-8"
                     )
                     changed_declaration_count = _run_analyze_stage(
-                        case, db, False, False, progress, None
+                        case, db, False, False, progress, None, "test-run"
                     )
                     self.assertEqual(finding_count, changed_declaration_count)
                 self.assertEqual(2, prepare_context.call_count)
@@ -457,7 +462,7 @@ class SigmaRuleBoundaryTests(unittest.TestCase):
                     ),
                 ):
                     updated_count = _run_analyze_stage(
-                        case, db, False, False, progress, None
+                        case, db, False, False, progress, None, "test-run"
                     )
                 self.assertLess(updated_count, finding_count)
                 self.assertEqual(
@@ -511,7 +516,9 @@ class SigmaRuleBoundaryTests(unittest.TestCase):
                         ),
                         self.assertRaises(duckdb.CatalogException),
                     ):
-                        _run_analyze_stage(case, db, False, True, progress, None)
+                        _run_analyze_stage(
+                            case, db, False, True, progress, None, "test-run"
+                        )
                     failed_receipt = json.loads(
                         db.execute(
                             "SELECT output_json FROM trace.investigation_steps "
@@ -536,7 +543,7 @@ class SigmaRuleBoundaryTests(unittest.TestCase):
                         wraps=actual_iter_rule_row_batches,
                     ) as resumed_queries:
                         resumed_count = _run_analyze_stage(
-                            case, db, False, False, progress, None
+                            case, db, False, False, progress, None, "test-run"
                         )
                     self.assertEqual(updated_count, resumed_count)
                     completed_rules = db.execute(
@@ -984,6 +991,90 @@ class SigmaCompilerTests(unittest.TestCase):
 
 
 class RuleAndFindingTests(unittest.TestCase):
+    def test_bulk_finding_insert_preserves_json_text_values(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            finding = Finding(
+                finding_id="quoted-finding",
+                rule_id="quoted-rule",
+                title='O\'Brien said "こんにちは"',
+                summary="雪と café",
+                severity="medium",
+                confidence=0.75,
+                evidence=[{"quote": 'it\'s "real"', "empty": None, "text": "雪"}],
+                ai_summary=None,
+                missing_checks=["確認しない"],
+            )
+            nonfinite = Finding(
+                finding_id="nonfinite-finding",
+                rule_id="quoted-rule",
+                title="Non-finite confidence",
+                summary="summary",
+                severity="medium",
+                confidence=float("nan"),
+            )
+            with CaseDB(case) as db:
+                save_findings(case, db, [finding, nonfinite], feed_timeline=False)
+                row = db.execute(
+                    "SELECT title, summary, evidence, ai_summary, missing_checks "
+                    "FROM findings WHERE finding_id = ?",
+                    [finding.finding_id],
+                ).fetchone()
+                nonfinite_confidence = db.execute(
+                    "SELECT confidence FROM findings WHERE finding_id = ?",
+                    [nonfinite.finding_id],
+                ).fetchone()[0]
+
+        self.assertEqual(row[0], 'O\'Brien said "こんにちは"')
+        self.assertEqual(row[1], "雪と café")
+        self.assertEqual(json.loads(row[2]), finding.evidence)
+        self.assertIsNone(row[3])
+        self.assertEqual(json.loads(row[4]), ["確認しない"])
+        self.assertTrue(math.isnan(nonfinite_confidence))
+
+    def test_bulk_finding_insert_rolls_back_earlier_chunks_on_failure(self) -> None:
+        from duckdb import ConstraintException
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                db.execute(
+                    "INSERT INTO findings (finding_id, rule_id, title, summary, "
+                    "severity, confidence, status) "
+                    "VALUES ('duplicate', 'rule', 'existing', '', 'medium', 0.5, 'new')"
+                )
+                findings = [
+                    Finding(
+                        finding_id=f"batch-{index}",
+                        rule_id="batch",
+                        title=f"Finding {index}",
+                        summary="summary",
+                        severity="medium",
+                        confidence=0.5,
+                    )
+                    for index in range(500)
+                ]
+                findings.append(
+                    Finding(
+                        finding_id="duplicate",
+                        rule_id="batch",
+                        title="conflict",
+                        summary="summary",
+                        severity="medium",
+                        confidence=0.5,
+                    )
+                )
+
+                with self.assertRaises(ConstraintException):
+                    save_findings(case, db, findings, feed_timeline=False)
+
+                self.assertEqual(
+                    0,
+                    db.execute(
+                        "SELECT COUNT(*) FROM findings WHERE rule_id = 'batch'"
+                    ).fetchone()[0],
+                )
+
     def test_bounded_rule_batches_survive_database_writes_and_keep_ordinals(
         self,
     ) -> None:

@@ -33,7 +33,7 @@ forensia attach ./case001
 
 調査サイクル数やモデルの接続先などの細かな設定は`.env`で管理します。`--out`はケースの保存先です。`--background`はRuntimeを起動して端末へ戻り、`attach`で後から同じケースを開けます。通常起動ではTUIを接続しますが、端末を閉じてもRuntimeは停止しません。保存済みケースを`investigate`へ渡しても再開しません。閲覧や操作には`attach`を使います。入力証拠と明示指定したMarkdown文書はケース外に置いてください。
 
-`attach`のTUIは保存済みケースの状態と進捗イベントを読み取り、Runtimeが動作中なら操作を送ります。`/stop`、`/resume`、`/add <input_dir>`、`/report`、`/report --write`と、通常文のsteeringを入力できます。`/report`は採用済みsectionを表示用に出力し、`/report --write`はsectionを更新して書き込みます。`/detail <kind> <id>`で詳細を開き、長い記録は`/more`で次ページを読みます。引数なしの`/detail`で閉じます。`/older`と`/newer`はイベント履歴を移動し、`/detach`は画面だけを閉じます。
+`attach`のTUIは保存済みケースの状態と進捗イベントを読み取り、Runtimeが動作中なら操作を送ります。`/stop`、`/resume`、`/add <input_dir>`、`/report`、`/report --write`と、通常文のsteeringを入力できます。`/report`は採用済みsectionを表示用に出力し、`/report --write`はsectionを更新して書き込みます。`/detail <kind> <id>`で詳細ウィンドウを開き、長い記録はMoreボタンか`/more`で次ページを読みます。EscapeまたはCloseで閉じます。ログの時刻をクリックすると、そのイベントと参照IDを確認できます。`/older`と`/newer`はイベント履歴を移動し、`/detach`は画面だけを閉じます。F1または`/help`でヘルプウィンドウを開きます。
 
 Evidence、Assessment、reasoning、section、retrieval、LLM call/attemptなどの詳細を、保存済みIDから参照できます。query receiptは一意なreceipt IDで指定します。繰り返し使われる表示用query IDは参照キーにしません。LLM使用量はprovider実測、ローカル推定、不明を分けて表示します。
 
@@ -183,7 +183,9 @@ MFTの`is_deleted`などのBoolean列は、JSONの`true`/`false`を使う`equals
 
 証拠追加・置換では、標準のMarkdown・HTML・検査JSONを先に失効させ、現在のDBから再出力します。再出力に失敗しても古い成果物を残しません。staleな節の本文はDBに保持し、現在の報告書から除外します。入力の`REPORT.md`・`FORENSIA.md`と、独自の出力先は変更しません。
 
-TUIはTextualで構成し、Headerにケース状態・仮説status・作業時間・LLM使用状況を、中央に永続イベント、下部に入力欄を表示します。RuntimeへのIPCはPOSIXではUnix domain socket、Windowsではnamed pipeを使います。Windows 10・Python 3.14.5では、配布wheelのdoctorと、実IPC・lock・背景起動・停止・再開・アイドル上書き・異常終了からの復旧・実Prefetch parserによるsource置換・標準レポートの失効と再出力・headless TUIの23テストを確認しました。実際のWindows端末での手動描画と実モデル調査は未検証です。TUIはRuntimeのcontroller claimを取得して操作を送信し、終了時にclaimを解放します。停止済みケースの制御lockもケース外に置き、複数TUIから同時に操作しないようにします。
+TUIはTextualで構成し、トップにケース名・現在の作業・経過時間、サイドバーにFinding数・仮説status・未完了作業・LLM使用量を表示します。サイドバーの区切り線より下にRuntimeとDBの読取り状況を置きます。中央は端末のローカル時刻を付けたログ、下部は入力欄です。イベントの明示的なseverityに従い、情報は水色、成功は緑、警告は黄、エラーは赤で表示します。長い参照IDやSQLは詳細ウィンドウで確認し、狭い端末では調査情報をログの上に配置します。経過時間は証拠処理runまたは調査sessionの保存済み開始時刻から算出し、終了後は終了時刻で固定します。
+
+RuntimeへのIPCはPOSIXではUnix domain socket、Windowsではnamed pipeを使います。Windows 10・Python 3.14.5では、配布wheelのdoctorと、実IPC・lock・背景起動・停止・再開・アイドル上書き・異常終了からの復旧・実Prefetch parserによるsource置換・標準レポートの失効と再出力を確認しました。今回のTUI変更はLinuxのheadlessテストで確認し、実際のWindows端末での手動描画と実モデル調査は未検証です。TUIはRuntimeのcontroller claimを取得して操作を送信し、終了時にclaimを解放します。停止済みケースの制御lockもケース外に置き、複数TUIから同時に操作しないようにします。
 
 細かな列、応答形式、判定条件は、次の実行可能な契約を正本にします。
 

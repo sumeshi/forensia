@@ -577,6 +577,7 @@ def _run_ingest_stage(
     input_dir: str,
     push_progress: Callable[[dict[str, Any]], int],
     status: StatusCallback | None,
+    run_id: str,
 ) -> dict[str, Any]:
     """Ingest evidence files (EVTX, MFT, Prefetch) into the case."""
 
@@ -586,7 +587,12 @@ def _run_ingest_stage(
     _show(status, f"Stage 1/4: ingest from {input_dir}")
     push_progress(
         progress_event(
-            "pipeline.ingest", "running", stage="ingest", summary="Scanning input files"
+            "pipeline.ingest",
+            "running",
+            stage="ingest",
+            scope="pipeline_stage",
+            run_id=run_id,
+            summary="Scanning input files",
         )
     )
     counts = ingest_all(case, input_dir, db=db, progress_callback=stage_status)
@@ -601,6 +607,8 @@ def _run_ingest_stage(
             "pipeline.ingest",
             "completed",
             stage="ingest",
+            scope="pipeline_stage",
+            run_id=run_id,
             summary="Evidence ingest completed",
             new_files=counts["new_files"],
             skipped_files=counts["skipped_files"],
@@ -616,6 +624,7 @@ def _run_normalize_stage(
     ingest_counts: dict[str, Any],
     push_progress: Callable[[dict[str, Any]], int],
     status: StatusCallback | None,
+    run_id: str,
 ) -> bool:
     """Normalize raw evidence into structured DuckDB tables."""
     revision = _sources_current_revision(db)
@@ -636,6 +645,8 @@ def _run_normalize_stage(
                 "pipeline.normalize",
                 "skipped",
                 stage="normalize",
+                scope="pipeline_stage",
+                run_id=run_id,
                 reason="source_state_current",
                 summary="Normalization skipped; sources and parser revision are current",
             )
@@ -644,7 +655,12 @@ def _run_normalize_stage(
         _show(status, "Stage 2/4: normalize into DuckDB")
         push_progress(
             progress_event(
-                "pipeline.normalize", "running", stage="normalize", summary="Started"
+                "pipeline.normalize",
+                "running",
+                stage="normalize",
+                scope="pipeline_stage",
+                run_id=run_id,
+                summary="Started",
             )
         )
         source_keys = ingest_counts.get("new_source_keys") or None
@@ -705,6 +721,8 @@ def _run_normalize_stage(
                 "pipeline.normalize",
                 "completed",
                 stage="normalize",
+                scope="pipeline_stage",
+                run_id=run_id,
                 summary="Evidence normalization completed",
                 normalized_sources=normalized.get("sources", 0),
             )
@@ -719,6 +737,7 @@ def _run_analyze_stage(
     normalized_this_run: bool,
     push_progress: Callable[[dict[str, Any]], int],
     status: StatusCallback | None,
+    run_id: str,
 ) -> int:
     """Run rule-based analysis to generate findings."""
     bundle = load_sigma_bundle()
@@ -748,6 +767,8 @@ def _run_analyze_stage(
                 "pipeline.analyze",
                 "skipped",
                 stage="analyze",
+                scope="pipeline_stage",
+                run_id=run_id,
                 reason="analysis_receipt_current",
                 summary="Rule analysis skipped; current findings are retained",
                 finding_count=existing_findings,
@@ -774,6 +795,8 @@ def _run_analyze_stage(
                 "pipeline.analyze",
                 "running",
                 stage="analyze",
+                scope="pipeline_stage",
+                run_id=run_id,
                 summary="Rule analysis started",
                 rule_count=len(rules),
             )
@@ -918,6 +941,8 @@ def _run_analyze_stage(
                 if failure_status == "interrupted"
                 else "rule_analysis_exception",
                 stage="analyze",
+                scope="pipeline_stage",
+                run_id=run_id,
                 summary="Rule analysis did not complete",
                 rule_id=current_rule_id,
                 error_type=type(exc).__name__,
@@ -953,6 +978,8 @@ def _run_analyze_stage(
             "completed",
             severity="success",
             stage="analyze",
+            scope="pipeline_stage",
+            run_id=run_id,
             summary="Rule analysis completed",
             finding_count=total_findings,
         )
@@ -1078,6 +1105,32 @@ def _run_report_stage(
     return report_path
 
 
+def _record_evidence_stage_failure(
+    stage: str,
+    run_id: str,
+    exc: BaseException,
+    push_progress: Callable[[dict[str, Any]], int],
+) -> None:
+    """Record the actual failure at the evidence-stage orchestration boundary."""
+    interrupted = isinstance(exc, InvestigationStopped) or not isinstance(
+        exc, Exception
+    )
+    status = "interrupted" if interrupted else "failed"
+    push_progress(
+        progress_event(
+            f"pipeline.{stage}",
+            status,
+            severity="warning" if interrupted else "error",
+            reason="stop_requested" if interrupted else f"{stage}_exception",
+            stage=stage,
+            scope="pipeline_stage",
+            run_id=run_id,
+            summary=f"Evidence {stage} did not complete",
+            error_type=type(exc).__name__,
+        )
+    )
+
+
 def _invalidate_standard_report_exports(case: Case) -> None:
     """Remove generated exports before a mutation can make them stale."""
     if not case.reports_dir.exists():
@@ -1103,6 +1156,7 @@ def _run_evidence_stages(
     - `input_dir` given: full ingest from input_dir, then normalize + analyze
     - `rerun` with raw/ already populated: skip ingest, just re-run normalize + analyze
     """
+    run_id = str(uuid.uuid4())
     raw_has_files = any(case.raw_dir.iterdir()) if case.raw_dir.exists() else False
     normalize_receipt = _stage_receipt(db, "pipeline-normalize")
     normalize_is_current = (
@@ -1116,11 +1170,21 @@ def _run_evidence_stages(
 
     check_stop()
     if input_dir is not None:
-        ingest_counts = _run_ingest_stage(case, db, input_dir, push_progress, status)
+        try:
+            ingest_counts = _run_ingest_stage(
+                case, db, input_dir, push_progress, status, run_id
+            )
+        except BaseException as exc:
+            _record_evidence_stage_failure("ingest", run_id, exc, push_progress)
+            raise
         check_stop()
-        normalized_this_run = _run_normalize_stage(
-            case, db, rerun, ingest_counts, push_progress, status
-        )
+        try:
+            normalized_this_run = _run_normalize_stage(
+                case, db, rerun, ingest_counts, push_progress, status, run_id
+            )
+        except BaseException as exc:
+            _record_evidence_stage_failure("normalize", run_id, exc, push_progress)
+            raise
         check_stop()
         _run_analyze_stage(
             case,
@@ -1129,12 +1193,17 @@ def _run_evidence_stages(
             normalized_this_run,
             push_progress,
             status,
+            run_id,
         )
     elif needs_normalize_from_raw:
         _show(status, "Re-normalizing from existing raw/ (no input_dir provided)")
-        normalized_this_run = _run_normalize_stage(
-            case, db, True, {"new_files": 1}, push_progress, status
-        )
+        try:
+            normalized_this_run = _run_normalize_stage(
+                case, db, True, {"new_files": 1}, push_progress, status, run_id
+            )
+        except BaseException as exc:
+            _record_evidence_stage_failure("normalize", run_id, exc, push_progress)
+            raise
         check_stop()
         _run_analyze_stage(
             case,
@@ -1143,6 +1212,7 @@ def _run_evidence_stages(
             normalized_this_run,
             push_progress,
             status,
+            run_id,
         )
     elif input_dir is None:
         analyze_receipt = _stage_receipt(db, "pipeline-analyze")
@@ -1154,6 +1224,7 @@ def _run_evidence_stages(
                 False,
                 push_progress,
                 status,
+                run_id,
             )
 
 
