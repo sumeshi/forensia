@@ -10,6 +10,8 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from unittest.mock import patch
 
+import duckdb
+
 from forensia.config import load_settings, settings_scope
 from forensia.core.case import Case
 from forensia.core.session import Hypothesis, PlannedQuery, SessionState
@@ -104,9 +106,37 @@ class PersistenceTests(unittest.TestCase):
                     db.execute("INSERT INTO concurrency_check VALUES (2)")
                     reader = pool.submit(snapshot_count)
                     self.assertTrue(reading.wait(timeout=2))
-                    self.assertFalse(reader.done())
+                    self.assertEqual(1, reader.result(timeout=2))
                     raise RuntimeError("rollback")
                 self.assertEqual(1, reader.result(timeout=2))
+
+                with db.read_snapshot():
+                    self.assertEqual(
+                        1,
+                        db.execute("SELECT COUNT(*) FROM concurrency_check").fetchone()[
+                            0
+                        ],
+                    )
+                    pool.submit(
+                        db.execute, "INSERT INTO concurrency_check VALUES (3)"
+                    ).result(timeout=2)
+                    self.assertEqual(
+                        1,
+                        db.execute("SELECT COUNT(*) FROM concurrency_check").fetchone()[
+                            0
+                        ],
+                    )
+                self.assertEqual(
+                    2,
+                    db.execute("SELECT COUNT(*) FROM concurrency_check").fetchone()[0],
+                )
+
+                with self.assertRaises(duckdb.TransactionException), db.read_snapshot():
+                    db.execute("INSERT INTO concurrency_check VALUES (4)")
+                self.assertEqual(
+                    2,
+                    db.execute("SELECT COUNT(*) FROM concurrency_check").fetchone()[0],
+                )
 
     def test_collect_gaps_supports_english_and_japanese_placeholders(self) -> None:
         self.assertEqual(

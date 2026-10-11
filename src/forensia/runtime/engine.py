@@ -225,14 +225,14 @@ class RuntimeEngine:
             case = self._case or Case.open(self.case_dir)
             if self._db is not None:
                 if nonblocking:
-                    with self._db.read_snapshot(blocking=False):
+                    with self._db.read_snapshot():
                         yield self._db
                 else:
                     yield self._db
                 return
             with CaseDB(case, read_only=not write, blocking=not nonblocking) as db:
                 if nonblocking:
-                    with db.read_snapshot(blocking=False):
+                    with db.read_snapshot():
                         yield db
                 else:
                     yield db

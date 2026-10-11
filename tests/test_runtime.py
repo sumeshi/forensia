@@ -45,6 +45,8 @@ def _serve_test_runtime(case_dir: str) -> None:
 
 
 def _serve_busy_test_runtime(case_dir: str, busy, release) -> None:
+    from forensia.core.progress_event import progress_event
+    from forensia.db.progress import record_progress_event
     from forensia.runtime.engine import RuntimeEngine
 
     case = Case.open(case_dir)
@@ -57,6 +59,15 @@ def _serve_busy_test_runtime(case_dir: str, busy, release) -> None:
     def hold_transaction() -> None:
         with CaseDB(case) as db:
             with db.transaction():
+                db.execute(
+                    "INSERT INTO findings (finding_id, title) VALUES ('pending-finding', 'New finding')"
+                )
+                record_progress_event(
+                    db,
+                    progress_event(
+                        "finding.created", "completed", summary="New finding"
+                    ),
+                )
                 busy.set()
                 release.wait(10)
 
@@ -168,7 +179,7 @@ def test_runtime_ipc_and_lock_cross_process(tmp_path):
         pass
 
 
-def test_runtime_ipc_reads_report_busy_without_blocking_followup_requests(tmp_path):
+def test_runtime_ipc_reads_committed_state_during_writes(tmp_path):
     case = Case.init(tmp_path / "case")
     with CaseDB(case):
         pass
@@ -189,13 +200,18 @@ def test_runtime_ipc_reads_report_busy_without_blocking_followup_requests(tmp_pa
             time.sleep(0.01)
         assert probe_runtime(case.path)
 
-        for request in (
-            {"type": "snapshot"},
-            {"type": "events"},
-            {"type": "detail", "kind": "task", "id": "missing"},
-        ):
-            with pytest.raises(CaseDBBusyError, match="database is busy"):
-                client.request(request)
+        before = client.request({"type": "snapshot"})
+        assert before["counts"]["findings"] == 0
+        assert not any(
+            event.get("summary") == "New finding"
+            for event in client.request({"type": "events"})
+        )
+        assert (
+            client.request(
+                {"type": "detail", "kind": "finding", "id": "pending-finding"}
+            )
+            is None
+        )
         assert client.request({"type": "status"})["ready"] is True
 
         release.set()
@@ -203,13 +219,23 @@ def test_runtime_ipc_reads_report_busy_without_blocking_followup_requests(tmp_pa
         for _ in range(100):
             try:
                 snapshot = client.request({"type": "snapshot"})
-                break
+                if snapshot["counts"]["findings"] == 1:
+                    break
             except CaseDBBusyError:
-                time.sleep(0.01)
+                pass
+            time.sleep(0.01)
         assert snapshot["case_name"] == case.path.name
-        assert isinstance(client.request({"type": "events"}), list)
+        assert snapshot["counts"]["findings"] == 1
+        assert snapshot["event_highwater"] > before["event_highwater"]
+        assert any(
+            event.get("summary") == "New finding"
+            for event in client.request({"type": "events"})
+        )
         assert (
-            client.request({"type": "detail", "kind": "task", "id": "missing"}) is None
+            client.request(
+                {"type": "detail", "kind": "finding", "id": "pending-finding"}
+            )["title"]
+            == "New finding"
         )
 
         receipt = client.request(

@@ -19,7 +19,7 @@ _CASE_CONNECTION_LOCKS_GUARD = threading.Lock()
 
 
 class CaseDBBusyError(RuntimeError):
-    """Raised when a nonblocking case read finds the database in use."""
+    """Raised when a nonblocking case operation cannot acquire ownership."""
 
 
 def _case_connection_lock(case: Case) -> threading.RLock:
@@ -37,6 +37,7 @@ class CaseDB:
         if not self._connection_lock.acquire(blocking=blocking):
             raise CaseDBBusyError("Case database is busy")
         self._thread_connections = threading.local()
+        self._snapshot_lock = threading.RLock()
         self._cursors: list[duckdb.DuckDBPyConnection] = []
         self._closed = False
         conn = None
@@ -79,6 +80,9 @@ class CaseDB:
     @property
     def conn(self) -> duckdb.DuckDBPyConnection:
         """Each thread owns its result cursor; the case lock serializes writes."""
+        snapshot = getattr(self._thread_connections, "read_connection", None)
+        if snapshot is not None:
+            return snapshot
         with self._connection_lock:
             if self._closed:
                 raise RuntimeError("CaseDB is closed")
@@ -107,6 +111,9 @@ class CaseDB:
         self, query: str, params: Sequence[Any] | None = None
     ) -> duckdb.DuckDBPyConnection:
         """Execute SQL against the unified case database."""
+        snapshot = getattr(self._thread_connections, "read_connection", None)
+        if snapshot is not None:
+            return snapshot.execute(query, params)
         with self._connection_lock:
             if params is None:
                 return self.conn.execute(query)
@@ -117,25 +124,34 @@ class CaseDB:
         rows = list(rows)
         if not rows:
             return
-        if self.read_only:
+        if self.read_only or getattr(self._thread_connections, "read_connection", None):
             raise PermissionError("Cannot write through a read-only CaseDB")
         with self._connection_lock:
             self.conn.executemany(query, rows)
 
     @contextmanager
-    def read_snapshot(self, *, blocking: bool = True) -> Iterator[None]:
-        """Keep a derived view consistent with one durable event position."""
-        if not self._connection_lock.acquire(blocking=blocking):
-            raise CaseDBBusyError("Case database is busy")
-        try:
-            yield
-        finally:
-            self._connection_lock.release()
+    def read_snapshot(self) -> Iterator[None]:
+        """Read one committed MVCC snapshot without holding the writer lock."""
+        with self._snapshot_lock:
+            if getattr(self._thread_connections, "read_connection", None) is not None:
+                yield
+                return
+            if self._closed:
+                raise RuntimeError("CaseDB is closed")
+            with self._root_connection.cursor() as snapshot:
+                snapshot.execute("SET TimeZone = 'UTC'")
+                snapshot.execute("BEGIN TRANSACTION READ ONLY")
+                self._thread_connections.read_connection = snapshot
+                try:
+                    yield
+                finally:
+                    self._thread_connections.read_connection = None
+                    snapshot.execute("ROLLBACK")
 
     @contextmanager
     def transaction(self) -> Iterator[None]:
         """Commit a group of writes atomically, rolling back on failure."""
-        if self.read_only:
+        if self.read_only or getattr(self._thread_connections, "read_connection", None):
             raise PermissionError("Cannot write through a read-only CaseDB")
         with self._connection_lock:
             self.conn.execute("BEGIN TRANSACTION")
@@ -150,7 +166,7 @@ class CaseDB:
     @contextmanager
     def bulk_load_mode(self) -> Iterator[None]:
         """Bound memory during wide JSON loads, then restore connection settings."""
-        if self.read_only:
+        if self.read_only or getattr(self._thread_connections, "read_connection", None):
             raise PermissionError(
                 "Cannot change write settings through a read-only CaseDB"
             )
@@ -174,7 +190,7 @@ class CaseDB:
             )
 
     def close(self) -> None:
-        with self._connection_lock:
+        with self._connection_lock, self._snapshot_lock:
             if self._closed:
                 return
             for cursor in self._cursors:

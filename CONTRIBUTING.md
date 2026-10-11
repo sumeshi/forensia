@@ -185,7 +185,7 @@ MFTの`is_deleted`などのBoolean列は、JSONの`true`/`false`を使う`equals
 
 TUIはTextualで構成し、トップにケース名・現在の作業・経過時間、右側のサイドバーにFinding数・仮説status・未完了作業・LLM使用量を表示します。サイドバーの区切り線より下にRuntimeとDBの読取り状況を置きます。中央は端末のローカル時刻を付けたログ、下部は入力欄です。イベントの明示的なseverityに従い、情報は水色、成功は緑、警告は黄、エラーは赤で表示します。長い参照IDやSQLは詳細ウィンドウで確認し、狭い端末では調査情報をログの下に配置します。経過時間は証拠処理runまたは調査sessionの保存済み開始時刻から算出し、終了後は終了時刻で固定します。
 
-Runtimeの表示用読取りは、書込み中にロックを待たず`case_busy`を返します。TUIは`busy`や`timeout`を警告色で表示し、最後に取得した表示と更新時刻を保持して次の更新を試みます。読取りエラーだけでRuntimeの接続や制御権を捨てず、接続終了・通信エラーの場合にRuntimeを失ったと扱います。
+Runtimeの表示用読取りは、同じDuckDBの読取り専用MVCCスナップショットを使います。長い書込みの完了を待たず、確定済みの状態と進捗を表示し、未確定の変更は含めません。一回の読取り中は同じスナップショットを保ちます。DBの切替えなどで一時的に`busy`や`timeout`になった場合は、警告色で最後の表示と更新時刻を保持して次の更新を試みます。読取りエラーだけでRuntimeの接続や制御権を捨てず、接続終了・通信エラーの場合にRuntimeを失ったと扱います。
 
 RuntimeへのIPCはPOSIXではUnix domain socket、Windowsではnamed pipeを使います。Windows 10・Python 3.14.5では、配布wheelのdoctorと、実IPC・lock・背景起動・停止・再開・アイドル上書き・異常終了からの復旧・実Prefetch parserによるsource置換・標準レポートの失効と再出力を確認しました。今回のTUI変更はLinuxのheadlessテストで確認し、実際のWindows端末での手動描画と実モデル調査は未検証です。TUIはRuntimeのcontroller claimを取得して操作を送信し、終了時にclaimを解放します。停止済みケースの制御lockもケース外に置き、複数TUIから同時に操作しないようにします。
 
