@@ -15,6 +15,7 @@ from forensia.knowledge.coverage import (
     get_coverage_summary,
     observation_catalog,
     observation_condition_error,
+    observation_feasibility_error,
     refresh_evidence_coverage,
 )
 
@@ -202,6 +203,55 @@ class RequiredCapabilityDerivationTests(unittest.TestCase):
                 }
             ),
         )
+
+    def test_observation_feasibility_uses_distinct_current_family_ids(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                db.execute(
+                    "INSERT INTO prefetch_executions "
+                    "(evidence_id, source_file, executable_name) "
+                    "VALUES (?, ?, ?), (?, ?, ?)",
+                    [
+                        "prefetch-one",
+                        "source-one",
+                        "cmd.exe",
+                        "prefetch-one",
+                        "source-one",
+                        "cmd.exe",
+                    ],
+                )
+                condition = {
+                    "observation": {
+                        "family": "prefetch",
+                        "capability": "process_execution",
+                        "field": "executable_name",
+                        "operator": "equals",
+                        "value": "cmd.exe",
+                    },
+                    "min_count": 2,
+                }
+                self.assertEqual(
+                    (
+                        "observation_min_count_exceeds_current_family_count",
+                        "current-family-count:1",
+                    ),
+                    observation_feasibility_error(db, condition),
+                )
+                self.assertEqual(
+                    (
+                        "observation_required_entity_unobservable",
+                        "required entity columns absent from canonical schema: computer",
+                    ),
+                    observation_feasibility_error(
+                        db, {"observation": condition["observation"]}, ["computer"]
+                    ),
+                )
+                self.assertIsNone(
+                    observation_feasibility_error(
+                        db, {"observation": condition["observation"]}, ["source_file"]
+                    )
+                )
 
 
 class EvidenceSourceTests(unittest.TestCase):

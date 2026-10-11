@@ -176,8 +176,6 @@ def _build_guarded_check_result(
         suspicious_evidence=guarded.get("suspicious_evidence") or [],
         new_hypotheses=parse_new_hypotheses(guarded.get("new_hypotheses")),
         report_text=str(guarded.get("report_text") or ""),
-        new_leads=0,
-        progress=False,
         raw_response=merged,
     )
     return result, merged
@@ -240,7 +238,7 @@ def check_query_result(
         verdict_parsed=verdict_parsed,
         extracted_findings=extracted_findings,
     )
-    result.new_leads, result.progress = apply_check_result(
+    apply_check_result(
         case=case,
         db=db,
         session_id=session_id,

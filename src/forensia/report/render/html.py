@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -518,7 +518,7 @@ def render_html_report(
         for row in host_rows
         if str(row.get("computer") or "").strip()
     ]
-    generated_at = datetime.now().isoformat(timespec="seconds")
+    generated_at = datetime.now(UTC).isoformat(timespec="seconds")
     payload = {
         "case_name": case.path.name,
         "manifest": manifest,

@@ -330,6 +330,58 @@ def canonical_observation_claim(spec: VerificationSpec | dict[str, Any]) -> str 
     )
 
 
+def observation_feasibility_error(
+    db: CaseDB,
+    condition: dict[str, Any],
+    required_entities: list[str] | None = None,
+    family_counts: dict[str, int] | None = None,
+) -> tuple[str, str] | None:
+    """Report typed-observation limits provable from the current canonical rows."""
+    if observation_condition_error(condition):
+        return None
+    observation = condition["observation"]
+    family = observation["family"].strip().lower()
+    from forensia.db.evidence_lookup import canonical_record_table
+
+    table = canonical_record_table(family)
+    if table is None:
+        return None
+    from forensia.db.schema import declared_schema
+
+    unavailable_entities = sorted(
+        {
+            str(entity).strip()
+            for entity in (required_entities or [])
+            if str(entity).strip()
+            and str(entity).strip() not in declared_schema()[table]
+        }
+    )
+    if unavailable_entities:
+        return (
+            "observation_required_entity_unobservable",
+            "required entity columns absent from canonical schema: "
+            + ",".join(unavailable_entities),
+        )
+
+    id_column = "artifact_id" if family == "registry" else "evidence_id"
+    if family_counts is not None and family in family_counts:
+        available = family_counts[family]
+    else:
+        row = db.execute(f"SELECT COUNT(DISTINCT {id_column}) FROM {table}").fetchone()
+        if row is None or row[0] is None:
+            return None
+        available = int(row[0])
+        if family_counts is not None:
+            family_counts[family] = available
+    required = condition.get("min_count", 1)
+    if required > available:
+        return (
+            "observation_min_count_exceeds_current_family_count",
+            f"current-family-count:{available}",
+        )
+    return None
+
+
 def load_evidence_sufficiency_policy() -> dict[str, Any]:
     """Load evidence sufficiency policy from data/schema/evidence_sufficiency.yaml."""
     path = schema_dir() / "evidence_sufficiency.yaml"

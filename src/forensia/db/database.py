@@ -52,6 +52,7 @@ class CaseDB:
             conn = self._root_connection = duckdb.connect(
                 str(case.database_path), read_only=read_only
             )
+            conn.execute("SET TimeZone = 'UTC'")
             if database_exists:
                 self._check_schema_version(conn)
             if not database_exists:
@@ -79,6 +80,7 @@ class CaseDB:
             connection = getattr(self._thread_connections, "connection", None)
             if connection is None:
                 connection = self._root_connection.cursor()
+                connection.execute("SET TimeZone = 'UTC'")
                 self._thread_connections.connection = connection
                 self._cursors.append(connection)
             return connection

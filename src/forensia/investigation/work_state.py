@@ -14,6 +14,7 @@ from typing import Any
 from forensia.core.session import Hypothesis
 from forensia.db.database import CaseDB
 from forensia.investigation.work_judgment import (
+    OBSERVATION_INFEASIBLE_CODES,
     coverage_readiness,
     judge_work,
 )
@@ -69,7 +70,10 @@ def _classification_for(
     required_capabilities: list[str],
     unavailable_capabilities: list[str],
     external_task_ids: tuple[str, ...],
+    observation_infeasible: bool = False,
 ) -> str:
+    if observation_infeasible:
+        return "blocked"
     if sufficiency_status == "unobservable" or (
         required_capabilities
         and len(unavailable_capabilities) == len(required_capabilities)
@@ -205,14 +209,27 @@ def classify_active_hypotheses_on_stop(
                 required_capabilities=list(judgment.capabilities),
                 unavailable_capabilities=list(judgment.unavailable_capabilities),
                 external_task_ids=judgment.external_task_ids,
+                observation_infeasible=any(
+                    blocker.code in OBSERVATION_INFEASIBLE_CODES
+                    for blocker in judgment.blockers
+                ),
             )
             counts[classification] += 1
+            observation_blockers = [
+                blocker.owner
+                for blocker in judgment.blockers
+                if blocker.code in OBSERVATION_INFEASIBLE_CODES
+            ]
             reason = {
                 "deferred": f"Not investigated before {stop_reason_code}",
                 "blocked": f"Blocked before {stop_reason_code}",
                 "needs_review": f"Human review or more evidence required after {stop_reason_code}",
                 "untestable": f"Required telemetry unavailable at {stop_reason_code}",
             }[classification]
+            if observation_blockers:
+                reason = "typed-observation-infeasible: " + "; ".join(
+                    observation_blockers
+                )
             if judgment.unavailable_capabilities or judgment.external_task_ids:
                 owners = list(judgment.unavailable_capabilities)
                 if judgment.external_task_ids:
@@ -356,9 +373,14 @@ def reopen_retryable_work(db: CaseDB, *, manual_resume: bool = False) -> list[st
                     db.execute(source_query + " LIMIT 1", params).fetchone() is not None
                 )
             else:
-                # Unrecognized or human/external-owned conditions are never
-                # auto-reopened; the saved value is the reopen contract.
                 should_reopen = False
+            if should_reopen:
+                judgment = judge_work(db, [hypothesis_id]).get(hypothesis_id)
+                if judgment is not None:
+                    should_reopen = not any(
+                        blocker.code in OBSERVATION_INFEASIBLE_CODES
+                        for blocker in judgment.blockers
+                    )
             if not should_reopen:
                 continue
             db.execute(
@@ -396,14 +418,14 @@ def resolve_linked_work(db: CaseDB, hypothesis_id: str) -> None:
     )
 
 
-def stop_summary(db: CaseDB, active_count: int = 0) -> dict[str, int]:
+def stop_summary(db: CaseDB) -> dict[str, int]:
     """Return machine-readable terminal hypothesis counts."""
     rows = db.execute(
         "SELECT status, COUNT(*) FROM hypotheses GROUP BY status"
     ).fetchall()
     counts = {str(status): int(count) for status, count in rows}
     return {
-        "active": int(counts.get("active", active_count)),
+        "active": int(counts.get("active", 0)),
         "resolved": int(counts.get("confirmed", 0) + counts.get("refuted", 0)),
         "deferred": int(counts.get("deferred", 0)),
         "blocked": int(counts.get("blocked", 0)),

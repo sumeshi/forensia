@@ -102,6 +102,8 @@ def evaluation_snapshot(db: CaseDB) -> dict[str, Any]:
     ).fetchall()
     links = [
         {
+            "hypothesis_id": str(row[1] or ""),
+            "role": str(row[4] or ""),
             "root": derivation_root_key(
                 EvidenceLink(
                     link_id=str(row[0]),
@@ -125,9 +127,19 @@ def evaluation_snapshot(db: CaseDB) -> dict[str, Any]:
             "source_file, derivation_group FROM hypothesis_evidence"
         ).fetchall()
     ]
-    observations = sorted({link["root"] for link in links if link["assessed"]})
+    observations = sorted(
+        {
+            (link["hypothesis_id"], link["root"], link["role"])
+            for link in links
+            if link["assessed"]
+        }
+    )
     contradictions = sorted(
-        {link["root"] for link in links if link["assessed"] and link["contradictory"]}
+        {
+            (link["hypothesis_id"], link["root"])
+            for link in links
+            if link["assessed"] and link["contradictory"]
+        }
     )
     identity_payload = json.dumps(
         {"sources": sources, "coverage": coverage},
@@ -150,7 +162,7 @@ def report_cycle_progress(previous: dict[str, Any], current: dict[str, Any]) -> 
 
     Compares two ``evaluation_snapshot`` dicts.  Two categories count:
     genuinely new information (an unresolved work ref appeared or was
-    resolved, a new observation root, a new unhandled contradiction root) and
+    resolved, a newly assessed root/role for a hypothesis, a new contradiction) and
     a change that triggers re-evaluation (source / Coverage identity changed —
     same-count source replacements and Coverage downgrades included).  Prose
     growth, same-root refetches, and status round-trips that leave the same

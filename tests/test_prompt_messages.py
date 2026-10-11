@@ -312,6 +312,30 @@ class PromptMessageTests(unittest.TestCase):
         )
         self.assertIn('"exec_times": ["2025-01-02T03:04:05"]', joined)
         self.assertIn('"is_deleted": false', joined)
+        self.assertIn(
+            "At least 1 mft observation has file_path equals "
+            '"C:/ProgramData/updater.exe".',
+            joined,
+        )
+        self.assertNotIn(
+            "At least 2 mft observations have file_path equals "
+            '"C:/ProgramData/updater.exe".',
+            joined,
+        )
+        with patch.object(prompts, "_org_knowledge_block", return_value=""):
+            duplicate_messages, _ = prompts.build_hypothesis_drafter_messages(
+                {"keypoint_id": "persistence"},
+                [],
+                observed_candidate={
+                    "evidence": [candidate["evidence"][0]] * 2,
+                },
+            )
+        self.assertNotIn(
+            "At least 2 mft observations have file_path equals "
+            '"C:/ProgramData/updater.exe".',
+            "\n".join(message["content"] for message in duplicate_messages),
+        )
+        self.assertNotIn("observation(s) has/have", joined)
         self.assertNotIn('"exec_time":', joined)
         self.assertNotIn('"timestamp": "derived timeline value"', joined)
 
@@ -344,6 +368,142 @@ class PromptMessageTests(unittest.TestCase):
         )
         self.assertEqual(boolean_variant["properties"]["value"], {"type": "boolean"})
         self.assertEqual(boolean_variant["properties"]["operator"]["enum"], ["equals"])
+
+    def test_typed_observation_examples_run_through_admission_assessment_settlement(
+        self,
+    ) -> None:
+        from forensia.core.session import SessionState
+        from forensia.evidence.links import EvidenceLink
+        from forensia.investigation import prompts
+        from forensia.investigation.hypotheses.hypothesis_manager import (
+            admit_new_hypothesis,
+        )
+        from forensia.investigation.verification.assessment import (
+            assess_evidence_group,
+        )
+        from forensia.investigation.verification.settlement import (
+            build_settlement_input_from_confirm_when,
+            decide_settlement,
+        )
+        from forensia.investigation.verification.sufficiency import SufficiencyResult
+        from forensia.knowledge.coverage import canonical_observation_claim
+
+        candidate = {
+            "evidence": [
+                {
+                    "evidence_id": "mft-m1",
+                    "_source": "mft_entries",
+                    "file_path": "C:/ProgramData/updater.exe",
+                },
+                {
+                    "evidence_id": "mft-m2",
+                    "_source": "mft_entries",
+                    "file_path": "C:/ProgramData/updater.exe",
+                },
+            ]
+        }
+        with patch.object(prompts, "_org_knowledge_block", return_value=""):
+            messages, schema = prompts.build_hypothesis_drafter_messages(
+                {"keypoint_id": "persistence"}, [], observed_candidate=candidate
+            )
+        fitted = fit_prompt_messages(messages)
+        self.assertIsNotNone(fitted)
+        prompt_text = "\n".join(message["content"] for message in fitted or [])
+        examples = (
+            "At least 1 mft observation has file_path equals "
+            '"C:/ProgramData/updater.exe".',
+            "At least 2 mft observations have file_path equals "
+            '"C:/ProgramData/updater.exe".',
+        )
+        for example in examples:
+            self.assertIn(example, prompt_text)
+        observation_schema = schema["properties"]["hypothesis"]["properties"][
+            "confirm_when"
+        ]["properties"]["observation"]
+        self.assertEqual(
+            ["file_path"],
+            observation_schema["anyOf"][0]["properties"]["field"]["enum"],
+        )
+
+        rows = [
+            {
+                "evidence_id": row["evidence_id"],
+                "source_family": "mft",
+                "file_path": row["file_path"],
+            }
+            for row in candidate["evidence"]
+        ]
+        sufficiency = SufficiencyResult(
+            status="sufficient",
+            score=1.0,
+            reasons=[],
+            independent_groups=2,
+            families=["mft"],
+            contradictory_groups=0,
+            missing_requirements=[],
+            human_review_required=False,
+        )
+        for count, description in zip((1, 2), examples, strict=True):
+            support = {
+                "observation": {
+                    "family": "mft",
+                    "capability": "file_activity",
+                    "field": "file_path",
+                    "operator": "equals",
+                    "value": "C:/ProgramData/updater.exe",
+                },
+                **({"min_count": count} if count > 1 else {}),
+            }
+            hypothesis = Hypothesis(
+                id=f"H-PROMPT-{count}",
+                description=description,
+                confirm_when=support,
+            )
+            self.assertEqual(
+                description,
+                canonical_observation_claim(hypothesis.verification_spec),
+            )
+            accepted, reason = admit_new_hypothesis(
+                hypothesis, SessionState(session_id=f"S-{count}")
+            )
+            self.assertTrue(accepted, reason)
+
+            assessment = assess_evidence_group(
+                hypothesis=hypothesis,
+                rows=rows,
+                evidence_ids=[row["evidence_id"] for row in rows],
+            )
+            self.assertEqual("supporting", assessment.role)
+            self.assertEqual(2, len(assessment.evidence_ids))
+            links = [
+                EvidenceLink(
+                    link_id=f"L-{count}-{evidence_id}",
+                    hypothesis_id=hypothesis.id,
+                    evidence_id=evidence_id,
+                    finding_id="",
+                    query_id=f"Q-{count}",
+                    assessment_id=assessment.assessment_id,
+                    role="supporting",
+                    source_family="mft",
+                    source_file=f"{evidence_id}.mft",
+                    derivation_group=evidence_id,
+                    strength="strong",
+                )
+                for evidence_id in assessment.evidence_ids
+            ]
+            settled = decide_settlement(
+                build_settlement_input_from_confirm_when(
+                    hypothesis=hypothesis,
+                    checker_verdict="confirmed",
+                    check_summary="typed observation",
+                    sample_rows=rows,
+                    sufficiency_result=sufficiency,
+                ),
+                links=links,
+                coverage={},
+            )
+            self.assertEqual("confirmed", settled.verdict)
+            self.assertTrue(settled.allowed)
 
     def test_hypothesis_drafter_discloses_empty_context_and_disallows_event_ids(
         self,

@@ -20,8 +20,6 @@ class CheckResult:
     suspicious_evidence: list[dict[str, Any]]
     new_hypotheses: list[Hypothesis]
     report_text: str
-    new_leads: int
-    progress: bool  # True if something meaningfully changed
     raw_response: dict[str, Any]
 
 

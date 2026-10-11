@@ -457,7 +457,6 @@ class _HypothesisRunState:
     candidates: list[dict[str, Any]]
     tracker: HypothesisProgressTracker
     focus_sections: dict[str, str]
-    cycle_progress: bool = False
     query_index: int = 0
     hypothesis_plan: Any = None
     planned_query: Any = None
@@ -1383,9 +1382,7 @@ def _phase_apply_verdict(rs: _HypothesisRunState) -> None:
             "RESOLVE",
             f"{hypothesis.id} — {final_verdict} (resolved={len(state.resolved_hypotheses)})",
         )
-        rs.cycle_progress = True
-    elif final_verdict == "newlead" or check_result.progress:
-        rs.cycle_progress = True
+    elif final_verdict == "newlead":
         _upsert_hypothesis(
             db=db,
             hypothesis=Hypothesis(
@@ -1516,7 +1513,6 @@ def _phase_auto_resolve(rs: _HypothesisRunState) -> str:
                 else None
             ),
         )
-    rs.cycle_progress = True
     return "break"
 
 
@@ -1535,7 +1531,7 @@ async def _investigate_one_hypothesis(
     emit_fn: Callable[..., None] | None = None,
     llm_status_fn: Callable[[str], None] | None = None,
     case_profile: CaseEvidenceProfile | None = None,
-) -> tuple[bool, SessionState, dict[str, str]]:
+) -> tuple[SessionState, dict[str, str]]:
     """Investigate a single hypothesis with full emit/save lifecycle."""
     rs = _HypothesisRunState(
         hypothesis=hypothesis,
@@ -1596,4 +1592,4 @@ async def _investigate_one_hypothesis(
         _phase_track_progress(rs)
         if _phase_auto_resolve(rs) == "break" or query_index >= limit:
             break
-    return rs.cycle_progress, rs.state, rs.focus_sections
+    return rs.state, rs.focus_sections

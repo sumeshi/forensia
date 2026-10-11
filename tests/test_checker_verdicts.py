@@ -33,7 +33,6 @@ class CheckerVerdictTests(unittest.TestCase):
                 ),
                 patch(
                     "forensia.investigation.verification.checker.apply_check_result",
-                    return_value=(0, False),
                 ),
             ):
                 result = check_query_result(
@@ -64,7 +63,6 @@ class CheckerVerdictTests(unittest.TestCase):
 
         def _capture(*args, **kwargs):
             captured["result"] = kwargs["check_result"]
-            return (0, False)
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -108,7 +106,6 @@ class CheckerVerdictTests(unittest.TestCase):
 
         def _capture(*args, **kwargs):
             captured["result"] = kwargs["check_result"]
-            return (0, False)
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -163,7 +160,6 @@ class CheckerVerdictTests(unittest.TestCase):
 
         def _capture(*args, **kwargs):
             captured["result"] = kwargs["check_result"]
-            return (0, False)
 
         response = {
             "verdict": "newlead",

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import threading
+import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
@@ -19,6 +21,7 @@ from forensia.investigation.investigation_session import append_hypothesis_reaso
 from forensia.investigation.investigator import final_summary
 from forensia.investigation.report_gap import (
     classify_gap_kind,
+    evaluation_snapshot,
     inject_gap_hypotheses,
     report_cycle_progress,
 )
@@ -32,6 +35,45 @@ from forensia.report.sections.section_quality import collect_gaps, section_confi
 
 class PersistenceTests(unittest.TestCase):
     """Investigation-state persistence: reasoning rows, hypothesis merge/gap injection."""
+
+    def test_sql_now_is_utc_on_root_thread_cursor_and_reopen(self) -> None:
+        if not hasattr(time, "tzset"):
+            self.skipTest("changing the process timezone is not supported here")
+        old_tz = os.environ.get("TZ")
+        try:
+            os.environ["TZ"] = "Asia/Tokyo"
+            time.tzset()
+            with tempfile.TemporaryDirectory() as tmpdir:
+                case = Case.init(tmpdir)
+                with CaseDB(case) as db:
+                    db.execute(
+                        "CREATE TABLE utc_check (source VARCHAR, value TIMESTAMP)"
+                    )
+                    db.execute("INSERT INTO utc_check VALUES ('main', now())")
+
+                    def insert_from_thread() -> None:
+                        db.execute("INSERT INTO utc_check VALUES ('thread', now())")
+
+                    with ThreadPoolExecutor(max_workers=1) as pool:
+                        pool.submit(insert_from_thread).result(timeout=5)
+                    stored = db.execute(
+                        "SELECT source, value FROM utc_check ORDER BY source"
+                    ).fetchall()
+                with CaseDB(case, read_only=True) as db:
+                    reopened = db.execute(
+                        "SELECT source, value FROM utc_check ORDER BY source"
+                    ).fetchall()
+
+            expected = datetime.now(UTC).replace(tzinfo=None)
+            for _source, value in reopened:
+                self.assertLess(abs((value - expected).total_seconds()), 10)
+            self.assertEqual(stored, reopened)
+        finally:
+            if old_tz is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = old_tz
+            time.tzset()
 
     def test_runtime_threads_keep_results_and_transactions_isolated(self) -> None:
         """IPC reads keep their cursor and cannot observe an uncommitted update."""
@@ -481,6 +523,33 @@ class PersistenceTests(unittest.TestCase):
                 )
             )
 
+        with self.subTest("assessment is specific to its hypothesis and role"):
+            with tempfile.TemporaryDirectory() as tmpdir:
+                with CaseDB(Case.init(tmpdir)) as db:
+
+                    def link(link_id: str, hypothesis_id: str, role: str) -> None:
+                        db.execute(
+                            "INSERT INTO hypothesis_evidence "
+                            "(link_id, hypothesis_id, evidence_id, assessment_id, role) "
+                            "VALUES (?, ?, 'shared-root', 'assessment', ?)",
+                            [link_id, hypothesis_id, role],
+                        )
+
+                    link("L1", "H1", "supporting")
+                    first = evaluation_snapshot(db)
+                    link("L2", "H1", "supporting")
+                    repeated = evaluation_snapshot(db)
+                    self.assertFalse(report_cycle_progress(first, repeated))
+                    link("L3", "H2", "supporting")
+                    second_hypothesis = evaluation_snapshot(db)
+                    self.assertTrue(report_cycle_progress(repeated, second_hypothesis))
+                    link("L4", "H2", "contradictory")
+                    self.assertTrue(
+                        report_cycle_progress(
+                            second_hypothesis, evaluation_snapshot(db)
+                        )
+                    )
+
     def test_non_testable_report_gap_stays_a_review_gap(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -622,8 +691,6 @@ class PersistenceTests(unittest.TestCase):
                 suspicious_evidence=[],
                 new_hypotheses=[],
                 report_text="confirmed",
-                new_leads=0,
-                progress=False,
                 raw_response={
                     "extracted_findings": [
                         {

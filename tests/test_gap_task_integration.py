@@ -177,6 +177,140 @@ class WorkContextSnapshotTests(unittest.TestCase):
 
 
 class StopClassificationTests(unittest.TestCase):
+    def test_typed_observation_infeasibility_blocks_selection_and_stop(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with CaseDB(Case.init(tmpdir)) as db:
+                hypothesis = _insert_hypothesis(db, "H-OBS")
+                db.execute(
+                    "UPDATE hypotheses SET verification_spec = ?, required_entities = ? "
+                    "WHERE hypothesis_id = ?",
+                    [
+                        json.dumps(
+                            {
+                                "spec_version": "1",
+                                "support_conditions": {
+                                    "observation": {
+                                        "family": "prefetch",
+                                        "capability": "process_execution",
+                                        "field": "executable_name",
+                                        "operator": "equals",
+                                        "value": "cmd.exe",
+                                    },
+                                    "min_count": 2,
+                                },
+                            }
+                        ),
+                        "[]",
+                        hypothesis.id,
+                    ],
+                )
+                db.execute(
+                    "INSERT INTO prefetch_executions (evidence_id, executable_name) "
+                    "VALUES ('prefetch-one', 'cmd.exe'), ('prefetch-one', 'cmd.exe')"
+                )
+                db.execute(
+                    "INSERT INTO evidence_coverage (capability, source_family, state) "
+                    "VALUES ('process_execution', 'prefetch', 'available')"
+                )
+
+                judgment = judge_work(db, [hypothesis.id], selection_gate=True)[
+                    hypothesis.id
+                ]
+                self.assertFalse(judgment.runnable)
+                self.assertEqual(judgment.retry_condition, "new_evidence_or_coverage")
+                counts = classify_active_hypotheses_on_stop(
+                    db, [hypothesis], "no_progress_limit"
+                )
+                self.assertEqual(counts["blocked"], 1)
+                task = db.execute(
+                    "SELECT kind, retry_condition, reason FROM investigation_tasks "
+                    "WHERE hypothesis_id = ?",
+                    [hypothesis.id],
+                ).fetchone()
+                self.assertEqual(task[0], "blocked")
+                self.assertEqual(task[1], "new_evidence_or_coverage")
+                self.assertIn("current-family-count:1", task[2])
+                self.assertEqual(reopen_retryable_work(db, manual_resume=True), [])
+
+                db.execute(
+                    "UPDATE investigation_tasks SET updated_at = now() - INTERVAL '1 day' "
+                    "WHERE hypothesis_id = ?",
+                    [hypothesis.id],
+                )
+                db.execute(
+                    "INSERT INTO evidence_sources "
+                    "(source_id, artifact_family, ingest_status, updated_at) "
+                    "VALUES ('prefetch-source-1', 'prefetch', 'normalized', now())"
+                )
+                self.assertEqual(reopen_retryable_work(db), [])
+                db.execute(
+                    "INSERT INTO prefetch_executions (evidence_id, executable_name) "
+                    "VALUES ('prefetch-two', 'cmd.exe')"
+                )
+                db.execute(
+                    "INSERT INTO evidence_sources "
+                    "(source_id, artifact_family, ingest_status, updated_at) "
+                    "VALUES ('prefetch-source-2', 'prefetch', 'normalized', now())"
+                )
+                self.assertEqual(reopen_retryable_work(db), [hypothesis.id])
+
+    def test_unobservable_typed_entity_is_a_reviewable_blocker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with CaseDB(Case.init(tmpdir)) as db:
+                hypothesis = _insert_hypothesis(db, "H-OBS-ENTITY")
+                db.execute(
+                    "UPDATE hypotheses SET verification_spec = ?, required_entities = ? "
+                    "WHERE hypothesis_id = ?",
+                    [
+                        json.dumps(
+                            {
+                                "spec_version": "1",
+                                "support_conditions": {
+                                    "observation": {
+                                        "family": "prefetch",
+                                        "capability": "process_execution",
+                                        "field": "executable_name",
+                                        "operator": "equals",
+                                        "value": "cmd.exe",
+                                    }
+                                },
+                            }
+                        ),
+                        '["computer"]',
+                        hypothesis.id,
+                    ],
+                )
+                judgment = judge_work(db, [hypothesis.id])[hypothesis.id]
+                self.assertFalse(judgment.runnable)
+                self.assertTrue(
+                    any(
+                        blocker.code == "observation_required_entity_unobservable"
+                        and blocker.owner
+                        == "required entity columns absent from canonical schema: computer"
+                        for blocker in judgment.blockers
+                    )
+                )
+                self.assertEqual(judgment.retry_condition, "human_or_external_result")
+                counts = classify_active_hypotheses_on_stop(
+                    db, [hypothesis], "no_progress_limit"
+                )
+                self.assertEqual(counts["blocked"], 1)
+                self.assertEqual(
+                    db.execute(
+                        "SELECT retry_condition FROM investigation_tasks "
+                        "WHERE hypothesis_id = ?",
+                        [hypothesis.id],
+                    ).fetchone()[0],
+                    "human_or_external_result",
+                )
+                self.assertEqual(reopen_retryable_work(db, manual_resume=True), [])
+                db.execute(
+                    "INSERT INTO evidence_sources "
+                    "(source_id, artifact_family, ingest_status, updated_at) "
+                    "VALUES ('prefetch-new', 'prefetch', 'normalized', now())"
+                )
+                self.assertEqual(reopen_retryable_work(db), [])
+
     def test_stop_classifies_and_persists_linked_work(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             with CaseDB(Case.init(tmpdir)) as db:
@@ -475,7 +609,7 @@ class ProseChangeResolutionTests(unittest.TestCase):
                     durable_open_tasks=1,
                     no_progress_count=0,
                     no_progress_limit=3,
-                    cycle_progress=False,
+                    evaluation_changed=False,
                 )
                 self.assertIsNone(status)
 
@@ -847,9 +981,31 @@ class StopSummaryTests(unittest.TestCase):
                 classify_active_hypotheses_on_stop(
                     db, [hypothesis], "no_progress_limit"
                 )
+                for index, status in enumerate(
+                    (
+                        "blocked",
+                        "blocked",
+                        "blocked",
+                        "blocked",
+                        "needs_review",
+                        "untestable",
+                        "confirmed",
+                        "refuted",
+                    ),
+                    start=2,
+                ):
+                    _insert_hypothesis(db, f"H-{index:03}")
+                    db.execute(
+                        "UPDATE hypotheses SET status = ? WHERE hypothesis_id = ?",
+                        [status, f"H-{index:03}"],
+                    )
                 summary = stop_summary(db)
                 reason = format_stop_reason("stopped", "no_progress_limit", summary)
                 self.assertEqual(summary["deferred"], 1)
+                self.assertEqual(summary["blocked"], 4)
+                self.assertEqual(summary["needs_review"], 1)
+                self.assertEqual(summary["untestable"], 1)
+                self.assertEqual(summary["resolved"], 2)
                 self.assertEqual(summary["active"], 0)
                 self.assertIn("deferred=1", reason)
                 self.assertNotIn("active=1", reason)

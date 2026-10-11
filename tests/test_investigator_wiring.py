@@ -63,7 +63,6 @@ class InvestigateWiringTests(unittest.TestCase):
                         verdict="confirmed",
                         report_text="checked",
                         new_hypotheses=[],
-                        progress=False,
                     ),
                     state=SimpleNamespace(
                         history=[], active_hypotheses=[], resolved_hypotheses=[]
@@ -787,7 +786,7 @@ class InvestigateWiringTests(unittest.TestCase):
                 )
                 runner = mock.create_autospec(
                     investigation_cycle._investigate_one_hypothesis,
-                    return_value=(False, state, {}),
+                    return_value=(state, {}),
                 )
                 broad_call = mock.AsyncMock(return_value=False)
                 with (
@@ -863,7 +862,7 @@ class InvestigateWiringTests(unittest.TestCase):
                 broad_call = mock.AsyncMock(return_value=False)
                 runner = mock.create_autospec(
                     investigation_cycle._investigate_one_hypothesis,
-                    return_value=(False, state, {}),
+                    return_value=(state, {}),
                 )
                 with (
                     mock.patch.object(
@@ -1260,7 +1259,7 @@ class TerminationDurableWorkTests(unittest.TestCase):
             durable_open_tasks=0,
             no_progress_count=0,
             no_progress_limit=3,
-            cycle_progress=False,
+            evaluation_changed=False,
         )
         self.assertIsNone(status)
         self.assertEqual(no_progress_count, 1)
@@ -1277,7 +1276,7 @@ class TerminationDurableWorkTests(unittest.TestCase):
             durable_open_tasks=0,
             no_progress_count=0,
             no_progress_limit=3,
-            cycle_progress=False,
+            evaluation_changed=False,
         )
         self.assertEqual(
             (status, no_progress_count, reason),
@@ -1295,7 +1294,7 @@ class TerminationDurableWorkTests(unittest.TestCase):
             durable_open_tasks=2,
             no_progress_count=0,
             no_progress_limit=3,
-            cycle_progress=False,
+            evaluation_changed=False,
         )
         self.assertIsNone(status)
 

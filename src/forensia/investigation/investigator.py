@@ -209,7 +209,7 @@ def _check_termination(
     durable_open_tasks: int,
     no_progress_count: int,
     no_progress_limit: int,
-    cycle_progress: bool,
+    evaluation_changed: bool,
 ) -> tuple[str | None, int, str]:
     """Check if the investigation loop should stop. Returns (terminal_status or None, updated_no_progress_count, stop_reason_code)."""
     if report_only:
@@ -227,7 +227,7 @@ def _check_termination(
         and durable_open_tasks == 0
     ):
         return "completed", no_progress_count, "no_gaps_no_hypotheses"
-    no_progress_count = 0 if cycle_progress else no_progress_count + 1
+    no_progress_count = 0 if evaluation_changed else no_progress_count + 1
     if no_progress_count >= no_progress_limit:
         return "stopped", no_progress_count, "no_progress_limit"
     return None, no_progress_count, ""
@@ -327,11 +327,7 @@ async def _run_investigation_loop(env: _InvestigateEnv) -> tuple[str, int, str]:
         # Snapshot at the cycle's state-commit boundary: this read equals the
         # state the previous cycle committed (Coverage refresh included).
         evaluation_before = evaluation_snapshot(env.db)
-        (
-            broad_plan_stop,
-            cycle_progress,
-            focus_sections,
-        ) = await _run_cycle_body(
+        broad_plan_stop, focus_sections = await _run_cycle_body(
             state=env.state,
             ctx=env.ctx,
             case=env.case,
@@ -370,9 +366,7 @@ async def _run_investigation_loop(env: _InvestigateEnv) -> tuple[str, int, str]:
         # Compare at the commit point so this cycle's Gap/Task admissions are
         # visible to the durable progress calculation (V2-03/R06).
         evaluation_after = evaluation_snapshot(env.db)
-        cycle_progress = cycle_progress or report_cycle_progress(
-            evaluation_before, evaluation_after
-        )
+        evaluation_changed = report_cycle_progress(evaluation_before, evaluation_after)
         durable_open_gaps, durable_open_tasks = _durable_open_work_counts(env.db)
         terminal_status, no_progress_count, stop_reason_code = _check_termination(
             report_only=env.report_only,
@@ -382,7 +376,7 @@ async def _run_investigation_loop(env: _InvestigateEnv) -> tuple[str, int, str]:
             durable_open_tasks=durable_open_tasks,
             no_progress_count=no_progress_count,
             no_progress_limit=env.no_progress_limit,
-            cycle_progress=cycle_progress,
+            evaluation_changed=evaluation_changed,
         )
         if terminal_status is not None:
             if (
@@ -592,7 +586,7 @@ async def investigate(
         # validation and narratives observe the same final state as the API.
         # Report-only is a report job (R07): it must not rewrite the Case stop
         # state — an unresolved Case stays resumable after report-only.
-        summary = stop_summary(db, len(state.active_hypotheses))
+        summary = stop_summary(db)
         if not env.report_only:
             save_stop_reason(
                 db,
@@ -633,7 +627,7 @@ async def investigate(
             terminal_reason = format_stop_reason(
                 status,
                 stop_reason_code,
-                stop_summary(db, len(state.active_hypotheses)),
+                stop_summary(db),
             )
             persist_session_terminal_receipt(
                 db,
@@ -670,7 +664,7 @@ async def investigate(
         except Exception as exc:
             _log("FINALIZE", f"session receipt failed: {exc}", level="error")
         try:
-            summary = stop_summary(db, len(state.active_hypotheses))
+            summary = stop_summary(db)
             if not env.report_only:
                 save_stop_reason(
                     db,

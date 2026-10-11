@@ -24,7 +24,11 @@ from forensia.core.session import Hypothesis
 from forensia.db.evidence_lookup import canonical_record_table, routed_family
 from forensia.investigation.case_policy import case_policy_block
 from forensia.knowledge.catalog import load_benign_context_rules
-from forensia.knowledge.coverage import disclosure_tables_for_spec, observation_catalog
+from forensia.knowledge.coverage import (
+    canonical_observation_claim,
+    disclosure_tables_for_spec,
+    observation_catalog,
+)
 from forensia.knowledge.retrieval import knowledge_terms_for_hypothesis, select_snippets
 from forensia.llm.schemas import (
     FINDING_EXTRACTOR_SCHEMA,
@@ -756,6 +760,7 @@ def build_hypothesis_drafter_messages(
         "object_dn",
     )
     typed_observations: dict[str, dict[str, Any]] = {}
+    typed_observation_examples: dict[tuple[str, str, str], dict[str, Any]] = {}
     for row in (observed_candidate or {}).get("evidence", [])[:3]:
         if not isinstance(row, dict):
             continue
@@ -788,6 +793,21 @@ def build_hypothesis_drafter_messages(
             for field in fields:
                 target = "boolean_fields" if field in boolean_fields else "fields"
                 definition[target] = sorted(set(definition[target] + [field]))
+                value = row[field]
+                evidence_id = str(row.get("evidence_id") or "").strip()
+                if not evidence_id or not isinstance(value, (str, int, float, bool)):
+                    continue
+                if isinstance(value, str) and not value.strip():
+                    continue
+                try:
+                    value_key = json.dumps(value, ensure_ascii=False, allow_nan=False)
+                except TypeError, ValueError:
+                    continue
+                example = typed_observation_examples.setdefault(
+                    (family, field, value_key),
+                    {"value": value, "evidence_ids": set()},
+                )
+                example["evidence_ids"].add(evidence_id)
     typed_observation_entries = [
         {
             "family": family,
@@ -801,6 +821,25 @@ def build_hypothesis_drafter_messages(
         }
         for family, definition in sorted(typed_observations.items())
     ]
+    typed_claim_examples = []
+    for count in (1, 2):
+        for (family, field, _value_key), example in typed_observation_examples.items():
+            if len(example["evidence_ids"]) < count:
+                continue
+            condition = {
+                "observation": {
+                    "family": family,
+                    "capability": typed_observations[family]["capabilities"][0],
+                    "field": field,
+                    "operator": "equals",
+                    "value": example["value"],
+                },
+                **({"min_count": count} if count > 1 else {}),
+            }
+            claim = canonical_observation_claim({"support_conditions": condition})
+            if claim:
+                typed_claim_examples.append(claim)
+                break
     confirm_properties = schema["properties"]["hypothesis"]["properties"][
         "confirm_when"
     ]["properties"]
@@ -946,7 +985,14 @@ def build_hypothesis_drafter_messages(
         "from that field in OBSERVED_CANDIDATE. `contains` requires a string value; "
         "`greater_than` requires a number or ISO datetime. Boolean fields require a "
         "JSON boolean and support only `equals`.\n"
-        "</AVAILABLE_TYPED_OBSERVATIONS>\n"
+        + (
+            "Valid description examples (generated from the listed evidence):\n"
+            + "\n".join(f"- {claim}" for claim in typed_claim_examples)
+            + "\n"
+            if typed_claim_examples
+            else ""
+        )
+        + "</AVAILABLE_TYPED_OBSERVATIONS>\n"
         if typed_observation_entries
         else ""
     )
@@ -997,7 +1043,7 @@ def build_hypothesis_drafter_messages(
         "For a gap without an observed candidate, stay within its stated objective, gap, keypoint, and available evidence. Do not invent an event, entity, or source.\n"
         "required_entities must be valid snake_case evidence column names. Keep verification conditions explicit and use only event ID/context combinations supplied by the host.\n"
         "Typed observations use fields from canonical evidence records, not derived timeline projections such as prefetch_timeline.exec_time or mft_timeline.timestamp.\n"
-        "If confirm_when uses observation, do not mix it with event or correlation conditions. Set description exactly to the canonical form `At least <count> <family> observation(s) has/have <field> <operator phrase> <JSON value>.` It asserts only that observation; min_count defaults to 1 and, when supplied, counts distinct canonical evidence IDs. Do not add causal or broader prose.\n"
+        "If confirm_when uses observation, do not mix it with event or correlation conditions. Copy a valid description example from AVAILABLE_TYPED_OBSERVATIONS, changing only values and counts to match the proposed observation. The host requires the canonical singular/plural wording exactly; do not use placeholders or add causal or broader prose. If the supplied hypothesis needs broader interpretation, preserve it for review instead of rewriting it as a narrower typed observation. min_count defaults to 1 and, when supplied, counts distinct canonical evidence IDs.\n"
         "confirm_when and refute_when must be JSON objects. Output JSON only.\n"
         "</RULES>\n"
     )

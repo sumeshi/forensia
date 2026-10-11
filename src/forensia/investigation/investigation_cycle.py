@@ -1081,10 +1081,10 @@ async def _run_cycle_body(
     max_iter: int,
     report_only: bool,
     case_profile: CaseEvidenceProfile | None = None,
-) -> tuple[bool, bool, list[str], dict[str, Any]]:
+) -> tuple[bool, list[str]]:
     """Run one plan cycle: broad plan + hypothesis loop.
 
-    Returns (broad_plan_stop, cycle_progress, focus_sections).
+    Returns (broad_plan_stop, focus_sections).
     """
 
     def _emit(
@@ -1150,7 +1150,6 @@ async def _run_cycle_body(
         )
 
     broad_plan_stop = False
-    cycle_progress = False
     focus_sections: list[str] = []
     observed_keypoints = _scan_report_keypoints(case, db)
     _save_step(
@@ -1278,7 +1277,7 @@ async def _run_cycle_body(
                 hypothesis_id=hypothesis.id,
             )
             with telemetry_scope(hypothesis_id=hypothesis.id, iteration=plan_cycle):
-                progress, state, sections = await _investigate_one_hypothesis(
+                state, sections = await _investigate_one_hypothesis(
                     hypothesis=hypothesis,
                     state=state,
                     ctx=ctx,
@@ -1294,7 +1293,4 @@ async def _run_cycle_body(
                     llm_status_fn=llm_status,
                     case_profile=case_profile,
                 )
-            if progress:
-                cycle_progress = True
-
-    return broad_plan_stop, cycle_progress, focus_sections
+    return broad_plan_stop, focus_sections

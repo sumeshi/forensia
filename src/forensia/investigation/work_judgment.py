@@ -36,7 +36,10 @@ from forensia.evidence.links import (
 from forensia.investigation.verification.sufficiency import (
     derivation_root_key,
 )
-from forensia.knowledge.coverage import derive_required_capabilities
+from forensia.knowledge.coverage import (
+    derive_required_capabilities,
+    observation_feasibility_error,
+)
 
 #: Coverage states from which a retrieval may run.  Selection, stop, and
 #: reopen all read this set, so the same work cannot flip between readers.
@@ -59,7 +62,20 @@ _BLOCKER_MESSAGES = {
     "prerequisite": "waiting for prerequisite {owner}",
     "external_task": "waiting for external investigation task",
     "capability_unavailable": "required evidence capability unavailable",
+    "observation_required_entity_unobservable": (
+        "typed observation requires schema or hypothesis review: {owner}"
+    ),
+    "observation_min_count_exceeds_current_family_count": (
+        "typed observation needs more evidence: {owner}"
+    ),
 }
+
+OBSERVATION_INFEASIBLE_CODES = frozenset(
+    {
+        "observation_required_entity_unobservable",
+        "observation_min_count_exceeds_current_family_count",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -98,8 +114,18 @@ class WorkJudgment:
         """
         if self.external_task_ids:
             return "human_or_external_result"
+        if any(
+            blocker.code == "observation_required_entity_unobservable"
+            for blocker in self.blockers
+        ):
+            return "human_or_external_result"
         if self.unavailable_capabilities:
             return "required_capability_available"
+        if any(
+            blocker.code == "observation_min_count_exceeds_current_family_count"
+            for blocker in self.blockers
+        ):
+            return "new_evidence_or_coverage"
         return ""
 
 
@@ -235,7 +261,7 @@ def judge_work(
     placeholders = ", ".join("?" for _ in ids)
     rows = db.execute(
         f"SELECT hypothesis_id, status, blocked_reason, next_eligible_at, "
-        f"selection_count, verification_spec FROM hypotheses "
+        f"selection_count, verification_spec, required_entities FROM hypotheses "
         f"WHERE hypothesis_id IN ({placeholders})",
         ids,
     ).fetchall()
@@ -274,12 +300,35 @@ def judge_work(
             prerequisites.setdefault(str(target_id), []).append(str(source_id))
 
     judgments: dict[str, WorkJudgment] = {}
+    family_counts: dict[str, int] = {}
     for hid in ids:
         row = by_id.get(hid)
         if row is None:
             continue
-        _hid, status, blocked_reason, next_eligible_at, selection_count, raw_spec = row
+        (
+            _hid,
+            status,
+            blocked_reason,
+            next_eligible_at,
+            selection_count,
+            raw_spec,
+            raw_entities,
+        ) = row
         capabilities = tuple(spec_capabilities(raw_spec, hypothesis_id=hid))
+        spec_payload = json.loads(raw_spec) if isinstance(raw_spec, str) else raw_spec
+        support = spec_payload.get("support_conditions") or {}
+        observation_reason = (
+            observation_feasibility_error(
+                db,
+                support,
+                json.loads(raw_entities)
+                if isinstance(raw_entities, str)
+                else raw_entities,
+                family_counts,
+            )
+            if isinstance(support, dict) and "observation" in support
+            else None
+        )
         not_ready, _ = coverage_readiness(db, list(capabilities))
         not_ready_in_cap_order = [cap for cap in capabilities if cap in not_ready]
         external = tuple(sorted(tasks.get(hid, ())))
@@ -289,6 +338,8 @@ def judge_work(
         persisted_reason = str(blocked_reason or "").strip()
         if persisted_reason:
             blockers.append(Blocker("blocked", persisted_reason))
+        if observation_reason:
+            blockers.append(Blocker(*observation_reason))
         blockers.extend(Blocker("external_task", task_id) for task_id in external)
         if selection_gate:
             gate_blockers: list[Blocker] = []

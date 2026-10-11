@@ -165,11 +165,17 @@ Knowledgeは参考資料であり、証拠やツールの実行許可ではあ�
 
 Evidence、Case State、Trace Stateは`db/case.duckdb`に保存します。EvidenceとCase Stateは`main`、Trace Stateは`trace`スキーマに配置します。関連する更新は同一トランザクションで管理します。Traceには更新されるライフサイクル行と冪等なstep書込みがあり、調査イベントは時系列で追加します。イベントには種類、状態、severity、理由、関連IDを記録し、詳細な検索結果やモデル入出力は元のTrace記録を参照します。表示の再構成にはイベントのcursorを使います。
 
+処理時刻はCaseDBの接続とPythonのwriterでUTCへ統一します。証拠から取得した時刻とそのtimezoneは別に扱い、既存ケースの時刻を推測で補修しません。
+
 Working Stateは作業ごとにDBから直接構成し、生成したMarkdownを再読込みしません。旧ケースの`memory/`には人のメモが含まれ得るため、ケースの保全時にはそのまま残してください。`raw/`はパーサー出力のJSONLであり、取得した原本は別途保存します。通常のFinding保存先はDBです。
 
 検索結果のEvidence IDから正規化済みの証拠行を取得し直し、VerificationSpecを満たす証拠の組だけに支持・反証の役割を付けます。SQLの別名や定数、LLMの選んだサンプルは判定の正本にしません。EVTXの共観測条件と、Prefetch・MFT・Registryの型付きfield条件は同じAssessment経路を通ります。Assessmentと根拠リンクには証拠内容・検証条件のidentityを残し、置換後に古い支持を再利用しません。過去の試行は既存Traceから読み、同じ検証条件・証拠状態・検索の繰返しは実行前に制限します。
 
 型付きの観測条件で自動確定できるのは、VerificationSpecから導出する観測文だけです。実行痕跡から意図や因果関係まで述べた解釈は未確定に留めます。Prefetchの各実行時刻は同じ原本レコードからの派生であり、別々の独立証拠には数えません。観測条件には原本の`exec_times`などを使い、`min_count`は異なるEvidence IDの数を指定します。
+
+現在の原本件数でも満たせない`min_count`や、対象schemaにない必須entityは、既存のWorkJudgmentで検索前に識別します。仮説を反証せず、理由と再試行条件をGap/Taskへ残します。件数不足は証拠追加後に再判定し、schemaにない列の要求は人間による検証条件の見直し対象とします。`source_file`など原本tableに存在する列は必須entityとして利用できますが、型付き観測条件のfieldとは区別します。
+
+停滞予算を更新するのは、保存されたsource・Coverage、未解決作業、評価済みの観測・矛盾の変化です。confidence差、未採用の提案、文章の変化や検索回数は進捗に数えません。
 
 MFTの`is_deleted`などのBoolean列は、JSONの`true`/`false`を使う`equals`条件で評価します。数値や文字列からBooleanへの変換は行いません。
 

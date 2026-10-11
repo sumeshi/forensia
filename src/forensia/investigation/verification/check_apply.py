@@ -163,9 +163,8 @@ def _apply_finding_updates(
     check_result: CheckResult,
     missing_checks: list,
     notes: str,
-) -> bool:
-    """Apply per-finding status/confidence updates. Returns True on a significant delta."""
-    significant_delta = False
+) -> None:
+    """Apply per-finding status/confidence updates."""
     for item in check_result.finding_updates:
         finding_id = item.get("finding_id")
         if not finding_id:
@@ -203,9 +202,6 @@ def _apply_finding_updates(
             notes=notes,
             raw_response=check_result.raw_response,
         )
-        if abs(delta) >= 0.05:
-            significant_delta = True
-    return significant_delta
 
 
 def _is_duplicate_extracted_finding(
@@ -314,7 +310,7 @@ def _apply_newlead_finding(
     check_result: CheckResult,
     missing_checks: list,
     notes: str,
-) -> bool:
+) -> None:
     """Insert an investigation finding and its AI review for a newlead verdict."""
     finding_id = insert_investigation_finding(
         db=db,
@@ -324,7 +320,7 @@ def _apply_newlead_finding(
         report_text=check_result.report_text,
     )
     if finding_id is None:
-        return False
+        return
     _upsert_ai_review(
         db=db,
         finding_id=finding_id,
@@ -335,7 +331,6 @@ def _apply_newlead_finding(
         notes=notes,
         raw_response=check_result.raw_response,
     )
-    return True
 
 
 def apply_check_result(
@@ -346,14 +341,8 @@ def apply_check_result(
     hypothesis: Hypothesis | None,
     result_summary: dict[str, Any],
     check_result: CheckResult,
-) -> tuple[int, bool]:
-    """Apply a CheckResult to the case DB: update findings, insert new-lead findings.
-
-    Returns (new_lead_count, progress_flag) where progress_flag is True if any
-    meaningful state change occurred (new leads, significant confidence delta,
-    new hypotheses).
-    """
-    new_leads = 0
+) -> None:
+    """Apply a CheckResult to the case DB and persist its resulting findings."""
     missing_checks = check_result.raw_response.get("missing_checks") or []
     notes = str(check_result.raw_response.get("notes") or "")
 
@@ -365,13 +354,13 @@ def apply_check_result(
         report_text=check_result.report_text,
         raw_response=check_result.raw_response,
     )
-    significant_delta = _apply_finding_updates(db, check_result, missing_checks, notes)
+    _apply_finding_updates(db, check_result, missing_checks, notes)
     if check_result.verdict == "confirmed" and hypothesis:
         _persist_extracted_findings(
             db, session_id, planned_query, hypothesis, result_summary, check_result
         )
     if check_result.verdict == "newlead":
-        if _apply_newlead_finding(
+        _apply_newlead_finding(
             db,
             session_id,
             planned_query,
@@ -379,10 +368,4 @@ def apply_check_result(
             check_result,
             missing_checks,
             notes,
-        ):
-            new_leads += 1
-
-    progress = (
-        new_leads > 0 or significant_delta or len(check_result.new_hypotheses) > 0
-    )
-    return new_leads, progress
+        )
