@@ -8,10 +8,7 @@ from unittest.mock import patch
 
 import duckdb
 
-from forensia.config import (
-    reload_settings,
-    resolve_llm_config,
-)
+from forensia.config import resolve_llm_config
 from forensia.core.case import Case
 from forensia.core.progress_event import progress_event
 from forensia.db.database import CaseDB
@@ -24,9 +21,6 @@ from forensia.pipeline import (
 
 class CaseDbMaintenanceTests(unittest.TestCase):
     """Case preservation, shared transactions, reset, and report-only execution."""
-
-    def tearDown(self) -> None:
-        reload_settings()
 
     @staticmethod
     def _llm_base_url() -> str:
@@ -350,7 +344,6 @@ class CaseDbMaintenanceTests(unittest.TestCase):
                         "prefetch_executions": 0,
                     },
                 ),
-                patch("forensia.cli.app.resolve_llm_config", return_value=(None, None)),
                 patch("forensia.pipeline.load_rules", return_value=[]),
                 patch(
                     "forensia.pipeline.render_written_report",

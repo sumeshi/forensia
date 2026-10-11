@@ -408,6 +408,35 @@ class ProseChangeResolutionTests(unittest.TestCase):
                 ).fetchone()
                 self.assertEqual(row, ("open", "report_request_absent"))
 
+    def test_human_origin_survives_section_refresh_and_orphaning(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with CaseDB(Case.init(tmpdir)) as db:
+                state = SessionState(session_id="S-1")
+                gap = "Confirm successful logon event 4624 for host WS-1"
+                gap_id = self._gap_id(gap)
+                db.execute(
+                    "INSERT INTO report_sections (section_key, title, gaps) "
+                    "VALUES ('summary', 'Summary', ?)",
+                    [json.dumps([gap])],
+                )
+                inject_gap_hypotheses(db, state, [gap], "S-1")
+                inject_gap_hypotheses(db, state, [gap], "S-1", origin="human")
+                inject_gap_hypotheses(db, state, [gap], "S-1")
+
+                # The section later drops the request. It remains human-owned,
+                # so a section refresh cannot mark it as an orphaned request.
+                db.execute(
+                    "UPDATE report_sections SET gaps = '[]' WHERE section_key = 'summary'"
+                )
+                inject_gap_hypotheses(db, state, [], "S-1")
+                row = db.execute(
+                    "SELECT status, origin, coverage_reason FROM report_gaps "
+                    "WHERE gap_id = ?",
+                    [gap_id],
+                ).fetchone()
+                self.assertEqual(row[1], "human")
+                self.assertEqual(row[2], "admission_non-testable-verification-spec")
+
     def test_unrelated_question_in_same_section_cannot_complete_old_work(self) -> None:
         from forensia.investigation.investigator import (
             _check_termination,
@@ -592,11 +621,12 @@ class RetryAndProjectionTests(unittest.TestCase):
 
     def test_reopen_checks_the_saved_retry_condition_not_kind(self) -> None:
         """The persisted retry_condition is the reopen contract (V2-03)."""
-        for condition, should_reopen in (
-            ("required_capability_available", True),
-            ("new_evidence_or_human_review", False),
-            ("human_or_external_result", False),
-            (None, False),
+        for condition, should_reopen, manual_resume_reopens in (
+            ("required_capability_available", True, False),
+            ("new_evidence_or_human_review", False, False),
+            ("new_evidence_or_manual_resume", False, True),
+            ("human_or_external_result", False, False),
+            (None, False, False),
         ):
             with self.subTest(condition=condition):
                 with tempfile.TemporaryDirectory() as tmpdir:
@@ -622,6 +652,11 @@ class RetryAndProjectionTests(unittest.TestCase):
                         )
                         reopened = reopen_retryable_work(db)
                         self.assertEqual(reopened, ["H-CAP"] if should_reopen else [])
+                        if manual_resume_reopens:
+                            self.assertEqual(
+                                reopen_retryable_work(db, manual_resume=True),
+                                ["H-CAP"],
+                            )
 
     def test_new_evidence_retry_uses_latest_stop_as_checkpoint(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

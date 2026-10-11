@@ -45,7 +45,7 @@ jobs:
           uv run python scripts/check_imports.py
           uv run python scripts/audit_schema_coverage.py --strict
           uv run python scripts/regenerate_playbook.py --check
-          uv run forensia doctor
+          uv run python -m forensia.cli.doctor
       - name: Build sdist + wheel
         run: uv build
 

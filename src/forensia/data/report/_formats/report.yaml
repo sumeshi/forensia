@@ -1,5 +1,29 @@
 version: 1
 
+publication:
+  ja:
+    notice: |-
+      > **公開状態: `needs_review` / `incomplete`**
+      > 証拠の確度は `not_established` です。ルールによる発見は確認候補であり、確定した結論として扱わないでください。
+      > 確認済み仮説: {confirmed}; 仮説の検索・評価receipt: {steps}; 未完成の節: {drafts}。
+      > 公開要件を満たさない理由: {reasons}。
+    overview_confirmed: "> **結論の範囲:** 確認済み仮説は {confirmed} 件ですが、公開要件を満たしていません。結論はその仮説に限定し、その他のルール一致は確認候補として扱ってください。"
+    overview_unconfirmed: "> **結論の範囲:** 確認済みの仮説はありません。ルール一致は確認候補として扱い、概要と調査結論にこの制約を明記してください。"
+    recommendations: "> **結論の範囲:** 提言は追加の検証を優先してください。確認済み仮説の範囲を超えて、不正アクセス、アカウント改変、永続化、横展開を前提としないでください。"
+    no_drafts: "なし"
+    incomplete_reason: "公開要件が未充足"
+  en:
+    notice: |-
+      > **Publication status: `needs_review` / `incomplete`**
+      > Evidence confidence is `not_established`; deterministic rule findings are review candidates and must not be read as confirmed conclusions.
+      > Confirmed hypotheses: {confirmed}; hypothesis do/check receipts: {steps}; draft sections: {drafts}.
+      > Gate reasons: {reasons}.
+    overview_confirmed: "> **Scope constraint:** {confirmed} confirmed hypothesis is available, but publication requirements remain incomplete. Limit conclusions to that hypothesis and treat other rule findings as deterministic signals/review candidates."
+    overview_unconfirmed: "> **Scope constraint:** No confirmed hypothesis is available. Treat rule findings as deterministic signals/review candidates; the overview and investigation conclusion must state this limitation explicitly."
+    recommendations: "> **Scope constraint:** Recommendations are verification-first only. Do not assume unauthorized access, account tampering, persistence, or lateral movement beyond the scope of confirmed hypotheses."
+    no_drafts: "none"
+    incomplete_reason: "publication requirements are incomplete"
+
 narrative_fallback:
   unsupported: "No supporting evidence was found for {heading}. This item is unsupported and is not part of the incident narrative."
   evidence_reference: " (evidence: {ids})"

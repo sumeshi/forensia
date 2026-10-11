@@ -12,6 +12,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from forensia.config import Settings, settings_scope
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
 from forensia.report.report_validation import (
@@ -294,7 +295,8 @@ class TestReportQualityContract(unittest.TestCase):
                     """
                 )
                 state = derive_publication_state(db)
-                report = build_report_markdown_from_db(db, case)
+                with settings_scope(Settings(llm_output_language="en")):
+                    report = build_report_markdown_from_db(db, case)
 
             assert state["publication_status"] == "needs_review"
             assert state["evidence_confidence"] == "not_established"
@@ -335,7 +337,8 @@ class TestReportQualityContract(unittest.TestCase):
                     """
                 )
 
-                report = build_report_markdown_from_db(db, case)
+                with settings_scope(Settings(llm_output_language="en")):
+                    report = build_report_markdown_from_db(db, case)
 
             assert "1 confirmed hypothesis is available" in report
             assert "No confirmed hypothesis is available" not in report

@@ -112,6 +112,7 @@ class SelectionContext:
     coverage: dict[str, dict[str, str]]
     open_gaps: list[dict[str, Any]]
     objective: str
+    preferred_hypothesis_id: str = ""
 
 
 def _json_value(value: Any, default: Any) -> Any:
@@ -219,9 +220,11 @@ def gather_selection_context(db: CaseDB) -> SelectionContext:
     ]
 
     objective_row = db.execute(
-        "SELECT objective FROM investigation_state WHERE state_id = 'case'"
+        "SELECT objective, preferred_hypothesis_id FROM investigation_state "
+        "WHERE state_id = 'case'"
     ).fetchone()
     objective = objective_row[0] if objective_row and objective_row[0] else ""
+    preferred_hypothesis_id = str(objective_row[1] or "") if objective_row else ""
 
     return SelectionContext(
         active_hypotheses=active_hypotheses,
@@ -229,6 +232,7 @@ def gather_selection_context(db: CaseDB) -> SelectionContext:
         coverage=coverage,
         open_gaps=open_gaps,
         objective=objective,
+        preferred_hypothesis_id=preferred_hypothesis_id,
     )
 
 
@@ -605,6 +609,17 @@ def select_focus_hypotheses(
             total, components = compute_priority_score(
                 hyp, ctx, findings_snapshot, db=db
             )
+            if hyp["hypothesis_id"] == ctx.preferred_hypothesis_id:
+                components.append(
+                    PriorityComponent(
+                        "human_preference",
+                        1.0,
+                        1.0,
+                        0.0,
+                        0.0,
+                        "operator selected this hypothesis; ranked first among eligible work",
+                    )
+                )
         else:
             total, components = 0.0, []
         scored.append((total, components, hyp, eligible, block_reason))
@@ -612,6 +627,9 @@ def select_focus_hypotheses(
     scored.sort(
         key=lambda x: (
             0 if x[3] else 1,
+            0
+            if x[3] and x[2].get("hypothesis_id") == ctx.preferred_hypothesis_id
+            else 1,
             -x[0],
             -(1 if x[2].get("selection_count", 0) == 0 else 0),
             x[2].get("last_selected_at") or datetime.min,

@@ -7,12 +7,13 @@ import hashlib
 import inspect
 import json
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from forensia.config import get_settings
 from forensia.context.investigation_candidates import build_investigation_candidates
 from forensia.core.case import Case
 from forensia.core.progress_event import progress_event
@@ -140,12 +141,12 @@ def _conservative_finish_time(db: CaseDB, session_id: str, started_at: Any) -> A
     return candidate
 
 
-def reconcile_stale_sessions(db: CaseDB) -> int:
+def reconcile_stale_sessions(db: CaseDB, *, recovered_owner: bool = False) -> int:
     """Reconcile stale ``running`` sessions into a structured terminal state.
 
-    Runs on startup (in ``_init_session``). Only an expired or legacy
-    heartbeat may be abandoned; a live owner's lease is never changed by a
-    different process. Past terminal rows keep whatever reason they were
+    A caller holding the external writer lock may recover any unfinished
+    session. Other callers can recover only expired heartbeats and refuse a
+    live lease. Past terminal rows keep whatever reason they were
     written with: the current writer always persists a ``terminal_reason``
     (T-12.1), so a missing reason stays as historical evidence instead of
     being fabricated from today's status (R07). Returns the number of
@@ -161,7 +162,7 @@ def reconcile_stale_sessions(db: CaseDB) -> int:
     ).fetchall()
     active: list[str] = []
     for session_id, started_at, heartbeat_at in running_rows:
-        if heartbeat_at is not None and heartbeat_at >= cutoff:
+        if not recovered_owner and heartbeat_at is not None and heartbeat_at >= cutoff:
             active.append(str(session_id))
             continue
         finish = _conservative_finish_time(db, session_id, started_at)
@@ -383,6 +384,7 @@ def _init_session(
     forensia_policy: CasePolicyInput | None = None,
     report_input_record: dict[str, Any],
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    manual_resume: bool = False,
 ) -> tuple[SessionState, Ctx, str]:
     """Initialize a new investigation session and its durable state.
 
@@ -397,11 +399,12 @@ def _init_session(
     session_id = f"session-{uuid4().hex[:12]}"
     started_at = datetime.now(UTC).replace(tzinfo=None)
     owner_id = f"worker-{uuid4().hex[:12]}"
-    # Acquire the case's single-writer lease before any ingest or
-    # investigation-state projection can mutate the case.  A live lease
-    # aborts startup; only expired leases are reconciled.
+    # Runtime holds the external writer lock before ingestion. The session
+    # lease tracks investigation lifecycle separately from process ownership.
     with db.transaction():
-        reconcile_stale_sessions(db)
+        reconcile_stale_sessions(
+            db, recovered_owner=getattr(db, "runtime_owned", False)
+        )
         db.execute(
             "INSERT INTO trace.investigation_sessions (session_id, started_at, "
             "finished_at, iterations, status, owner_id, heartbeat_at, phase, "
@@ -423,6 +426,17 @@ def _init_session(
             template_root = case.report_template_dir
         policy = decide_policy(forensia_policy, load_recorded_policy(db))
         ctx = Ctx(owner_id=owner_id)
+        adopted_settings = asdict(get_settings())
+        adopted_settings.pop("llm_api_key", None)
+        _save_step(
+            db=db,
+            session_id=session_id,
+            iteration=0,
+            phase="session-settings",
+            hypothesis_id=None,
+            input_json={},
+            output_json=adopted_settings,
+        )
         if policy.record is not None:
             _save_step(
                 db=db,
@@ -467,7 +481,7 @@ def _init_session(
         else:
             persisted_investigation = load_investigation_state(db) or {}
         if not report_only:
-            reopen_retryable_work(db)
+            reopen_retryable_work(db, manual_resume=manual_resume)
             mark_investigation_started(db)
         active_hypotheses, resolved_hypotheses = load_persisted_hypotheses(db)
         state = SessionState(

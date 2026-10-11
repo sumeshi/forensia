@@ -8,10 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from unittest.mock import patch
 
-from forensia.config import (
-    reload_settings,
-    resolve_llm_config,
-)
+from forensia.config import load_settings, resolve_llm_config, settings_scope
 from forensia.core.case import Case
 from forensia.core.session import Hypothesis, PlannedQuery, SessionState
 from forensia.core.verification import VerificationSpec
@@ -59,33 +56,38 @@ class PersistenceTests(unittest.TestCase):
     def _llm_base_url() -> str:
         return resolve_llm_config()[0] or "http://test-llm.invalid"
 
-    def test_case_connections_for_one_case_are_serialized(self) -> None:
-        """Parallel Web reads must share the serialized CaseDB connection safely."""
+    def test_runtime_threads_keep_results_and_transactions_isolated(self) -> None:
+        """IPC reads keep their cursor and cannot observe an uncommitted update."""
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
-            first_open = threading.Event()
-            release_first = threading.Event()
-            second_open = threading.Event()
+            barrier = threading.Barrier(2)
+            reading = threading.Event()
+            with CaseDB(case) as db, ThreadPoolExecutor(max_workers=2) as pool:
 
-            def hold_first() -> None:
-                with CaseDB(case):
-                    first_open.set()
-                    release_first.wait(timeout=2)
+                def fetch(value):
+                    result = db.execute("SELECT ?", [value])
+                    barrier.wait(timeout=2)
+                    return result.fetchone()[0]
 
-            def open_second() -> None:
-                first_open.wait(timeout=2)
-                with CaseDB(case):
-                    second_open.set()
+                results = [pool.submit(fetch, value) for value in (1, 2)]
+                self.assertEqual([1, 2], [r.result(timeout=2) for r in results])
+                db.execute("CREATE TABLE concurrency_check (value INTEGER)")
+                db.execute("INSERT INTO concurrency_check VALUES (1)")
 
-            with ThreadPoolExecutor(max_workers=2) as pool:
-                first = pool.submit(hold_first)
-                second = pool.submit(open_second)
-                self.assertTrue(first_open.wait(timeout=2))
-                self.assertFalse(second_open.wait(timeout=0.1))
-                release_first.set()
-                first.result(timeout=2)
-                second.result(timeout=2)
-                self.assertTrue(second_open.is_set())
+                def snapshot_count():
+                    reading.set()
+                    with db.read_snapshot():
+                        return db.execute(
+                            "SELECT COUNT(*) FROM concurrency_check"
+                        ).fetchone()[0]
+
+                with self.assertRaisesRegex(RuntimeError, "rollback"), db.transaction():
+                    db.execute("INSERT INTO concurrency_check VALUES (2)")
+                    reader = pool.submit(snapshot_count)
+                    self.assertTrue(reading.wait(timeout=2))
+                    self.assertFalse(reader.done())
+                    raise RuntimeError("rollback")
+                self.assertEqual(1, reader.result(timeout=2))
 
     def setUp(self) -> None:
         # Patch the owning JSON request implementation.
@@ -584,12 +586,11 @@ class PersistenceTests(unittest.TestCase):
 
     def test_final_summary_fallback_follows_output_language(self) -> None:
         with patch.dict("os.environ", {"FORENSIA_OUTPUT_LANGUAGE": "en"}):
-            reload_settings()
-            self.assertEqual(
-                "No additional progress was made during this investigation.",
-                final_summary(SessionState(session_id="S-1")),
-            )
-            reload_settings()
+            with settings_scope(load_settings()):
+                self.assertEqual(
+                    "No additional progress was made during this investigation.",
+                    final_summary(SessionState(session_id="S-1")),
+                )
 
     def test_investigation_finding_title_prefix_follows_output_language(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -601,20 +602,20 @@ class PersistenceTests(unittest.TestCase):
                 sql="SELECT 1",
             )
             with patch.dict("os.environ", {"FORENSIA_OUTPUT_LANGUAGE": "ja"}):
-                reload_settings()
-                with CaseDB(case) as db:
-                    finding_id = insert_investigation_finding(
-                        db=db,
-                        session_id="S-1",
-                        planned_query=planned_query,
-                        result_summary={"sample_rows": [{"evidence_id": "ev-1"}]},
-                        report_text="body",
-                    )
-                    title = db.execute(
-                        "SELECT title FROM findings WHERE finding_id = ?", (finding_id,)
-                    ).fetchone()[0]
+                with settings_scope(load_settings()):
+                    with CaseDB(case) as db:
+                        finding_id = insert_investigation_finding(
+                            db=db,
+                            session_id="S-1",
+                            planned_query=planned_query,
+                            result_summary={"sample_rows": [{"evidence_id": "ev-1"}]},
+                            report_text="body",
+                        )
+                        title = db.execute(
+                            "SELECT title FROM findings WHERE finding_id = ?",
+                            (finding_id,),
+                        ).fetchone()[0]
             self.assertEqual("Investigation: host triage", title)
-            reload_settings()
 
     def test_investigation_finding_is_skipped_without_result_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

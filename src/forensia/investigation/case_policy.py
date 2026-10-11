@@ -14,7 +14,7 @@ and the target roles are recorded in the existing ``trace.investigation_steps``
 payload (phase ``forensia-md``, one step per session, V2-05). No new table or
 column. Resume always re-applies the *recorded* revision; a differing current
 file is surfaced explicitly, and explicit adoption goes through the explicit
-``--forensia-md`` path (a reload applies at the next session start — the safe
+``forensia_md`` path (a reload applies at the next session start — the safe
 boundary). Raw evidence directories and parent directories are never searched
 for same-name files.
 """
@@ -26,6 +26,7 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
+from forensia.config import get_system_prompt_budget_chars
 from forensia.db.database import CaseDB
 
 #: Existing-durable phase under ``investigation_steps`` for policy receipts.
@@ -39,6 +40,23 @@ CASE_POLICY_ROLES: tuple[str, ...] = (
     "hypothesis_drafter",
     "query_intent_planner",
 )
+
+# Policy and the neutral investigation playbook share the fixed system prompt.
+POLICY_BUDGET_SHARE = 2
+
+
+def validate_policy_body(body: str) -> int:
+    """Require the applied policy to fit its half of the fixed prompt budget."""
+    budget_chars = get_system_prompt_budget_chars() // POLICY_BUDGET_SHARE
+    if len(body) > budget_chars:
+        raise ValueError(
+            f"FORENSIA.md investigation policy is {len(body)} chars; the "
+            f"system-prompt budget allows {budget_chars} chars "
+            "(FORENSIA_SYSTEM_PROMPT_BUDGET_CHARS half-weight). Shorten the "
+            "policy so the full instruction fits; constraints are not silently truncated."
+        )
+    return budget_chars
+
 
 #: Markdown section headings that can carry admission input (objective /
 #: scope). Anything else is guidance passed through as text only.
@@ -193,7 +211,7 @@ def decide_policy(
         notice = (
             f"FORENSIA.md: the input file is absent; recorded revision "
             f"{_short_hash(str(recorded['content_sha256']))} remains in force. "
-            "Adopt a changed policy explicitly with --forensia-md <path>."
+            "Adopt a changed policy explicitly through the TUI or Python API."
         )
         applied = AppliedCasePolicy(
             body=str(recorded["body"]),
@@ -202,6 +220,7 @@ def decide_policy(
             source_path=str(recorded["source_path"]),
             notice=notice,
         )
+        validate_policy_body(applied.body)
         record = {
             "policy_state": "pinned",
             "body": applied.body,
@@ -235,10 +254,12 @@ def decide_policy(
                 f"FORENSIA.md changed since the recorded revision "
                 f"({_short_hash(str(recorded['content_sha256']))} → file "
                 f"{_short_hash(current_hash or '')}); the recorded revision remains "
-                "in force this run. Adopt explicitly: --forensia-md "
-                f"{policy_input.source_path}"
+                "in force this run. Adopt a change through the TUI or Python API."
             ),
         )
+    if applied is not None:
+        validate_policy_body(applied.body)
+
     record = {
         "policy_state": "pinned" if applied.notice else "adopted",
         "body": applied.body,

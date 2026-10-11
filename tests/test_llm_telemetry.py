@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import httpx
@@ -103,7 +104,11 @@ def test_logical_call_cap_counts_failed_calls_and_blocks_before_transport(
     try:
         with (
             patch.object(llm_client, "_get_http_client", return_value=client),
-            patch.object(llm_client.settings, "llm_api_key", "tok"),
+            patch.object(
+                llm_client,
+                "get_settings",
+                return_value=SimpleNamespace(llm_api_key="tok"),
+            ),
             patch.object(llm_client.time, "sleep"),
         ):
             with pytest.raises(llm_client.LLMServerUnavailableError):
@@ -140,7 +145,11 @@ def test_unexpected_transport_error_finalizes_attempt_and_call(tmp_path) -> None
     try:
         with (
             patch.object(llm_client, "_get_http_client", return_value=_BrokenClient()),
-            patch.object(llm_client.settings, "llm_api_key", "tok"),
+            patch.object(
+                llm_client,
+                "get_settings",
+                return_value=SimpleNamespace(llm_api_key="tok"),
+            ),
         ):
             with pytest.raises(ValueError, match="transport adapter failed"):
                 llm_client.chat_completion(
@@ -307,7 +316,9 @@ def test_client_creates_attempt_receipts_for_retry_then_success(
     fake = _FakeClient()
     with (
         patch.object(llm_client, "_get_http_client", return_value=fake),
-        patch.object(llm_client.settings, "llm_api_key", "tok"),
+        patch.object(
+            llm_client, "get_settings", return_value=SimpleNamespace(llm_api_key="tok")
+        ),
         patch.object(llm_client.time, "sleep"),
     ):
         result = llm_client.chat_completion(
@@ -348,7 +359,9 @@ def test_client_creates_timeout_attempt_receipt(tmp_path, monkeypatch) -> None:
     messages: list[str] = []
     with (
         patch.object(llm_client, "_get_http_client", return_value=_FakeClient()),
-        patch.object(llm_client.settings, "llm_api_key", "tok"),
+        patch.object(
+            llm_client, "get_settings", return_value=SimpleNamespace(llm_api_key="tok")
+        ),
     ):
         with pytest.raises(llm_client.LLMRequestTimeoutError):
             llm_client.chat_completion(
@@ -427,7 +440,9 @@ def test_unusable_truncation_closes_owned_call_failed_and_marks_attempt(
 
     with (
         patch.object(llm_client, "_get_http_client", return_value=_FakeClient()),
-        patch.object(llm_client.settings, "llm_api_key", "tok"),
+        patch.object(
+            llm_client, "get_settings", return_value=SimpleNamespace(llm_api_key="tok")
+        ),
     ):
         with pytest.raises(llm_client.LLMOutputTruncatedError):
             llm_client.chat_completion(

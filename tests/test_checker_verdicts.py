@@ -4,10 +4,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from forensia.config import (
-    reload_settings,
-    resolve_llm_config,
-)
+from forensia.config import resolve_llm_config
 from forensia.core.case import Case
 from forensia.core.session import Hypothesis, PlannedQuery
 from forensia.db.database import CaseDB
@@ -20,9 +17,6 @@ def _llm_base_url() -> str:
 
 class CheckerVerdictTests(unittest.TestCase):
     """Checker verdicts, demotion rules, and follow-up hypotheses."""
-
-    def tearDown(self) -> None:
-        reload_settings()
 
     def test_invalid_verdict_falls_back_to_inconclusive(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -5,9 +5,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from forensia.config import get_settings
 from forensia.core.case import Case
 from forensia.core.log import log as _log
 from forensia.db.database import CaseDB
+from forensia.report.render.formats import load_report_formats
 from forensia.report.render.html import render_html_report
 from forensia.report.sections.section_quality import _final_report_section_body
 from forensia.report.sections.section_store import fetch_report_sections
@@ -20,18 +22,19 @@ __all__ = [
 
 def _publication_notice(state: dict[str, object]) -> str:
     """Render the durable publication gate as reader-visible report metadata."""
+    wording = load_report_formats()["publication"][get_settings().llm_output_language]
     reasons = ", ".join(str(item) for item in state.get("reasons", []) if item)
     confirmed = state.get("confirmed_hypothesis_count", 0)
     steps = state.get("hypothesis_execution_step_count", 0)
     drafts = state.get("draft_sections") or []
-    draft_text = ", ".join(str(item) for item in drafts) if drafts else "none"
-    return (
-        "> **Publication status: `needs_review` / `incomplete`**\n"
-        "> Evidence confidence is `not_established`; deterministic rule findings are "
-        "review candidates and must not be read as confirmed conclusions.\n"
-        f"> Confirmed hypotheses: {confirmed}; hypothesis do/check receipts: {steps}; "
-        f"draft sections: {draft_text}.\n"
-        f"> Gate reasons: {reasons or 'publication requirements are incomplete'}."
+    draft_text = (
+        ", ".join(str(item) for item in drafts) if drafts else wording["no_drafts"]
+    )
+    return wording["notice"].format(
+        confirmed=confirmed,
+        steps=steps,
+        drafts=draft_text,
+        reasons=reasons or wording["incomplete_reason"],
     )
 
 
@@ -43,25 +46,12 @@ def _section_publication_constraint(section_key: str, state: dict[str, object]) 
 
     family = report_slug_family(section_key)
     confirmed = int(state.get("confirmed_hypothesis_count") or 0)
+    wording = load_report_formats()["publication"][get_settings().llm_output_language]
     if family == "overview":
-        if confirmed:
-            return (
-                f"> **Scope constraint:** {confirmed} confirmed hypothesis is available, "
-                "but publication requirements remain incomplete. Limit conclusions to "
-                "that hypothesis and treat other rule findings as deterministic "
-                "signals/review candidates."
-            )
-        return (
-            "> **Scope constraint:** No confirmed hypothesis is available. Treat rule "
-            "findings as deterministic signals/review candidates; the overview and "
-            "investigation conclusion must state this limitation explicitly."
-        )
+        key = "overview_confirmed" if confirmed else "overview_unconfirmed"
+        return wording[key].format(confirmed=confirmed)
     if family == "recommendations":
-        return (
-            "> **Scope constraint:** Recommendations are verification-first only. Do "
-            "not assume unauthorized access, account tampering, persistence, or lateral "
-            "movement beyond the scope of confirmed hypotheses."
-        )
+        return wording["recommendations"]
     return ""
 
 

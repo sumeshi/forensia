@@ -1036,7 +1036,7 @@ class InvestigateWiringTests(unittest.TestCase):
                     "'Acquire missing telemetry', 'untestable', now(), now(), "
                     '\'{"spec_version": "1"}\')'
                 )
-                investigator_module._classify_active_hypotheses_on_stop(
+                investigator_module.classify_active_hypotheses_on_stop(
                     db,
                     [],
                     "no_progress_limit",

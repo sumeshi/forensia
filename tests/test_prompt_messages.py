@@ -10,9 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from forensia.config import (
-    reload_settings,
-)
+from forensia.context.case_profile import CaseEvidenceProfile
 from forensia.context.prompt_context import (
     _build_schema_guidance,
     _trim_dynamic_content,
@@ -35,9 +33,6 @@ from forensia.report.sections.section_quality import validate_body_evidence_ids
 
 class PromptMessageTests(unittest.TestCase):
     """Prompt message content: truncation, guidance blocks, language handling."""
-
-    def tearDown(self) -> None:
-        reload_settings()
 
     def test_truncate_context_sections_keeps_text_within_1500_chars(self) -> None:
         sections = {"2_timeline": "x" * 1500, "3_technical": "y" * 1501}
@@ -134,6 +129,158 @@ class PromptMessageTests(unittest.TestCase):
         self.assertIn("Remote Service Installation", captured["extra_words"])
         self.assertIn("attack.t1543.003", captured["extra_words"])
         self.assertIn("Suspicious service creation", captured["extra_words"])
+
+    def test_hypothesis_drafter_only_discloses_observed_eligible_event_contexts(
+        self,
+    ) -> None:
+        import duckdb
+
+        from forensia.investigation import prompts
+
+        db = duckdb.connect()
+        db.execute(
+            "CREATE TABLE evtx_events (event_id INTEGER, channel VARCHAR, raw_json JSON)"
+        )
+        db.executemany(
+            "INSERT INTO evtx_events VALUES (?, ?, ?)",
+            [
+                (
+                    4104,
+                    "Microsoft-Windows-PowerShell/Operational",
+                    json.dumps(
+                        {
+                            "winlog": {
+                                "provider": {"name": "Microsoft-Windows-PowerShell"}
+                            }
+                        }
+                    ),
+                ),
+                (
+                    4104,
+                    "Microsoft-Windows-PowerShell/Operational",
+                    json.dumps(
+                        {
+                            "winlog": {
+                                "provider": {"name": "Microsoft-Windows-PowerShell"}
+                            }
+                        }
+                    ),
+                ),
+                (
+                    4104,
+                    "Application",
+                    json.dumps(
+                        {
+                            "winlog": {
+                                "provider": {"name": "Microsoft-Windows-PowerShell"}
+                            }
+                        }
+                    ),
+                ),
+                (
+                    4104,
+                    "Microsoft-Windows-PowerShell/Operational",
+                    json.dumps({"winlog": {"provider": {"name": "Other-Provider"}}}),
+                ),
+                (
+                    104,
+                    "System",
+                    json.dumps({"winlog": {"provider": "Microsoft-Windows-Eventlog"}}),
+                ),
+                (104, "Microsoft-Windows-Diagnosis-Scripted/Operational", "{}"),
+            ],
+        )
+
+        with patch.object(prompts, "_org_knowledge_block", return_value=""):
+            messages, schema = prompts.build_hypothesis_drafter_messages(
+                {"keypoint_id": "host_execution_activity"},
+                [],
+                case_profile=CaseEvidenceProfile(
+                    event_ids=frozenset({4104, 104, 1102}), summary="case events"
+                ),
+                db=db,
+            )
+
+        joined = "\n".join(message["content"] for message in messages)
+        self.assertIn(
+            '[{"event_id": 104, "channel": "System", "provider": "Microsoft-Windows-Eventlog"}, '
+            '{"event_id": 4104, "channel": "Microsoft-Windows-PowerShell/Operational", '
+            '"provider": "Microsoft-Windows-PowerShell"}]',
+            joined,
+        )
+        ids_schema = schema["properties"]["hypothesis"]["properties"]["confirm_when"][
+            "properties"
+        ]["co_observed_event_ids"]
+        self.assertEqual(ids_schema["items"]["enum"], [104, 4104])
+        many_contexts = [
+            {
+                "event_id": event_id,
+                "channel": f"channel-{event_id}",
+                "provider": f"provider-{event_id}",
+            }
+            for event_id in range(1, 26)
+        ]
+        with (
+            patch.object(
+                prompts, "observed_event_contexts", return_value=many_contexts
+            ),
+            patch.object(prompts, "_org_knowledge_block", return_value=""),
+        ):
+            limited_messages, limited_schema = (
+                prompts.build_hypothesis_drafter_messages(
+                    {"keypoint_id": "host_execution_activity"},
+                    [],
+                    case_profile=CaseEvidenceProfile(
+                        event_ids=frozenset(range(1, 26)), summary="case events"
+                    ),
+                    db=db,
+                    observed_candidate={"evidence": [{"event_id": 25}]},
+                )
+            )
+        limited_contexts = (
+            limited_messages[0]["content"]
+            .split("<AVAILABLE_EVENT_CONTEXTS>\n", 1)[1]
+            .split("\nUse only listed", 1)[0]
+        )
+        disclosed_contexts = json.loads(limited_contexts)
+        self.assertEqual(len(disclosed_contexts), 24)
+        self.assertIn(25, [item["event_id"] for item in disclosed_contexts])
+        self.assertEqual(
+            limited_schema["properties"]["hypothesis"]["properties"]["confirm_when"][
+                "properties"
+            ]["co_observed_event_ids"]["items"]["enum"],
+            list(range(1, 26)),
+        )
+        db.close()
+
+    def test_hypothesis_drafter_discloses_empty_context_and_disallows_event_ids(
+        self,
+    ) -> None:
+        import duckdb
+
+        from forensia.investigation import prompts
+
+        db = duckdb.connect()
+        db.execute(
+            "CREATE TABLE evtx_events (event_id INTEGER, channel VARCHAR, raw_json JSON)"
+        )
+
+        with patch.object(prompts, "_org_knowledge_block", return_value=""):
+            messages, schema = prompts.build_hypothesis_drafter_messages(
+                {"keypoint_id": "host_execution_activity"},
+                [],
+                case_profile=CaseEvidenceProfile(
+                    event_ids=frozenset({1102}), summary="case events"
+                ),
+                db=db,
+            )
+
+        self.assertIn("<AVAILABLE_EVENT_CONTEXTS>\n[]", messages[0]["content"])
+        ids_schema = schema["properties"]["hypothesis"]["properties"]["confirm_when"][
+            "properties"
+        ]["co_observed_event_ids"]
+        self.assertEqual(ids_schema["maxItems"], 0)
+        db.close()
 
 
 class TestConfirmedFindingsBlock(unittest.TestCase):

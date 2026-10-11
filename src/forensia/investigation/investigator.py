@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import signal
 import time
 import traceback
 from collections.abc import Callable
@@ -17,6 +16,7 @@ from forensia.context.case_profile import (
     build_case_profile,
 )
 from forensia.core.case import Case
+from forensia.core.control import InvestigationStopped, is_stopped
 from forensia.core.log import log as _log
 from forensia.core.progress_event import progress_event
 from forensia.core.session import SessionState
@@ -133,7 +133,7 @@ async def _run_report_phase(
             focus_sections=focus_sections,
             max_queries_per_section=report_max_queries_per_section,
         )
-    except LLMServerUnavailableError, LLMBudgetExceededError:
+    except LLMServerUnavailableError, LLMBudgetExceededError, InvestigationStopped:
         raise
     except Exception as exc:
         # Rule 12: loud, not dead. Log the full traceback and a typed progress
@@ -183,16 +183,6 @@ async def _run_report_phase(
     report_after = refreshed_status
     render_written_report(case, db)
     return report_after, "ok"
-
-
-def _classify_active_hypotheses_on_stop(
-    db: CaseDB,
-    active_hypotheses: list,
-    stop_reason: str,
-) -> dict[str, int]:
-    """Backward-compatible entry point for the authoritative transition."""
-    counts = classify_active_hypotheses_on_stop(db, active_hypotheses, stop_reason)
-    return counts
 
 
 def _durable_open_work_counts(db: CaseDB) -> tuple[int, int]:
@@ -334,7 +324,7 @@ async def _run_investigation_loop(env: _InvestigateEnv) -> tuple[str, int, str]:
             "PLAN",
             f"Cycle {plan_cycle}/{env.max_iter} — broad planning (active={len(env.state.active_hypotheses)} resolved={len(env.state.resolved_hypotheses)})",
         )
-        if env.ctx.interrupted:
+        if env.ctx.interrupted or is_stopped():
             return "stopped", report_refresh_failures, "interrupted"
         # Snapshot at the cycle's state-commit boundary: this read equals the
         # state the previous cycle committed (Coverage refresh included).
@@ -358,7 +348,7 @@ async def _run_investigation_loop(env: _InvestigateEnv) -> tuple[str, int, str]:
             report_only=env.report_only,
             case_profile=env.case_profile,
         )
-        if env.ctx.interrupted:
+        if env.ctx.interrupted or is_stopped():
             return "stopped", report_refresh_failures, "interrupted"
         (
             report_after,
@@ -412,7 +402,7 @@ async def _run_investigation_loop(env: _InvestigateEnv) -> tuple[str, int, str]:
             if stop_reason_code == "no_gaps_no_hypotheses":
                 mark_report_sections_ai_exhausted(env.db)
             elif terminal_status == "stopped":
-                _classify_active_hypotheses_on_stop(
+                classify_active_hypotheses_on_stop(
                     env.db,
                     env.state.active_hypotheses,
                     stop_reason_code,
@@ -423,7 +413,7 @@ async def _run_investigation_loop(env: _InvestigateEnv) -> tuple[str, int, str]:
         if env.report_only
         else _planner_only_terminal_reason(env.db, env.session_id)
     )
-    _classify_active_hypotheses_on_stop(
+    classify_active_hypotheses_on_stop(
         env.db, env.state.active_hypotheses, "max_iterations"
     )
     return "stopped", report_refresh_failures, planner_only_reason or "max_iterations"
@@ -505,6 +495,7 @@ async def investigate(
     report_max_queries_per_section: int = 3,
     max_llm_calls: int = 200,
     forensia_policy: CasePolicyInput | None = None,
+    manual_resume: bool = False,
 ) -> dict[str, Any]:
     """Run the full investigation loop: broad plan → hypothesis loop → report refresh, with termination checks and LLM budget enforcement."""
     ensure_report_output_paths(
@@ -534,6 +525,7 @@ async def investigate(
         forensia_policy=forensia_policy,
         report_input_record=report_decision.record,
         progress_callback=publish_progress,
+        manual_resume=manual_resume,
     )
     owner_id = ctx.owner_id
     if not owner_id:
@@ -591,11 +583,7 @@ async def investigate(
     status = "running"
     stop_reason_code = ""
     report_refresh_failures = 0
-    previous_sigint = signal.getsignal(signal.SIGINT)
     try:
-        signal.signal(
-            signal.SIGINT, lambda signum, frame: setattr(ctx, "interrupted", True)
-        )
         if report_decision.notice:
             _log("REPORT", report_decision.notice)
         notice_event = collect_policy_progress_event(ctx.forensia_policy)
@@ -624,6 +612,7 @@ async def investigate(
             status in {"completed", "stopped"}
             and stop_reason_code != "budget_exhausted"
             and not ctx.interrupted
+            and not is_stopped()
         ):
             try:
                 report_refresh_failures += await _final_report_refresh(env)
@@ -631,6 +620,9 @@ async def investigate(
                 status = "stopped"
                 stop_reason_code = "budget_exhausted"
                 _log("FINALIZE", "LLM logical-call budget exhausted", level="warning")
+    except InvestigationStopped:
+        status = "stopped"
+        stop_reason_code = "interrupted"
     except LLMBudgetExceededError:
         status = "stopped"
         stop_reason_code = "budget_exhausted"
@@ -705,6 +697,5 @@ async def investigate(
         except Exception as exc:
             _log("FINALIZE", f"LLM client cleanup failed: {exc}", level="error")
         reset_llm_client_scope(client_scope_token)
-        signal.signal(signal.SIGINT, previous_sigint)
         reset_active_telemetry(telemetry_token)
     return _build_investigate_result(env, status, report_refresh_failures)

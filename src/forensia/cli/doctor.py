@@ -6,11 +6,9 @@ from collections.abc import Callable
 
 from rich import print
 
-from forensia.cli.support import _status
-
 
 def _check(label: str, check: Callable[[], None]) -> tuple[str, bool]:
-    _status(label + "...")
+    print(f"[bold cyan]==>[/bold cyan] {label}...")
     try:
         check()
     except Exception as exc:
@@ -66,7 +64,7 @@ def _case_storage() -> None:
 
 
 def _doctor_report_template_policy_check() -> tuple[str, bool]:
-    _status("Report template contract...")
+    print("[bold cyan]==>[/bold cyan] Report template contract...")
     try:
         from forensia.report.resources import report_templates_dir
         from forensia.report.sections.template_parsing import parse_template
@@ -116,3 +114,7 @@ def run_doctor() -> None:
     else:
         print(f"[bold green]✓ All {len(checks)} checks passed[/bold green]")
     sys.exit(1 if failed else 0)
+
+
+if __name__ == "__main__":
+    run_doctor()

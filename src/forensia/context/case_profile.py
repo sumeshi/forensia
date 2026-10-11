@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from forensia.knowledge.catalog import event_context_eligible, event_context_from_row
+
 
 @dataclass(frozen=True)
 class CaseEvidenceProfile:
@@ -28,6 +30,36 @@ def observed_event_ids(db) -> set[int]:
             "SELECT DISTINCT event_id FROM evtx_events WHERE event_id IS NOT NULL"
         ).fetchall()
     }
+
+
+def observed_event_contexts(db, event_ids: frozenset[int]) -> list[dict[str, Any]]:
+    """Project distinct observed event contexts eligible under the event catalog."""
+    if not event_ids:
+        return []
+    rows = db.execute(
+        "SELECT DISTINCT event_id, "
+        "COALESCE(channel, json_extract_string(raw_json, '$.winlog.channel')) AS channel, "
+        "COALESCE(json_extract_string(raw_json, '$.winlog.provider.name'), "
+        "json_extract_string(raw_json, '$.winlog.provider')) AS provider "
+        "FROM evtx_events "
+        "WHERE event_id IN (SELECT UNNEST(?))",
+        [sorted(event_ids)],
+    ).fetchall()
+    available: set[tuple[int, str, str]] = set()
+    for event_id, channel, provider in rows:
+        channel, provider = event_context_from_row(
+            {"channel": channel, "provider": provider}
+        )
+        if (
+            channel
+            and provider
+            and event_context_eligible(event_id, channel=channel, provider=provider)
+        ):
+            available.add((int(event_id), channel, provider))
+    return [
+        {"event_id": event_id, "channel": channel, "provider": provider}
+        for event_id, channel, provider in sorted(available)
+    ]
 
 
 def _build_profile_queries(conn) -> dict[str, Any]:

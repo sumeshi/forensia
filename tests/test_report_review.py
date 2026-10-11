@@ -35,6 +35,34 @@ from forensia.report.sections.report_input import (
 
 
 class ReportSafetyContracts(unittest.TestCase):
+    def test_incomplete_report_metadata_follows_output_language(self) -> None:
+        from forensia.config import Settings, settings_scope
+        from forensia.report.render.writer import render_written_report
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                for language in ("ja", "en"):
+                    with (
+                        self.subTest(language=language),
+                        settings_scope(Settings(llm_output_language=language)),
+                    ):
+                        render_written_report(case, db)
+                        validation = json.loads(
+                            (case.reports_dir / "report_validation.json").read_text()
+                        )
+                        self.assertFalse(validation["publishable"])
+                        self.assertEqual(
+                            "needs_review", validation["publication_status"]
+                        )
+                        self.assertNotIn(
+                            "language_consistency",
+                            [
+                                issue["check_name"]
+                                for issue in validation["fatal_errors"]
+                            ],
+                        )
+
     def test_narrative_review_reports_reader_hostile_output(self) -> None:
         body = (
             "Hypothesis H-010 remains open (STRUCTURED_OBSERVATIONS). "

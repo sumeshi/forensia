@@ -13,6 +13,7 @@ from forensia.db.evidence_lookup import (
     find_missing_evidence_ids,
     lookup_evidence_record,
 )
+from forensia.db.views import case_detail
 
 
 class EvidenceLookupTest(unittest.TestCase):
@@ -201,4 +202,56 @@ class EvidenceLookupTest(unittest.TestCase):
             [
                 "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-999999999999"
             ],
+        )
+
+    def test_typed_detail_uses_evidence_lookup_and_rejects_unknown_kind(self):
+        evidence_id = (
+            "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-"
+            "security-000000000001"
+        )
+        detail = case_detail(self.db, "evidence", evidence_id)
+        self.assertEqual(detail["evidence_id"], evidence_id)
+        self.assertEqual(detail["raw"]["target_user"], "informant")
+        with self.assertRaisesRegex(ValueError, "unsupported detail kind"):
+            case_detail(self.db, "SELECT * FROM findings", evidence_id)  # type: ignore[arg-type]
+
+    def test_query_receipt_detail_expands_trace_receipt_and_evidence(self):
+        evidence_id = "evtx-" + "a" * 64 + "-security-000000000001"
+        receipt_id = "receipt-S-1-1-query-hash"
+        self.db.execute(
+            "INSERT INTO trace.investigation_steps (step_id, session_id, hypothesis_id, iteration, phase, input_json, output_json) "
+            "VALUES ('S-1-01-do-Q-1-01', 'S-1', 'H-1', 1, 'do', ?, ?)",
+            (
+                json.dumps(
+                    {
+                        "planned_query": {
+                            "query_id": "Q-1",
+                            "sql": "SELECT * FROM evtx_events",
+                        }
+                    }
+                ),
+                json.dumps(
+                    {
+                        "tool_receipt": {
+                            "receipt_id": receipt_id,
+                            "arguments": {"sql": "SELECT * FROM evtx_events"},
+                            "result_refs": {"evidence_ids": [evidence_id]},
+                        },
+                        "row_count": 1,
+                        "sample_rows": [{"evidence_id": evidence_id}],
+                    }
+                ),
+            ),
+        )
+        detail = case_detail(self.db, "query_receipt", receipt_id)
+        self.assertIsNotNone(detail)
+        assert detail is not None
+        self.assertEqual(
+            "SELECT * FROM evtx_events", detail["input_json"]["planned_query"]["sql"]
+        )
+        self.assertEqual(evidence_id, detail["evidence"][0]["evidence_id"])
+        self.assertEqual(1, detail["output_json"]["row_count"])
+        self.assertEqual(
+            detail,
+            case_detail(self.db, "query_receipt", "Q-1"),
         )

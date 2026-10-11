@@ -165,7 +165,11 @@ def _post_attempt(
         _record_attempt_failure(telemetry, att_id, started, exc, timed_out=False)
         raise
     if telemetry:
+        response_body = response.text
+        api_key = headers.get("Authorization", "").removeprefix("Bearer ")
+        if api_key:
+            response_body = response_body.replace(api_key, "[redacted]")
         telemetry.record_attempt_response(
-            attempt_id=att_id, response_body=response.text
+            attempt_id=att_id, response_body=response_body
         )
     return response, att_id, int((time.monotonic() - started) * 1000), started

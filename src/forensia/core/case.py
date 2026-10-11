@@ -192,7 +192,7 @@ class Case:
         """Remove runtime outputs, optionally preserving raw evidence and the DB.
 
         ``preserve_raw=True`` keeps the ingested JSONL under ``raw/``. This is the
-        right choice for ``--rerun`` (re-run AI investigation without losing the
+        right choice for ``rerun=True`` (re-run AI investigation without losing the
         already-ingested evidence). ``preserve_raw=False`` (default) wipes raw and
         requires a fresh ingest from ``input_dir``.
         """

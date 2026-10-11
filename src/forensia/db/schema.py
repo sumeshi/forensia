@@ -16,7 +16,7 @@
 # Case databases with a different version are rejected before any
 # persistent DDL/DML (see db/database._check_schema_version); existing
 # cases are preserved and their artifacts are re-ingested into new cases.
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 CORE_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS evtx_events (
@@ -247,9 +247,6 @@ CREATE TABLE IF NOT EXISTS section_questions (
     updated_at TIMESTAMP
 );
 
-CREATE INDEX IF NOT EXISTS idx_section_questions_section ON section_questions(section_key, block_heading);
-CREATE INDEX IF NOT EXISTS idx_section_questions_spec ON section_questions(answer_spec);
-
 CREATE OR REPLACE VIEW section_run_coverage AS
 SELECT
     section_key,
@@ -367,8 +364,6 @@ CREATE TABLE IF NOT EXISTS evidence_coverage (
     derived_at TIMESTAMP,
     UNIQUE(capability, host, channel, source_family)
 );
-CREATE INDEX IF NOT EXISTS idx_evidence_coverage_capability ON evidence_coverage(capability);
-
 -- Registry keeps the parser's raw ECS document lossless while reusing
 -- evidence_sources for source-level lineage.  These tables are deliberately
 -- narrow: plugin completeness and verdict semantics remain outside ingest.
@@ -422,6 +417,7 @@ CREATE INDEX IF NOT EXISTS idx_registry_timeline_timestamp ON registry_timeline(
 CREATE TABLE IF NOT EXISTS investigation_state (
     state_id VARCHAR PRIMARY KEY DEFAULT 'case',
     objective VARCHAR,
+    preferred_hypothesis_id VARCHAR,
     status VARCHAR DEFAULT 'active',
     termination_policy JSON,
     stop_reason_code VARCHAR,
@@ -506,6 +502,17 @@ CREATE INDEX IF NOT EXISTS idx_hypothesis_evidence_evidence ON hypothesis_eviden
 
 TRACE_SCHEMA_SQL = """
 CREATE SCHEMA IF NOT EXISTS trace;
+
+CREATE TABLE IF NOT EXISTS trace.runtime_commands (
+    command_id VARCHAR PRIMARY KEY,
+    operation VARCHAR NOT NULL,
+    payload JSON NOT NULL,
+    status VARCHAR NOT NULL,
+    reason VARCHAR,
+    result JSON,
+    created_at TIMESTAMP DEFAULT now(),
+    updated_at TIMESTAMP DEFAULT now()
+);
 
 CREATE TABLE IF NOT EXISTS trace.ai_reviews (
     review_id VARCHAR,
@@ -696,6 +703,7 @@ CREATE INDEX IF NOT EXISTS llm_deterministic_ops_by_session
 """
 
 TRACE_TABLES = {
+    "runtime_commands",
     "ai_reviews",
     "investigation_sessions",
     "investigation_steps",

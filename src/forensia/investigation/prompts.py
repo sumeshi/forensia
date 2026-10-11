@@ -7,7 +7,7 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
-from forensia.context.case_profile import CaseEvidenceProfile
+from forensia.context.case_profile import CaseEvidenceProfile, observed_event_contexts
 from forensia.context.playbook import (
     _dfir_playbook,
     _sections_for_hypothesis,
@@ -20,9 +20,7 @@ from forensia.context.prompt_context import (
 from forensia.context.sql_templates import query_template_catalog_for_tables
 from forensia.core.session import Hypothesis
 from forensia.investigation.case_policy import case_policy_block
-from forensia.knowledge.catalog import (
-    load_benign_context_rules,
-)
+from forensia.knowledge.catalog import load_benign_context_rules
 from forensia.knowledge.coverage import disclosure_tables_for_spec
 from forensia.knowledge.retrieval import knowledge_terms_for_hypothesis, select_snippets
 from forensia.llm.schemas import (
@@ -631,6 +629,43 @@ def build_hypothesis_drafter_messages(
 ) -> tuple[list[dict[str, str]], dict]:
     """Draft one testable hypothesis from a real observation or existing gap."""
     schema = hypothesis_drafter_schema()
+    eligible_event_contexts: list[dict[str, Any]] = []
+    if (
+        case_profile is not None
+        and case_profile.event_ids is not None
+        and db is not None
+    ):
+        eligible_event_contexts = observed_event_contexts(db, case_profile.event_ids)
+
+        ids_schema = schema["properties"]["hypothesis"]["properties"]["confirm_when"][
+            "properties"
+        ]["co_observed_event_ids"]
+        eligible_ids = sorted({item["event_id"] for item in eligible_event_contexts})
+        if eligible_ids:
+            ids_schema["items"] = {"enum": eligible_ids}
+        else:
+            ids_schema["maxItems"] = 0
+    observed_event_ids: set[int] = set()
+    if observed_candidate:
+        for row in observed_candidate.get("evidence") or []:
+            if not isinstance(row, dict):
+                continue
+            raw_event_id = row.get("event_id")
+            if isinstance(raw_event_id, bool):
+                continue
+            try:
+                observed_event_ids.add(int(raw_event_id))
+            except TypeError, ValueError:
+                continue
+    event_contexts = sorted(
+        eligible_event_contexts,
+        key=lambda item: (
+            item["event_id"] not in observed_event_ids,
+            item["event_id"],
+            item["channel"],
+            item["provider"],
+        ),
+    )[:24]
     gap_words = [gap_area.get("keypoint_id", "")]
     matched_rule_ids = [
         str(rule.get("id") or rule.get("rule_id") or "")
@@ -745,16 +780,25 @@ def build_hypothesis_drafter_messages(
         '    "description": "str (one investigative claim that can be confirmed or refuted by SQL evidence)",\n'
         '    "required_entities": ["snake_case column names such as src_ip, target_user, computer, logon_type, process_name, file_path"],\n'
         '    "source_rule_ids": ["an id from the host-supplied matched_rule_ids, or empty list"],\n'
-        '    "confirm_when": {"co_observed_event_ids": [int, ...], "same_host": bool, "within_minutes": int, "same_entities": ["src_ip", "target_user"], "min_count": int},\n'
+        '    "confirm_when": {"co_observed_event_ids": [int, ...], "event_contexts": [{"event_id": int, "channel": str, "provider": str}], "same_host": bool, "within_minutes": int, "same_entities": ["src_ip", "target_user"], "min_count": int},\n'
         '    "refute_when": {"zero_rows": true}\n'
         "  }\n"
         "}\n"
         "</OUTPUT_SCHEMA>\n"
-        "<RULES>\n"
+        + (
+            "<AVAILABLE_EVENT_CONTEXTS>\n"
+            + json.dumps(event_contexts, ensure_ascii=False)
+            + "\nUse only listed event_id/channel/provider combinations. If none are listed, "
+            "do not use event IDs; use available non-EVTX evidence instead.\n"
+            "</AVAILABLE_EVENT_CONTEXTS>\n"
+            if case_profile is not None and case_profile.event_ids is not None
+            else ""
+        )
+        + "<RULES>\n"
         "Treat supplied observations as leads, not proof. For an observed candidate, describe a question that tests that candidate and use only fields/ref IDs shown there. Do not infer facts from match counts, severity, titles, or rule names.\n"
         "Use source_rule_ids only from the host-supplied matched_rule_ids. They identify observed matches and are not evidence support.\n"
         "For a gap without an observed candidate, stay within its stated objective, gap, keypoint, and available evidence. Do not invent an event, entity, or source.\n"
-        "required_entities must be valid snake_case evidence column names. Keep verification conditions explicit and preserve every event ID you propose; the host will validate the Spec.\n"
+        "required_entities must be valid snake_case evidence column names. Keep verification conditions explicit and use only event ID/context combinations supplied by the host.\n"
         "confirm_when and refute_when must be JSON objects. Output JSON only.\n"
         "</RULES>\n"
     )

@@ -7,6 +7,7 @@ import traceback
 from typing import Any
 
 from forensia.core.case import Case
+from forensia.core.control import InvestigationStopped, check_stop
 from forensia.core.session import LLMBudgetExceededError
 from forensia.db.database import CaseDB
 from forensia.report.sections.section_block_context import (
@@ -131,6 +132,7 @@ def _run_plan_execute_check_loop(
     missing_questions: list[Any] = []
     status = "insufficient_evidence"
     for iteration in range(1, ctx.max_queries + 1):
+        check_stop()
         prior_runs = _load_prior_runs(ctx.db, ctx.section_key, ctx.block_heading)
         template_catalog = _filter_template_catalog_by_section(
             template_catalog, ctx.section_key, collected_results
@@ -406,7 +408,7 @@ def run_section_block_agent(
     )
     try:
         return _run_block_pipeline(ctx, context_sections, current_section_outline)
-    except LLMBudgetExceededError:
+    except LLMBudgetExceededError, InvestigationStopped:
         raise
     except Exception as exc:
         import logging

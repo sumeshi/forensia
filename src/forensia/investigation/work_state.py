@@ -294,7 +294,7 @@ def classify_active_hypotheses_on_stop(
     return counts
 
 
-def reopen_retryable_work(db: CaseDB) -> list[str]:
+def reopen_retryable_work(db: CaseDB, *, manual_resume: bool = False) -> list[str]:
     """Reactivate only work whose persisted retry condition became true.
 
     The saved ``retry_condition`` is the reopen contract and is checked, not
@@ -304,6 +304,7 @@ def reopen_retryable_work(db: CaseDB) -> list[str]:
     capability must have an ``available``/``partial`` Coverage row.  The
     ``new_evidence_*`` conditions need a normalized source newer than the
     Task's last stop update, so the same source cannot reopen it twice.
+    ``new_evidence_or_manual_resume`` also accepts an explicit manual resume.
     Unrecognized or ``human_or_external_result``
     conditions never auto-reopen; their Task is resolved by its own owner.
     """
@@ -349,6 +350,9 @@ def reopen_retryable_work(db: CaseDB) -> list[str]:
                     source_query += f" AND artifact_family IN ({placeholders})"
                     params.extend(sorted(sources))
                 should_reopen = (
+                    manual_resume and condition == "new_evidence_or_manual_resume"
+                )
+                should_reopen = should_reopen or (
                     db.execute(source_query + " LIMIT 1", params).fetchone() is not None
                 )
             else:

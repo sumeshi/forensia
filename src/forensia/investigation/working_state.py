@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from forensia.db.database import CaseDB
+from forensia.db.investigation_state import load_investigation_state
 from forensia.investigation.work_judgment import open_work_refs, work_context_snapshot
 
 
@@ -74,9 +75,25 @@ def build_working_state(
             ]
         work.append(item)
 
+    investigation = load_investigation_state(db) or {}
+    preferred_id = str(investigation.get("preferred_hypothesis_id") or "")
+    preferred = None
+    if preferred_id:
+        row = db.execute(
+            "SELECT hypothesis_id, description, status FROM hypotheses "
+            "WHERE hypothesis_id = ?",
+            [preferred_id],
+        ).fetchone()
+        if row:
+            preferred = {
+                "id": str(row[0]),
+                "description": str(row[1] or "")[:200],
+                "status": str(row[2] or ""),
+            }
     return {
         "current": work_context_snapshot(db, hypothesis_id) if hypothesis_id else None,
         "work": work,
+        "preferred_hypothesis": preferred,
     }
 
 
@@ -86,6 +103,7 @@ def render_working_state(state: dict[str, Any]) -> str:
     current = state.get("current")
     current_hypothesis_id = current.hypothesis_id if current is not None else None
     work = state.get("work", [])
+    preferred = state.get("preferred_hypothesis")
     detailed_gaps = {row["id"] for item in work for row in item.get("gaps", [])}
     detailed_tasks = {row["id"] for item in work for row in item.get("tasks", [])}
     if current is not None:
@@ -108,6 +126,12 @@ def render_working_state(state: dict[str, Any]) -> str:
                 (x.startswith("gap=") and x.removeprefix("gap=") in detailed_gaps)
                 or (x.startswith("task=") and x.removeprefix("task=") in detailed_tasks)
             )
+        )
+    if preferred:
+        lines.append(
+            "operator-preferred hypothesis="
+            f"{preferred['id']} status={preferred['status']} "
+            f"{preferred['description']} (select when eligible; do not bypass blockers)"
         )
     for item in work:
         for row in item.get("hypotheses", []):

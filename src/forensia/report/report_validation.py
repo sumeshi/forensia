@@ -3,7 +3,7 @@
 Each check is a pure function that inspects a generated report (its brief,
 body, or JSON) and returns a list of ``ValidationFinding`` objects.
 
-Checks are deterministic — no LLM calls. They are wired into ``forensia doctor``
+Checks are deterministic — no LLM calls. They are wired into ``python -m forensia.cli.doctor``
 to catch regressions after generation.
 """
 

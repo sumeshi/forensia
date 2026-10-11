@@ -5,10 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from forensia.config import (
-    reload_settings,
-    resolve_llm_config,
-)
+from forensia.config import resolve_llm_config
 from forensia.core.case import Case
 from forensia.core.session import HistoryEntry, Hypothesis, SessionState
 from forensia.db.database import CaseDB
@@ -28,9 +25,6 @@ def _llm_base_url() -> str:
 
 class PlannerRetryTests(unittest.TestCase):
     """Query planning, SQL templates/validation, retry, and fingerprint behavior."""
-
-    def tearDown(self) -> None:
-        reload_settings()
 
     def test_validate_select_sql_allows_investigation_state_tables(self) -> None:
         for sql in (
@@ -943,6 +937,11 @@ def test_working_state_only_deduplicates_requirements_with_rendered_rows() -> No
     rendered = render_working_state(
         {
             "current": current,
+            "preferred_hypothesis": {
+                "id": "H-2",
+                "status": "active",
+                "description": "operator selected",
+            },
             "work": [
                 {
                     "hypotheses": [
@@ -969,6 +968,7 @@ def test_working_state_only_deduplicates_requirements_with_rendered_rows() -> No
             ],
         }
     )
+    assert "operator-preferred hypothesis=H-2" in rendered
 
     assert "open gap=G-1" in rendered
     assert "open task=T-1" in rendered

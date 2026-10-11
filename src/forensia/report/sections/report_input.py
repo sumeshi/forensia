@@ -1,7 +1,7 @@
 """Single normalization entry for report section inputs.
 
 Every report section template — the packaged default (seeded under
-``case/report_template/``), an explicit ``--template-dir`` working copy, or the
+``case/report_template/``), an explicit ``template_dir`` working copy, or the
 user-facing ``REPORT.md`` — is normalized here into the same
 :class:`SectionSource` list, so downstream section assembly sees one contract
 (existing frontmatter fields, ``#`` section headings, ``##`` blocks, and the
@@ -22,7 +22,7 @@ The user-facing ``REPORT.md`` is ordinary Markdown:
 
 The default report (no ``REPORT.md``) goes through the same list, just sourced
 from the seeded template directory. There is deliberately no second template
-format, planner, or renderer: ``REPORT.md`` and ``--template-dir`` are two
+format, planner, or renderer: ``REPORT.md`` and ``template_dir`` are two
 producers of one parsed structure.
 """
 
@@ -171,8 +171,7 @@ def decide_report_sources(
             changed = True
         notice = (
             "REPORT.md/report templates changed or are unavailable; the recorded "
-            "revision remains in force. Reload explicitly with --report-spec "
-            "or --template-dir."
+            "revision remains in force. Adopt a replacement through run_report(report_spec=..., write=True)."
             if changed
             else None
         )
@@ -213,7 +212,7 @@ def section_source_from_path(path: str | Path) -> SectionSource:
 
 
 def sections_from_template_dir(template_root: str | Path) -> list[SectionSource]:
-    """Normalize the existing template-directory input (packaged or ``--template-dir``)."""
+    """Normalize the existing template-directory input (packaged or ``template_dir``)."""
     root = Path(template_root)
     paths = sorted(root.glob(_TEMPLATE_DIR_MATCH))
     if not paths:
@@ -300,8 +299,8 @@ def resolve_report_sources(
 ) -> list[SectionSource]:
     """Resolve the report section inputs for one run; parsing is fixed at run start.
 
-    Priority: explicit ``REPORT.md`` path (``--report-spec``) > explicit
-    ``--template-dir`` > case-root ``REPORT.md`` > seeded packaged template
+    Priority: explicit ``REPORT.md`` path (``report_spec``) > explicit
+    ``template_dir`` > case-root ``REPORT.md`` > seeded packaged template
     directory. ``template_root`` that already equals the case-local seeded
     directory counts as the default policy, so a case ``REPORT.md`` takes it.
     """
@@ -309,7 +308,7 @@ def resolve_report_sources(
         return sections_from_report_spec(report_spec)
     root = Path(template_root) if template_root is not None else None
     if root is not None and root.resolve() != case.report_template_dir.resolve():
-        # Explicit --template-dir outranks the case REPORT.md (evaluation and
+        # An explicit template_dir outranks the case REPORT.md (evaluation and
         # benchmark runs keep their declared template policy).
         return sections_from_template_dir(root)
     default_spec = case.path / REPORT_SPEC_FILENAME

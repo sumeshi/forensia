@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-import os
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from forensia.config import reload_settings, settings
+from forensia.config import get_settings, settings_scope
 from forensia.core.case import Case
 from forensia.core.textutil import normalize_localized_dates
 from forensia.db.database import CaseDB
@@ -72,8 +72,7 @@ structured_answer:
 
     def test_status_only_narration_gets_deterministic_fallback(self) -> None:
         self.assertTrue(is_effectively_empty_body("**Status:** answered"))
-        with patch.dict(os.environ, {"FORENSIA_OUTPUT_LANGUAGE": "en"}):
-            reload_settings()
+        with settings_scope(replace(get_settings(), llm_output_language="en")):
             body = fallback_narrative_body(
                 heading="Executive Summary",
                 status="partial",
@@ -108,7 +107,6 @@ structured_answer:
                 actual_query_count=1,
                 actual_query_row_counts=[2],
             )
-            reload_settings()
 
         self.assertIn("Additional correlation is needed", body)
         self.assertIn(
@@ -120,8 +118,7 @@ structured_answer:
         self.assertNotIn("Representative row:", body)
 
     def test_not_found_fallback_does_not_emit_block_skipped_marker(self) -> None:
-        with patch.dict(os.environ, {"FORENSIA_OUTPUT_LANGUAGE": "en"}):
-            reload_settings()
+        with settings_scope(replace(get_settings(), llm_output_language="en")):
             body = fallback_narrative_body(
                 heading="Network Activity",
                 status="not_found",
@@ -137,7 +134,6 @@ structured_answer:
                 actual_query_count=1,
                 actual_query_row_counts=[0],
             )
-            reload_settings()
 
         self.assertIn("No supporting evidence was found", body)
         self.assertNotIn("Block skipped", body)
@@ -351,7 +347,7 @@ structured_answer:
         joined with ` / ` and exploded the paragraph past 1000 chars, or keypoint identifiers
         (`overview_top_findings=10`) leaked into the prose.
         """
-        with patch.object(settings, "llm_output_language", "en"):
+        with settings_scope(replace(get_settings(), llm_output_language="en")):
             body = fallback_narrative_body(
                 heading="Executive Summary",
                 status="partial",
@@ -418,7 +414,7 @@ structured_answer:
     def test_fallback_prefers_key_points_over_meta_phrasing(self) -> None:
         """H-2: when key points are available the fallback states observed
         facts, never review-metadata like 'returned N related rows'."""
-        with patch.object(settings, "llm_output_language", "en"):
+        with settings_scope(replace(get_settings(), llm_output_language="en")):
             body = fallback_narrative_body(
                 heading="Executive Summary",
                 status="answered",

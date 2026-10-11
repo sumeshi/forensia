@@ -6,7 +6,7 @@ import hashlib
 import json
 import re
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -362,6 +362,8 @@ def inject_gap_hypotheses(
     session_id: str,
     llm_output: dict[str, Any] | None = None,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    *,
+    origin: Literal["section", "human"] = "section",
 ) -> int:
     """Convert unresolved report gaps into active hypotheses, skipping duplicates and non-DB gaps.
 
@@ -398,7 +400,8 @@ def inject_gap_hypotheses(
     # A Gap stays requested while its string is in the stored section prose
     # (including sections not refreshed in this cycle) or in this run's list.
     keep_open_ids = prose_gap_ids | current_gap_ids
-    _handle_orphaned_section_gaps(db, keep_open_ids)
+    if origin == "section":
+        _handle_orphaned_section_gaps(db, keep_open_ids)
     for gap in gaps:
         normalized_gap = _normalize_text(gap)
         if not normalized_gap:
@@ -414,16 +417,18 @@ def inject_gap_hypotheses(
         ).fetchone()
         db.execute(
             """INSERT INTO report_gaps (gap_id, section_key, description, kind, status, origin, created_at, updated_at)
-               VALUES (?, ?, ?, ?, 'open', 'section', now(), now())
+               VALUES (?, ?, ?, ?, 'open', ?, now(), now())
                ON CONFLICT (gap_id) DO UPDATE SET
                    description = EXCLUDED.description,
                    kind = EXCLUDED.kind,
                    section_key = CASE WHEN EXCLUDED.section_key = '' THEN report_gaps.section_key ELSE EXCLUDED.section_key END,
                    status = 'open',
-                   origin = 'section',
+                   origin = CASE
+                       WHEN report_gaps.origin = 'human' OR EXCLUDED.origin = 'human'
+                       THEN 'human' ELSE 'section' END,
                    coverage_reason = NULL,
                    updated_at = now()""",
-            [gap_id, section_key, gap, gap_kind],
+            [gap_id, section_key, gap, gap_kind, origin],
         )
         if progress_callback and (prior_gap is None or prior_gap[0] != "open"):
             progress_callback(

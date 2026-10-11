@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
@@ -268,10 +269,41 @@ class SelectionIntegrationTests(unittest.TestCase):
                     "verification_spec) VALUES "
                     "('H-002', 'active hypothesis', 'active', '{\"spec_version\": \"1\"}')"
                 )
+                db.execute(
+                    "INSERT INTO investigation_state (state_id, preferred_hypothesis_id) "
+                    "VALUES ('case', 'H-001')"
+                )
                 results = select_focus_hypotheses(db, limit=2)
                 eligible = [r for r in results if r.eligible]
                 self.assertEqual(len(eligible), 1)
                 self.assertEqual(eligible[0].hypothesis_id, "H-002")
+
+    def test_preferred_hypothesis_ranks_first_without_changing_score(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                db.execute(
+                    "INSERT INTO hypotheses (hypothesis_id, description, status, "
+                    "verification_spec) VALUES "
+                    "('H-001', 'ordinary priority', 'active', '{\"spec_version\": \"1\"}'), "
+                    "('H-002', 'operator preference', 'active', '{\"spec_version\": \"1\"}')"
+                )
+                db.execute(
+                    "INSERT INTO investigation_state (state_id, preferred_hypothesis_id) "
+                    "VALUES ('case', 'H-002')"
+                )
+                with patch(
+                    "forensia.investigation.selection.compute_priority_score",
+                    side_effect=lambda hyp, *_args, **_kwargs: (
+                        (1.0 if hyp["hypothesis_id"] == "H-001" else 0.0),
+                        [],
+                    ),
+                ):
+                    results = select_focus_hypotheses(db, limit=1)
+                self.assertEqual(results[0].hypothesis_id, "H-002")
+                self.assertEqual(results[0].total_score, 0.0)
+                self.assertEqual(results[0].components[0].name, "human_preference")
+                self.assertIn("eligible work", results[0].components[0].reason)
 
     def test_selection_updates_count(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

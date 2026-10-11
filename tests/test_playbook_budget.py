@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import os
+from dataclasses import replace
 from typing import Any
 
 from forensia.context.playbook import (
@@ -42,33 +42,28 @@ def test_tables_gate_includes_artifact_when_mft_present() -> None:
 def test_total_prompt_budget_is_configurable_and_auto_derived() -> None:
     from forensia.config import (
         get_prompt_budget_tokens,
+        get_settings,
         get_system_prompt_budget_chars,
-        reload_settings,
+        settings_scope,
     )
 
-    old_system = os.environ.get("FORENSIA_SYSTEM_PROMPT_BUDGET_CHARS")
-    old_total = os.environ.get("FORENSIA_PROMPT_BUDGET_TOKENS")
-    try:
-        os.environ["FORENSIA_SYSTEM_PROMPT_BUDGET_CHARS"] = "0"
-        os.environ["FORENSIA_PROMPT_BUDGET_TOKENS"] = "0"
-        reload_settings()
+    base = get_settings()
+    with settings_scope(
+        replace(
+            base, forensia_system_prompt_budget_chars=0, forensia_prompt_budget_tokens=0
+        )
+    ):
         assert get_prompt_budget_tokens() == 12000
         assert get_system_prompt_budget_chars() == 24000
-
-        os.environ["FORENSIA_PROMPT_BUDGET_TOKENS"] = "32000"
-        reload_settings()
+    with settings_scope(
+        replace(
+            base,
+            forensia_system_prompt_budget_chars=0,
+            forensia_prompt_budget_tokens=32000,
+        )
+    ):
         assert get_prompt_budget_tokens() == 32000
         assert get_system_prompt_budget_chars() == 64000
-    finally:
-        if old_system is None:
-            os.environ.pop("FORENSIA_SYSTEM_PROMPT_BUDGET_CHARS", None)
-        else:
-            os.environ["FORENSIA_SYSTEM_PROMPT_BUDGET_CHARS"] = old_system
-        if old_total is None:
-            os.environ.pop("FORENSIA_PROMPT_BUDGET_TOKENS", None)
-        else:
-            os.environ["FORENSIA_PROMPT_BUDGET_TOKENS"] = old_total
-        reload_settings()
 
 
 def test_table_gating_planning_phases() -> None:
@@ -122,14 +117,20 @@ def test_no_profile_playbook_truncates_events_instead_of_dropping_everything():
     so the other guidance sections survive, instead of the serial drop loop
     discarding every droppable section (the pre-fix behavior left only the
     Priority Investigation Order)."""
-    from forensia.config import get_system_prompt_budget_chars, settings
+    from forensia.config import (
+        get_settings,
+        get_system_prompt_budget_chars,
+        settings_scope,
+    )
     from forensia.context.playbook import _dfir_playbook as dfir_playbook
 
-    old_system_budget = settings.forensia_system_prompt_budget_chars
-    old_prompt_budget = settings.forensia_prompt_budget_tokens
-    try:
-        settings.forensia_system_prompt_budget_chars = 0
-        settings.forensia_prompt_budget_tokens = 0
+    with settings_scope(
+        replace(
+            get_settings(),
+            forensia_system_prompt_budget_chars=0,
+            forensia_prompt_budget_tokens=0,
+        )
+    ):
         playbook = dfir_playbook("report_section")
 
         assert "priority events only" in playbook
@@ -139,9 +140,6 @@ def test_no_profile_playbook_truncates_events_instead_of_dropping_everything():
         # Stays in the same order of magnitude as the budget (phase narrative is
         # appended after enforcement, so allow headroom above the raw budget).
         assert len(playbook) < get_system_prompt_budget_chars() * 1.5
-    finally:
-        settings.forensia_system_prompt_budget_chars = old_system_budget
-        settings.forensia_prompt_budget_tokens = old_prompt_budget
 
 
 def testsections_for_hypothesis_auth_excludes_catalogs() -> None:

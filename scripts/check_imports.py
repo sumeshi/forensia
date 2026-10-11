@@ -8,8 +8,8 @@ from pathlib import Path
 
 # Larger numbers are closer to users. Code may depend on the same or a lower
 # layer; dependencies pointing upward require an exact, documented exception.
-# "pipeline" is the display-agnostic run entry (V2-02): it sits with cli in the
-# interface layer so adapters may call it, but kernel layers may not import it.
+# Pipeline owns orchestration, Runtime owns process control, and CLI/TUI are
+# thin user-facing adapters above both.
 LAYERS: tuple[tuple[str, frozenset[str]], ...] = (
     ("platform", frozenset({"core", "db", "config"})),
     ("evidence", frozenset({"evidence"})),
@@ -17,7 +17,9 @@ LAYERS: tuple[tuple[str, frozenset[str]], ...] = (
     ("model support", frozenset({"llm", "context"})),
     ("reporting", frozenset({"report"})),
     ("investigation", frozenset({"investigation"})),
-    ("interface", frozenset({"cli", "pipeline"})),
+    ("pipeline", frozenset({"pipeline"})),
+    ("runtime", frozenset({"runtime"})),
+    ("interface", frozenset({"cli", "tui"})),
 )
 
 PACKAGE_LAYER = {

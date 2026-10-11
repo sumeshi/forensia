@@ -14,7 +14,8 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     import httpx
 
-from forensia.config import get_llm_settings, settings
+from forensia.config import get_llm_settings, get_settings
+from forensia.core.control import check_stop
 from forensia.core.progress_event import progress_event
 from forensia.llm.attempt import _post_attempt
 from forensia.llm.request_metadata import (
@@ -173,14 +174,19 @@ def _get_http_client() -> httpx.Client:
 
 
 def _auth_headers() -> dict[str, str]:
-    if settings.llm_api_key:
-        return {"Authorization": f"Bearer {settings.llm_api_key}"}
+    api_key = get_settings().llm_api_key
+    if api_key:
+        return {"Authorization": f"Bearer {api_key}"}
     return {}
 
 
 def _redacted_error_body(response: httpx.Response) -> str:
     """Return a bounded provider error summary without credentials."""
-    return response.text.replace("Authorization", "[redacted]")[:500]
+    body = response.text
+    api_key = get_settings().llm_api_key
+    if api_key:
+        body = body.replace(api_key, "[redacted]")
+    return body.replace("Authorization", "[redacted]")[:500]
 
 
 def _close_logical_call_if_owned(
@@ -545,10 +551,12 @@ async def outage_wait_until_recovered(
     """Wait for the provider's model endpoint to respond to a health probe."""
     import httpx
 
+    settings = get_settings()
     budget_s = settings.llm_outage_wall_clock_budget_s
     interval_s = settings.llm_outage_probe_interval_s
     started = time.monotonic()
     while True:
+        check_stop()
         waited = int(time.monotonic() - started)
         if waited > budget_s:
             raise LLMServerUnavailableError(f"LLM outage budget exceeded ({budget_s}s)")
@@ -576,4 +584,7 @@ async def outage_wait_until_recovered(
                 return
         except httpx.HTTPError, httpx.RequestError:
             pass
-        await asyncio.sleep(interval_s)
+        until = time.monotonic() + interval_s
+        while time.monotonic() < until:
+            check_stop()
+            await asyncio.sleep(min(0.25, max(0, until - time.monotonic())))

@@ -1,7 +1,7 @@
 """Display-agnostic investigation pipeline entry.
 
-One run entry shared by display adapters: the headless CLI today, a TUI later
-(GOAL §6.3). It owns the assembly of the existing stages — case open/init,
+One run entry shared by Runtime and direct Python callers. It assembles
+the existing stages — case open/init,
 explicit case reset, knowledge indexing, ingest, normalize, rule analysis,
 ``investigator.investigate`` (the existing ``investigate_loop``),
 and the existing report renderer — and owns no planning, stage state, or
@@ -19,10 +19,9 @@ Display independence contract:
 - semantic progress events are appended to the trace DB through the existing
   ``db.progress`` owner; events carry producer-selected kind, status, severity,
   reason, and entity references without copying investigation snapshots;
-- SIGINT capture and stop application stay where they are today
-  (``investigator.investigate`` owns the converter flag), and the session's
-  terminal receipt is still persisted before fallible projections by the same
-  lifecycle owner.
+- direct Python entry converts SIGINT into a stop request; Runtime supplies
+  its own request. Stages check it at safe boundaries, and the lifecycle owner
+  persists the session's terminal receipt before fallible projections.
 """
 
 from __future__ import annotations
@@ -31,18 +30,26 @@ import asyncio
 import hashlib
 import json
 import shutil
+import signal
 import uuid
 from collections.abc import Callable
+from contextlib import nullcontext
+from dataclasses import replace
+from functools import wraps
 from importlib.metadata import version
 from pathlib import Path
+from threading import Event, current_thread, main_thread
 from typing import Any
 
 from forensia.config import (
     get_llm_settings,
-    get_system_prompt_budget_chars,
+    get_settings,
+    load_settings,
     resolve_llm_config,
+    settings_scope,
 )
 from forensia.core.case import Case, resolve_timezone
+from forensia.core.control import InvestigationStopped, check_stop, stop_scope
 from forensia.core.progress_event import progress_event
 from forensia.db.database import CaseDB
 from forensia.db.progress import record_progress_event
@@ -54,7 +61,13 @@ from forensia.evidence.invalidation import (
     retire_replaced_sources,
 )
 from forensia.evidence.normalize import normalize_all
-from forensia.investigation.case_policy import CasePolicyInput, load_recorded_policy
+from forensia.investigation.case_policy import (
+    CASE_POLICY_STEP_PHASE,
+    CasePolicyInput,
+    decide_policy,
+    load_recorded_policy,
+    validate_policy_body,
+)
 from forensia.investigation.investigator import investigate as investigate_loop
 from forensia.knowledge.catalog import validate_declarations
 from forensia.knowledge.external import scan_knowledge_dir, set_knowledge_docs
@@ -71,7 +84,11 @@ from forensia.knowledge.rules.loader import load_rules
 from forensia.knowledge.sigma_bundle import binding_admitted, load_sigma_bundle
 from forensia.llm.llm_client import LLMServerUnavailableError
 from forensia.report.render.writer import render_written_report
-from forensia.report.sections.report_input import ensure_report_output_paths
+from forensia.report.sections.report_input import (
+    REPORT_INPUT_PHASE,
+    decide_report_sources,
+    ensure_report_output_paths,
+)
 from forensia.report.template_export import (
     has_report_templates,
     seed_case_report_templates,
@@ -100,6 +117,46 @@ class UsageError(ValueError):
     """Invalid pipeline user input that a display adapter should surface as a
     parameter error (missing input_dir, unusable
     template/knowledge directory)."""
+
+
+def _execution_entry(function):
+    """Direct Python calls share Runtime's writer lock and fixed settings."""
+
+    @wraps(function)
+    def execute(case_dir, *args, **kwargs):
+        if kwargs.get("db") is not None:
+            return function(case_dir, *args, **kwargs)
+        from forensia.core.ownership import case_lock
+
+        adopted = load_settings(
+            base_url=kwargs.get("llm_base_url"), model=kwargs.get("model")
+        )
+        overrides = {
+            setting: kwargs[argument]
+            for argument, setting in (
+                ("max_iter", "max_iterations"),
+                ("max_queries_per_hypothesis", "max_queries_per_hypothesis"),
+                ("max_llm_calls", "max_llm_calls"),
+            )
+            if kwargs.get(argument) is not None
+        }
+        if kwargs.get("report_max_queries_per_section"):
+            overrides["llm_report_max_queries_per_section"] = kwargs[
+                "report_max_queries_per_section"
+            ]
+        adopted = replace(adopted, **overrides)
+        stop_requested = kwargs.get("stop_requested") or Event()
+        kwargs["stop_requested"] = stop_requested
+        with case_lock(case_dir), settings_scope(adopted):
+            if current_thread() is not main_thread():
+                return function(case_dir, *args, **kwargs)
+            previous = signal.signal(signal.SIGINT, lambda *_args: stop_requested.set())
+            try:
+                return function(case_dir, *args, **kwargs)
+            finally:
+                signal.signal(signal.SIGINT, previous)
+
+    return execute
 
 
 def _show(status: StatusCallback | None, message: str) -> None:
@@ -342,13 +399,6 @@ def resolve_knowledge_dir(knowledge_dir: str | Path | None) -> Path | None:
     return path
 
 
-# Investigation policy must coexist with the playbook inside the fixed system
-# budget, so the adopt-time cap is half of it: a valid FORENSIA.md is either
-# adopted whole or the run refuses with the reason — constraints are never
-# silently truncated.
-POLICY_BUDGET_SHARE = 2
-
-
 def resolve_forensia_policy_input(
     case: Case,
     forensia_md: str | Path | None,
@@ -357,7 +407,7 @@ def resolve_forensia_policy_input(
 ) -> CasePolicyInput | None:
     """Resolve the one designated investigation-policy input (V2-05).
 
-    An explicit ``--forensia-md`` path must exist and is the designated
+    An explicit ``forensia_md`` path must exist and is the designated
     reload. Without it, only ``case_root/FORENSIA.md`` is adopted — same-name
     files in parent directories, ``input_dir`` or raw evidence are never
     searched. An oversized file refuses the run with the reason instead of
@@ -376,21 +426,59 @@ def resolve_forensia_policy_input(
     body = path.read_text(encoding="utf-8").strip()
     if not body:
         return None
-    budget_chars = get_system_prompt_budget_chars() // POLICY_BUDGET_SHARE
     # An edited case-root file is not adopted on resume without an explicit
     # reload. Its new size cannot prevent the recorded, bounded revision from
     # running; explicit reload and first adoption still fail before any work.
-    if len(body) > budget_chars and (
-        source == "explicit_path" or not recorded_policy_exists
-    ):
-        raise UsageError(
-            f"FORENSIA.md investigation policy is {len(body)} chars; the "
-            f"system-prompt budget allows {budget_chars} chars "
-            "(FORENSIA_SYSTEM_PROMPT_BUDGET_CHARS half-weight). Shorten the "
-            "policy so the full instruction fits; constraints are not "
-            "silently truncated."
-        )
+    if source == "explicit_path" or not recorded_policy_exists:
+        try:
+            validate_policy_body(body)
+        except ValueError as exc:
+            raise UsageError(str(exc)) from exc
     return CasePolicyInput(body=body, source=source, source_path=str(path))
+
+
+def pin_investigation_inputs(
+    case: Case,
+    db: CaseDB,
+    *,
+    forensia_md: str | Path | None = None,
+    report_spec: str | Path | None = None,
+    template_root: Path | None = None,
+) -> CasePolicyInput | None:
+    """Persist adopted Markdown before ingestion or Runtime readiness."""
+    from forensia.investigation.investigation_session import _save_step
+
+    seed_case_report_templates(case)
+    recorded_policy = load_recorded_policy(db)
+    policy_input = resolve_forensia_policy_input(
+        case, forensia_md, recorded_policy_exists=recorded_policy is not None
+    )
+    policy = decide_policy(policy_input, recorded_policy)
+    report = decide_report_sources(
+        case, db, template_root or case.report_template_dir, report_spec=report_spec
+    )
+    adoption_id = f"startup-{uuid.uuid4().hex}"
+    with db.transaction():
+        if policy.record is not None:
+            _save_step(
+                db,
+                adoption_id,
+                0,
+                CASE_POLICY_STEP_PHASE,
+                None,
+                {"source_path": policy_input.source_path if policy_input else None},
+                policy.record,
+            )
+        _save_step(
+            db,
+            adoption_id,
+            0,
+            REPORT_INPUT_PHASE,
+            None,
+            {"source_path": report.record.get("source_path")},
+            report.record,
+        )
+    return policy_input
 
 
 def _open_or_init_case(
@@ -434,7 +522,7 @@ def _rerun_reset(
     timezone: str,
     status: StatusCallback | None,
 ) -> Case:
-    """Reset case tables and runtime outputs for --rerun, preserving raw/."""
+    """Reset case tables and runtime outputs for rerun=True, preserving raw/."""
     _show(status, "Resetting case tables for rerun (preserving raw/ for re-normalize)")
     with CaseDB(case) as db:
         reset_case_tables(db)
@@ -442,7 +530,7 @@ def _rerun_reset(
         drop_database=False,
         preserve_raw=True,
     )
-    # Preserve the manifest timezone across rerun unless --timezone overrides it.
+    # Preserve the manifest timezone across rerun unless the timezone argument overrides it.
     tz_val = resolve_timezone(timezone, case)
     case = Case.init(case_dir, source_timezone=tz_val)
     seed_case_report_templates(case)
@@ -483,7 +571,7 @@ def _overwrite_case(
         if not (target / "manifest.yaml").is_file():
             raise UsageError("--overwrite refuses a directory without a case manifest")
         _show(status, f"Deleting entire case directory: {target}")
-        # shortcut: caller must stop the case; add ownership locking with the Runtime.
+        # Runtime and direct execution entries hold the external case lock here.
         shutil.rmtree(target)
 
 
@@ -708,6 +796,7 @@ def _run_analyze_stage(
             "FROM evtx_events"
         ).fetchall()
         for rule in rules:
+            check_stop()
             current_rule_id = rule.id
             binding = sigma_bindings.get(rule.id)
             result: dict[str, object] = {
@@ -804,7 +893,11 @@ def _run_analyze_stage(
         feed_findings_to_timeline(db)
         _prune_orphan_reviews(db)
     except BaseException as exc:
-        failure_status = "failed" if isinstance(exc, Exception) else "interrupted"
+        failure_status = (
+            "interrupted"
+            if isinstance(exc, InvestigationStopped) or not isinstance(exc, Exception)
+            else "failed"
+        )
         if rule_runs and rule_runs[-1]["execution"]["status"] == "running":
             rule_runs[-1]["execution"] = {"status": failure_status, "matches": None}
         _record_stage_receipt(
@@ -824,8 +917,10 @@ def _run_analyze_stage(
             progress_event(
                 "pipeline.analyze",
                 failure_status,
-                severity="error",
-                reason="rule_analysis_exception",
+                severity="warning" if failure_status == "interrupted" else "error",
+                reason="stop_requested"
+                if failure_status == "interrupted"
+                else "rule_analysis_exception",
                 stage="analyze",
                 summary="Rule analysis did not complete",
                 rule_id=current_rule_id,
@@ -887,6 +982,7 @@ def _run_investigate_stage(
     forensia_policy: CasePolicyInput | None = None,
     report_spec: str | Path | None = None,
     report_only: bool = False,
+    manual_resume: bool = False,
 ) -> None:
     """Run LLM-driven investigation loop (or skip if LLM not configured)."""
     if not (llm_base_url and model):
@@ -932,6 +1028,7 @@ def _run_investigate_stage(
                 forensia_policy=forensia_policy,
                 report_spec=report_spec,
                 report_only=report_only,
+                manual_resume=manual_resume,
             )
         )
     except LLMServerUnavailableError as exc:
@@ -1012,11 +1109,14 @@ def _run_evidence_stages(
         input_dir is None and raw_has_files and (rerun or not normalize_is_current)
     )
 
+    check_stop()
     if input_dir is not None:
         ingest_counts = _run_ingest_stage(case, db, input_dir, push_progress, status)
+        check_stop()
         normalized_this_run = _run_normalize_stage(
             case, db, rerun, ingest_counts, push_progress, status
         )
+        check_stop()
         _run_analyze_stage(
             case,
             db,
@@ -1030,6 +1130,7 @@ def _run_evidence_stages(
         normalized_this_run = _run_normalize_stage(
             case, db, True, {"new_files": 1}, push_progress, status
         )
+        check_stop()
         _run_analyze_stage(
             case,
             db,
@@ -1051,6 +1152,7 @@ def _run_evidence_stages(
             )
 
 
+@_execution_entry
 def run_investigation(
     case_dir: str | Path,
     *,
@@ -1064,19 +1166,22 @@ def run_investigation(
     rerun: bool = False,
     overwrite: bool = False,
     report_only: bool = False,
-    max_iter: int = 20,
-    max_queries_per_hypothesis: int = 5,
+    manual_resume: bool = False,
+    max_iter: int | None = None,
+    max_queries_per_hypothesis: int | None = None,
     no_progress_limit: int = 3,
     report_every_n_cycles: int = 3,
     report_max_queries_per_section: int = 0,
-    max_llm_calls: int = 0,
+    max_llm_calls: int | None = None,
     timezone: str = "",
     status: StatusCallback | None = None,
     pre_investigation: Callable[[Case, CaseDB], None] | None = None,
+    db: CaseDB | None = None,
+    stop_requested: Event | None = None,
 ) -> Path:
     """Run the investigation pipeline:
 
-    case open/init → optional ``--rerun`` reset → ingest → normalize → analyze
+    case open/init → optional ``rerun=True`` reset → ingest → normalize → analyze
     → ``investigator.investigate`` → report render, with Trace stage receipts
     and DB progress events. ``llm_base_url``/``model`` must already
     be resolved (env + adapter flags).
@@ -1089,7 +1194,7 @@ def run_investigation(
     ``case_root/FORENSIA.md``) adopted at session start and recorded there
     (V2-05). ``report_spec`` designates the one report input (an explicit
     REPORT.md path); with ``template_dir`` it is normally resolved from the
-    case-root REPORT.md or the packaged templates — ``--report-spec`` is the
+    case-root REPORT.md or the packaged templates — ``report_spec`` is the
     designated explicit source and both together are a caller error (V2-06).
     Data reads/writes stay on the existing owners — no separate stage state
     or service layer.
@@ -1100,6 +1205,14 @@ def run_investigation(
     case, including its policy and templates, before fresh initialization;
     every explicit input must be outside it. Use only on a stopped case.
     """
+    adopted = get_settings()
+    max_iter = adopted.max_iterations if max_iter is None else max_iter
+    max_queries_per_hypothesis = (
+        adopted.max_queries_per_hypothesis
+        if max_queries_per_hypothesis is None
+        else max_queries_per_hypothesis
+    )
+    max_llm_calls = adopted.max_llm_calls if max_llm_calls is None else max_llm_calls
     validate_declarations()
     if report_spec and template_dir:
         raise UsageError(
@@ -1107,15 +1220,13 @@ def run_investigation(
         )
     if report_only and (report_spec or template_dir):
         raise UsageError(
-            "report_only renders the adopted sections; use report --write to adopt a report input"
+            "report_only renders the adopted sections; use run_report(write=True) to adopt a report input"
         )
     if (report_spec or template_dir) and not (llm_base_url and model):
         raise UsageError("a report input requires an LLM-backed writing run")
     if overwrite:
         if rerun or report_only:
-            raise UsageError(
-                "--overwrite cannot be combined with --rerun or --report-only"
-            )
+            raise UsageError("overwrite cannot be combined with rerun or report_only")
         _overwrite_case(
             case_dir,
             input_dir,
@@ -1145,12 +1256,12 @@ def run_investigation(
                 status, "WARNING: knowledge directory contains no valid knowledge files"
             )
 
-    with CaseDB(case) as db:
-        forensia_policy = resolve_forensia_policy_input(
-            case,
-            forensia_md,
-            recorded_policy_exists=load_recorded_policy(db) is not None,
-        )
+    owns_database = db is None
+    with (
+        nullcontext(db) if db is not None else CaseDB(case) as db,
+        stop_scope(stop_requested),
+    ):
+        db.runtime_owned = True
         push_progress = progress_pusher(db)
         push_progress(
             progress_event(
@@ -1167,8 +1278,27 @@ def run_investigation(
             else None
         )
 
+        if owns_database and not report_only and llm_base_url and model:
+            forensia_policy = pin_investigation_inputs(
+                case,
+                db,
+                forensia_md=forensia_md,
+                report_spec=report_spec,
+                template_root=template_root,
+            )
+            # Session startup consumes the persisted revision, not the source file.
+            report_spec = None
+            template_root = case.report_template_dir
+        else:
+            forensia_policy = resolve_forensia_policy_input(
+                case,
+                forensia_md,
+                recorded_policy_exists=load_recorded_policy(db) is not None,
+            )
+
         if not report_only:
             _run_evidence_stages(case, db, input_dir, rerun, push_progress, status)
+            check_stop()
             if pre_investigation is not None:
                 pre_investigation(case, db)
             _run_investigate_stage(
@@ -1187,10 +1317,12 @@ def run_investigation(
                 max_llm_calls=max_llm_calls,
                 forensia_policy=forensia_policy,
                 report_spec=report_spec,
+                manual_resume=manual_resume,
             )
         return _run_report_stage(case, db, push_progress)
 
 
+@_execution_entry
 def run_report(
     case_dir: str | Path,
     *,
@@ -1203,6 +1335,8 @@ def run_report(
     model: str | None = None,
     report_max_queries_per_section: int = 0,
     status: StatusCallback | None = None,
+    db: CaseDB | None = None,
+    stop_requested: Event | None = None,
 ) -> tuple[Path, Path]:
     """Write a case report, optionally refreshing its sections through the
     existing report-only investigator path.
@@ -1215,15 +1349,15 @@ def run_report(
     case = Case.open(case_dir)
     if report_spec and template_dir:
         raise UsageError(
-            "--report-spec and --template-dir are alternative report inputs; pass one"
+            "report_spec and template_dir are alternative report inputs; pass one"
         )
     if not write and (report_spec or template_dir):
-        raise UsageError("--report-spec and --template-dir require --write")
+        raise UsageError("report_spec and template_dir require write=True")
     if write:
         llm_base_url, model = resolve_llm_config(llm_base_url, model)
         if not (llm_base_url and model):
             raise UsageError(
-                "Set LLM_BASE_URL and LLM_MODEL via .env file or CLI flags."
+                "Set LLM_BASE_URL and LLM_MODEL in .env or pass them from Python."
             )
 
     knowledge_path = resolve_knowledge_dir(knowledge_dir)
@@ -1238,7 +1372,11 @@ def run_report(
             )
 
     html_output = Path(output) if output is not None else None
-    with CaseDB(case) as db:
+    with (
+        nullcontext(db) if db is not None else CaseDB(case) as db,
+        stop_scope(stop_requested),
+    ):
+        db.runtime_owned = True
         push_progress = progress_pusher(db)
         ensure_report_output_paths(
             case,
@@ -1272,10 +1410,32 @@ def run_report(
                 no_progress_limit=1,
                 report_every_n_cycles=3,
                 report_max_queries_per_section=max_queries,
-                max_llm_calls=0,
+                max_llm_calls=get_settings().max_llm_calls,
                 report_spec=report_spec,
                 report_only=True,
             )
         markdown_path = case.reports_dir / "report.md"
         html_path = _run_report_stage(case, db, push_progress, html_output=html_output)
         return markdown_path, html_path
+
+
+@_execution_entry
+def run_add(
+    case_dir: str | Path,
+    input_dir: str | Path,
+    *,
+    db: CaseDB | None = None,
+    stop_requested: Event | None = None,
+) -> dict[str, Any]:
+    """Add evidence through the existing normalization and invalidation owners."""
+    case = Case.open(case_dir)
+    with (
+        nullcontext(db) if db is not None else CaseDB(case) as db,
+        stop_scope(stop_requested),
+    ):
+        db.runtime_owned = True
+        _run_evidence_stages(case, db, str(input_dir), False, progress_pusher(db), None)
+        return {
+            "normalize_revision": _stage_receipt(db, "pipeline-normalize"),
+            "analysis_revision": _stage_receipt(db, "pipeline-analyze"),
+        }

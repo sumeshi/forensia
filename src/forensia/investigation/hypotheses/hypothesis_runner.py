@@ -11,6 +11,7 @@ from typing import Any
 from forensia.context.case_profile import CaseEvidenceProfile, observed_event_ids
 from forensia.context.retrieval import evaluate_retrieval
 from forensia.core.case import Case
+from forensia.core.control import check_stop
 from forensia.core.log import log as _log
 from forensia.core.progress_event import progress_event
 from forensia.core.session import (
@@ -1026,6 +1027,7 @@ async def _investigate_one_hypothesis(
     )
     limit = query_limit if query_limit is not None else max_queries_per_hypothesis
     while rs.query_index < limit:
+        check_stop()
         rs.query_index += 1
         query_index = rs.state.focus_depth = rs.query_index
         flow = await _phase_plan(rs)

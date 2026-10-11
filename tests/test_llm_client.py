@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from copy import deepcopy
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import httpx
@@ -77,6 +78,42 @@ def test_investigation_scope_closes_sync_and_outage_probe_clients() -> None:
     assert not any(key[0] == "scope-test" for key in llm_client._ASYNC_CLIENTS)
 
 
+def test_provider_error_does_not_persist_api_key(tmp_path) -> None:
+    from forensia.config import Settings, settings_scope
+    from forensia.core.case import Case
+    from forensia.db.database import CaseDB
+    from forensia.llm.telemetry import (
+        LLMTelemetry,
+        reset_active_telemetry,
+        set_active_telemetry,
+    )
+
+    client = _FakeClient(
+        [_response(401, text="Authorization Bearer secret-key rejected")]
+    )
+    with CaseDB(Case.init(tmp_path)) as db:
+        token = set_active_telemetry(LLMTelemetry(db, session_id="secret-test"))
+        try:
+            with (
+                settings_scope(Settings(llm_api_key="secret-key")),
+                patch.object(llm_client, "_get_http_client", return_value=client),
+            ):
+                with pytest.raises(httpx.HTTPStatusError):
+                    llm_client.chat_completion(
+                        [{"role": "user", "content": "return json"}],
+                        model="local-model",
+                        base_url="http://llama.test",
+                    )
+            summary, body = db.execute(
+                "SELECT error_body_summary, response_body FROM trace.llm_provider_attempts"
+            ).fetchone()
+        finally:
+            reset_active_telemetry(token)
+        for value in (summary, body):
+            assert "secret-key" not in value
+            assert "[redacted]" in value
+
+
 def test_chat_completion_retries_llama_strict_schema_failure_with_compatible_schema() -> (
     None
 ):
@@ -95,7 +132,11 @@ def test_chat_completion_retries_llama_strict_schema_failure_with_compatible_sch
 
     with (
         patch.object(llm_client, "_get_http_client", return_value=client),
-        patch.object(llm_client.settings, "llm_api_key", "test-token"),
+        patch.object(
+            llm_client,
+            "get_settings",
+            return_value=SimpleNamespace(llm_api_key="test-token"),
+        ),
     ):
         result = llm_client.chat_completion(
             [{"role": "user", "content": "return json"}],

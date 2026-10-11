@@ -6,65 +6,40 @@
 
 Python 3.14以降とuvを使います。ソースチェックアウトで`uv sync --locked`を実行し、依存関係を揃えてください。ネイティブパーサーの配布wheelと、LLMサーバーを動かすハードウェアは別途必要です。開発依存にはSigma変換用のpySigmaも含みます。
 
-LLM接続は`.env`で設定します。`LLM_BASE_URL`は`/v1`を含まないサーバーのルートURL、`LLM_MODEL`は実際にロードしたモデルIDです。認証が必要なら`LLM_API_KEY`も指定します。`--llm-base-url`と`--model`は環境変数より優先されます。
+LLM接続は`.env`で設定します。`LLM_BASE_URL`は`/v1`を含まないサーバーのルートURL、`LLM_MODEL`は実際にロードしたモデルIDです。認証が必要なら`LLM_API_KEY`も指定します。調査開始時に設定を検証し、Runtimeへ渡します。
 
-エンドポイントとモデルが揃っていなければ、`investigate`は決定論的な証拠処理だけを行います。設定済みのサーバーが利用できない場合は、上限付きの復旧待機に入ります。実験前に接続先と予算を確認してください。
+`investigate`はエンドポイントとモデルを必須とします。設定済みのサーバーが利用できない場合は、上限付きの復旧待機に入ります。実験前に接続先と予算を確認してください。
 
 `.env`、入力証拠、ケース、生成物を公開しないでください。Traceにも証拠由来のプロンプトと応答を保存します。依存関係とモデルを事前に用意すれば、ローカルサーバーでの調査はオフライン実行できます。
 
-## 開発版のCLIと設定
+## CLIと設定
 
-現在は調査エンジンと状態管理の整理段階で、Runtime・attach・完成版TUIへの移行は未完了です。以下は移行中のCLIです。ソースチェックアウトでは`forensia`の前に`uv run`を付けてください。オプションの一覧は`uv run forensia investigate --help`と`uv run forensia report --help`、環境変数は[.env.example](.env.example)と[config.py](src/forensia/config.py)を参照します。
+公開CLIは新規調査の`investigate`と既存ケースの`attach`です。ソースチェックアウトでは`forensia`の前に`uv run`を付けてください。オプションの一覧は`uv run forensia investigate --help`、環境変数は[.env.example](.env.example)と[config.py](src/forensia/config.py)を参照します。開発用の健全性確認は`uv run python -m forensia.cli.doctor`で実行します。
 
 ```bash
-# 新規ケースを開始する、または追加の入力を取り込んで調査する。
+# 新規ケースを開始してTUIへ接続する。
 forensia investigate ./input --out ./case001
 
-# 検証用：ケース全体を削除し、同じ出力先へ原本から作り直す。
+# Runtimeを背景で起動して端末へ戻る。
+forensia investigate ./input --out ./case001 --background
+
+# 停止済みの既存ケースを明示的に置き換える。
 forensia investigate ./input --out ./case001 --overwrite
 
-# 既存ケースと、受け付け済みの調査作業から再開する。
-forensia investigate --out ./case001 --max-iter 50
-
-# 追加アーティファクトを取り込み、次の調査実行で正規化・分析する。
-forensia add ./case001 ./new-input
-forensia investigate --out ./case001
-
-# LLMを呼ばず、既存の報告書セクションを出力する。
-forensia report ./case001
-
-# LLMで報告書セクションを更新してから出力する。
-forensia report ./case001 --write
-
-# 実際のオプション仕様を確認する。
-forensia investigate --help
-forensia report --help
+forensia investigate ./input --out ./case001 \
+  --system-prompt ./FORENSIA.md --template ./REPORT.md
+forensia attach ./case001
 ```
 
-`report --output <path>`はHTMLの出力先を指定します。Markdownの報告書は`case001/reports/report.md`に残ります。`investigate --report-only`は調査を省略し、既存の報告書を出力します。報告書の生成は、仮説の確定や調査完了の宣言を行いません。
+調査サイクル数やモデルの接続先などの細かな設定は`.env`で管理します。`--out`はケースの保存先です。`--background`はRuntimeを起動して端末へ戻り、`attach`で後から同じケースを開けます。通常起動ではTUIを接続しますが、端末を閉じてもRuntimeは停止しません。保存済みケースを`investigate`へ渡しても再開しません。閲覧や操作には`attach`を使います。入力証拠と明示指定したMarkdown文書はケース外に置いてください。
 
-| 調査オプション | 既定値・動作 |
-|---|---|
-| `--out` | 必須。DB、raw、履歴、報告書を含むケース全体の保存先。報告書のファイル名ではない |
-| `--max-iter` | 調査サイクル数`20` |
-| `--max-queries-per-hypothesis` | 選択した仮説ごとのクエリ数`5` |
-| `--no-progress-limit` | 意味上の進展がないサイクル数`3` |
-| `--report-every-n-cycles` | `3`。報告書セクションの定期更新間隔 |
-| `--report-max-queries-per-section` | `0`なら環境変数の設定を使う |
-| `--max-llm-calls` | `0`ならセッションの呼出し上限なし。正の値なら各論理呼出しの前に確認し、コンテキスト縮約や失敗した呼出しも数える |
-| `--timezone` | `America/New_York`などのIANA名。ケースのmanifestより優先される |
-| `--forensia-md`, `--report-spec`, `--knowledge` | 後述するMarkdown入力の明示指定 |
-| `--template-dir` | 既存の報告書ディレクトリ入力。`--report-spec`とは排他的 |
-| `--rerun` | 現在のケースのテーブルと生成済みの実行時出力を破壊的にリセットし、保持したrawレコードから再正規化する |
-| `--overwrite` | ケースディレクトリ全体を削除し、指定した入力ディレクトリから新規作成する |
+`attach`のTUIは保存済みケースの状態と進捗イベントを読み取り、Runtimeが動作中なら操作を送ります。`/stop`、`/resume`、`/add <input_dir>`、`/report`、`/report --write`と、通常文のsteeringを入力できます。`/report`は採用済みsectionを表示用に出力し、`/report --write`はLLMでsectionを更新して書き込みます。`/detail <kind> <id>`で詳細を開き、引数なしの`/detail`で閉じます。`/older`と`/newer`はイベント履歴を移動し、`/detach`は画面だけを閉じます。
 
-通常の再開ではケース状態を保持します。調査中のCtrl-Cは、エンジンが次に中断を扱う境界での停止を要求します。現在の処理が終わるまで待つ場合があります。セッションは終了理由を記録し、後の`investigate`は永続化された作業から再開します。
+停止済みケースでは`/resume`がRuntimeを起動して調査を再開します。`/add`、`/report`、`/report --write`、steeringはRuntimeをアイドル状態で起動してから、その操作だけを送ります。`/stop`は停止済みのままです。Runtimeが接続中に失われた場合、TUIは保存済み状態を表示し、操作を新しいRuntimeへ自動送信しません。再接続するには`attach`を開き直してください。
 
-再開の判定には、Traceのステージreceiptと、有効なsourceの正規化状態を使います。パーサー実装や依存関係が変われば正規化を、ルール定義やケースの抑制設定が変われば分析を再実行します。sourceの状態が欠落または失敗している場合、正規化の完了条件を満たしません。
+`--overwrite`はケースの全ファイルを削除して新規作成する操作です。調査中・操作適用中・受付済み操作のあるRuntimeでは拒否します。アイドルのRuntimeは終了させ、ケース外のwriter lockを取得してから削除します。入力ディレクトリとケースディレクトリの重なり、ケースへのシンボリックリンク、manifestのない既存ディレクトリ、現在の作業ディレクトリ自身とその親も削除前に拒否します。
 
-`--rerun`は、対応するスキーマのケース内で調査をやり直す機能です。正規化済みの状態、調査・報告書の状態、入力採用receipt、イベント履歴を消去し、有効なsource登録とrawレコードを保持します。スキーマのバージョンは[schema.py](src/forensia/db/schema.py)を参照してください。非対応のスキーマや旧split DB形式は、書込み前に拒否し、`--rerun`でも更新できません。古いケースは保全し、新しいケースに取得済みの原本を再取込みしてください。
-
-`--overwrite`は検証用の完全初期化です。停止済みのケースに対して使ってください。DB、raw、報告書、履歴に加え、ケース内の`FORENSIA.md`、`REPORT.md`、テンプレートや任意のファイルも削除します。原本と明示指定した入力文書はケース外へ置きます。入力ディレクトリとケースディレクトリの重なり、ケースへのシンボリックリンク、manifestのない既存ディレクトリ、現在の作業ディレクトリ自身とその親は削除前に拒否します。`--rerun`や`--report-only`とは併用できません。
+Pythonからも[Runtime API](src/forensia/runtime/__init__.py)の`start_runtime(case_dir, input_dir=...)`と`RuntimeClient(case_dir)`を使えます。`request()`の操作契約は[ipc.py](src/forensia/runtime/ipc.py)が所有します。同じcommand IDの再送は保存済みreceiptを返し、別の内容への使い回しは拒否します。同期スクリプト用の[pipeline.py](src/forensia/pipeline.py)も同じwriter lock、設定検証、検索・判定・報告の所有者を通ります。
 
 ## Markdown入力
 
@@ -72,7 +47,7 @@ forensia report --help
 
 ### FORENSIA.md: 調査方針
 
-ケースのルートに`FORENSIA.md`を置くか、ケースの開始・再開時に`--forensia-md <path>`を指定します。エンジンは親ディレクトリや証拠ディレクトリから指示を探しません。
+ケースのルートに`FORENSIA.md`を置くか、新規調査時に`--system-prompt <path>`を指定します。エンジンは親ディレクトリや証拠ディレクトリから指示を探しません。
 
 既定の調査では、特定のインシデント種別を仮定しません。ケースの目的と範囲は`FORENSIA.md`に記述してください。
 
@@ -94,17 +69,17 @@ forensia report --help
 
 本文全体を、Gapの特定、仮説の作成、クエリ計画への指示として使います。英語の`Objective`見出し直下の最初の段落は、既存のobjective admissionへの入力にもなります。`Objective`がなければ`Scope`を使います。他の見出しは指針として扱います。ファイルを編集しても、受け付け済みの作業の撤回、Specの書換え、判定の変更は行いません。
 
-採用時には、本文、SHA-256、入力元、受け取るroleを、Traceの`forensia-md`ステップに保存します。明示指定なしの再開では、ファイルが変わったり消えたりしても記録済みの方針を再利用し、差異を知らせます。編集を明示的に採用する場合:
+採用時には、本文、SHA-256、入力元、受け取るroleを、Traceの`forensia-md`ステップに保存します。明示指定なしの再開では、ファイルが変わったり消えたりしても記録済みの方針を再利用し、差異を知らせます。ケースルートのファイルを変更しただけでは再採用されません。既存ケースで明示的に採用する場合は、Python APIに`forensia_md`を渡します:
 
 ```bash
-forensia investigate --out ./case001 --forensia-md ./case001/FORENSIA.md
+uv run python -c 'from forensia.pipeline import run_investigation; run_investigation("./case001", forensia_md="./FORENSIA.md")'
 ```
 
-採用した方針は、そのセッション中は固定されます。初回採用または明示的な再読込みで、設定したシステムプロンプト文字数予算の半分を超える入力は、理由付きで拒否します。固定のrole・出力スキーマと、Evidence/Assessment/Sufficiency/Settlementの検査は引き続き適用されます。[case_policy.py](src/forensia/investigation/case_policy.py)を参照してください。
+採用した方針は、そのセッション中は固定されます。初回採用または明示的な再読込みで、設定したシステムプロンプト文字数予算の半分を超える入力は、理由付きで拒否します。Runtimeのsteerも同じ文字数予算を適用します。固定のrole・出力スキーマと、Evidence/Assessment/Sufficiency/Settlementの検査は引き続き適用されます。[case_policy.py](src/forensia/investigation/case_policy.py)を参照してください。
 
 ### REPORT.md: 報告書仕様
 
-ケースのルートに`REPORT.md`を置くか、`investigate`または`report --write`に`--report-spec <path>`を指定します。既存のsection、Claim、rendererの経路を使います。
+ケースのルートに`REPORT.md`を置くか、新規調査時に`--template <path>`を指定します。既存のsection、Claim、rendererの経路を使います。
 
 ```markdown
 ---
@@ -130,26 +105,19 @@ instructions: |
 
 少なくとも1つの`#`セクションが必要です。最初のセクションの前に本文を置いたり、正規化後のslugが重複する見出しを使ったりすることはできません。sectionのkeyは見出しの順序と文字列から決まるため、名前や順序の変更は報告書revision内での識別子も変えます。決定論的なblockには、既存のパーサーが`evidence_keypoints`、`mode`、`builder`、`answer_id`、`answer_spec`、`question`のhintを受け付けます。定義は[template_parsing.py](src/forensia/report/sections/template_parsing.py)と[同梱テンプレート](src/forensia/data/report/)にあります。
 
-初回採用または明示的な再読込みでの優先順位は、明示した`--report-spec`、明示した`--template-dir`、ケースのルートにある`REPORT.md`、ケース内の同梱テンプレートの順です。明示的な報告書入力には、LLMを使う書込み実行が必要です。編集した仕様を採用する場合:
+初回採用時は、`--template`で明示したファイル、ケースのルートにある`REPORT.md`、ケース内の同梱テンプレートの順で使います。明示的な報告書入力には、LLMを使う書込み実行が必要です。編集した仕様を採用する場合:
 
 ```bash
-forensia report ./case001 --write --report-spec ./case001/REPORT.md
+forensia investigate ./input --out ./case001 --template ./REPORT.md
 ```
 
 明示指定なしの再開では、Traceの`report-input`ステップに記録した正規化済みsectionを使い、ファイルの変更を知らせます。通常の`report`は採用済みのsectionを出力します。明示的な再読込み後も古いsectionは保存されますが、有効な報告書からは除外されます。報告書の要件を変えても、調査作業は解決済みになりません。
-
-現在はディレクトリ形式の入力も利用できます。
-
-```bash
-forensia templates-export ./my-templates
-forensia report ./case001 --write --template-dir ./my-templates
-```
 
 番号付きMarkdownファイルでsectionを定義し、`_formats/report.yaml`で決定論的な文言とプレビューの上限を設定します。入力の`case001/REPORT.md`と出力の`case001/reports/report.md`は別ファイルです。出力先の検査で入力への上書きを拒否します。[report_input.py](src/forensia/report/sections/report_input.py)を参照してください。
 
 ### Knowledge: ローカルの調査知識
 
-`--knowledge`でディレクトリを渡します。[knowledge.sample/](knowledge.sample/)に例があります。frontmatterに`type: knowledge`を持つMarkdownだけを索引化します。
+Knowledgeの選択APIはfrontmatterに`type: knowledge`を持つMarkdownを索引化します。[knowledge.sample/](knowledge.sample/)に入力例があります。これは公開CLIのオプションではありません。
 
 ```markdown
 ---
@@ -164,13 +132,9 @@ tags: [windows, logon, rdp]
 レコードを関連付ける前に、host、account、送信元アドレス、時刻を比較する。
 ```
 
-```bash
-forensia investigate --out ./case001 --knowledge ./knowledge.sample
-```
-
 選択は決定論的に行います。tagと検索語で文書を絞り、プロンプト予算内で関連する`##`セクションを選びます。振り分けのための追加LLM呼出しはありません。ファイルごとに1つの話題を扱い、`description`と`tags`を付けてください。`##`セクションがあるファイルでは冒頭の段落を一緒に渡さないため、必須の前提はdescriptionか各sectionに記載してください。
 
-Knowledgeは参考資料であり、証拠やツールの実行許可ではありません。schema card、SQL recipe、phase playbook、Knowledgeの抜粋は、現在の作業と利用可能なcapabilityに応じて開示します。現在のKnowledge索引は実行ごとにリセットされますが、本文はディスクから遅延読込みされます。FORENSIA.mdやREPORT.mdのような、**記録済みrevisionを再開時に再利用する契約はまだありません**。再現性を調べる実験では、実行中にフォルダを変更しないでください。[external.py](src/forensia/knowledge/external.py)と[retrieval.py](src/forensia/knowledge/retrieval.py)を参照してください。
+Knowledgeは参考資料であり、証拠やツールの実行許可ではありません。schema card、SQL recipe、phase playbook、Knowledgeの抜粋は、現在の作業と利用可能なcapabilityに応じて開示します。現在のKnowledge索引は実行ごとにリセットされますが、本文はディスクから遅延読込みされます。FORENSIA.mdとREPORT.mdは採用した内容とrevisionをTraceに保存し、再開時に記録済み内容を再利用します。再現性を調べる実験では、実行中にフォルダを変更しないでください。[external.py](src/forensia/knowledge/external.py)と[retrieval.py](src/forensia/knowledge/retrieval.py)を参照してください。
 
 ## 実装の配置
 
@@ -197,7 +161,7 @@ Evidence、Case State、Trace Stateは`db/case.duckdb`に保存します。Evide
 
 Working Stateは作業ごとにDBから直接構成し、生成したMarkdownを再読込みしません。旧ケースの`memory/`には人のメモが含まれ得るため、ケースの保全時にはそのまま残してください。`raw/`はパーサー出力のJSONLであり、取得した原本は別途保存します。通常のFinding保存先はDBです。
 
-Phase 1の表示試作は`uv run python scripts/v2_tui_preview.py ./case001`で確認できます。終了済みの現行ケースをread-onlyで開き、Headerと保存済みイベントを表示します。Promptは表示のみで、Runtimeへの接続や操作はまだありません。実行中のwriterがあるケースは開けません。
+TUIはTextualで構成し、Headerにケース状態・仮説status・作業時間・LLM使用状況を、中央に永続イベント、下部に入力欄を表示します。RuntimeへのIPCはPOSIXではUnix domain socket、Windowsではnamed pipeを使います。Windowsでの実機検証はまだ行っていません。TUIはRuntimeのcontroller claimを取得して操作を送信し、終了時にclaimを解放します。停止済みケースの制御lockもケース外に置き、複数TUIから同時に操作しないようにします。
 
 細かな列、応答形式、判定条件は、次の実行可能な契約を正本にします。
 
@@ -262,10 +226,10 @@ uv run ruff format --check src tests scripts
 uv run python scripts/check_imports.py
 uv run python scripts/audit_schema_coverage.py --strict
 uv run python scripts/regenerate_playbook.py --check
-uv run forensia doctor
+uv run python -m forensia.cli.doctor
 ```
 
-`doctor`と`templates-export`は、トップレベルのhelpには表示しない保守用コマンドです。doctorはインストール済みの宣言、同梱した報告書テンプレート、使い捨てのCase/Traceへの永続化を検査します。ソースチェックアウト、テスト、開発ツールは不要です。CIは上記の開発検査を明示的に実行し、doctorで代替しません。
+doctorはインストール済みの宣言、同梱した報告書テンプレート、使い捨てのCase/Traceへの永続化を検査します。ソースチェックアウト、テスト、開発ツールは不要です。CIは上記の開発検査を明示的に実行し、doctorで代替しません。
 
 pytestはオフラインで、使い捨てのケースに対して実行してください。モデル・プロバイダーとの境界をmockし、実際の保存処理、CLIの動作、生成物を確認します。Evidence/provenance、Assessment/Sufficiency/Settlement、実行上限、作業の受付、停止、再開のテストを保持します。各不変条件には主となるテストを1つ定めます。廃止したAPIのテストは削除し、実装の形を固定するだけの定数、SQL文字列、内部counter、文章のassertionを避けてください。実モデルによる品質・性能実験はpytestの外で行います。
 

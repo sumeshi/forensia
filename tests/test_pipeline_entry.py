@@ -1,7 +1,7 @@
 """Kernel entry boundary (V2-02) and the FORENSIA.md policy input seam (V2-05).
 
-The display-agnostic pipeline entry is what both the CLI and a future TUI
-import to run a case. Importing it must not require a terminal presentation
+The display-agnostic pipeline entry is shared by Runtime and Python callers.
+Importing it must not require a terminal presentation
 library or an HTTP server: those belong to the display adapters.
 
 The V2-05 tests drive the real pipeline entry (and the real CLI adapter)
@@ -22,6 +22,8 @@ import tempfile
 from contextlib import ExitStack
 from pathlib import Path
 from unittest import mock
+
+import pytest
 
 FORBIDDEN = ("typer", "click", "rich", "fastapi", "uvicorn")
 
@@ -69,6 +71,66 @@ def test_missing_manifest_does_not_initialize_over_existing_case_database() -> N
 
         assert database.read_bytes() == original
         assert not (case_dir / "manifest.yaml").exists()
+
+
+def test_direct_python_stop_request_and_signal_handler_restore(tmp_path) -> None:
+    import signal
+
+    from forensia.core.control import InvestigationStopped, check_stop, stop_scope
+    from forensia.pipeline import _execution_entry
+
+    original = signal.getsignal(signal.SIGINT)
+
+    @_execution_entry
+    def interrupted(case_dir, *, stop_requested, max_llm_calls):
+        from forensia.config import get_settings
+
+        assert get_settings().max_llm_calls == max_llm_calls
+        with stop_scope(stop_requested):
+            signal.raise_signal(signal.SIGINT)
+            check_stop()
+
+    with pytest.raises(InvestigationStopped):
+        interrupted(tmp_path / "case", max_llm_calls=7)
+    assert signal.getsignal(signal.SIGINT) is original
+
+
+def test_python_entry_pins_markdown_before_evidence_work(tmp_path, monkeypatch) -> None:
+    import forensia.pipeline as pipeline
+    from forensia.investigation.case_policy import load_recorded_policy
+    from forensia.report.sections.report_input import decide_report_sources
+
+    inputs = tmp_path / "input"
+    inputs.mkdir()
+    policy = tmp_path / "FORENSIA.md"
+    policy.write_text("# Objective\n\nPreserve this objective.", encoding="utf-8")
+    report = tmp_path / "REPORT.md"
+    report.write_text("# Original section\n\nPreserve this question.", encoding="utf-8")
+
+    def evidence_work(*_args):
+        policy.unlink()
+        report.unlink()
+
+    def investigate(case, db, _base_url, _model, root, *_args, **kwargs):
+        assert kwargs["manual_resume"] is True
+        assert kwargs["forensia_policy"].body.endswith("Preserve this objective.")
+        assert load_recorded_policy(db)["body"].endswith("Preserve this objective.")
+        decision = decide_report_sources(case, db, root, kwargs["report_spec"])
+        assert decision.sections[0].section_key == "01_original_section"
+        assert "Preserve this question." in decision.sections[0].body
+
+    monkeypatch.setattr(pipeline, "_run_evidence_stages", evidence_work)
+    monkeypatch.setattr(pipeline, "_run_investigate_stage", investigate)
+    output = pipeline.run_investigation(
+        tmp_path / "case",
+        input_dir=str(inputs),
+        llm_base_url="http://127.0.0.1:1",
+        model="fixed-model",
+        forensia_md=policy,
+        report_spec=report,
+        manual_resume=True,
+    )
+    assert output.is_file()
 
 
 def test_mft_only_resume_uses_normalization_receipt_and_parser_revision() -> None:
@@ -147,6 +209,35 @@ def test_mft_only_resume_uses_normalization_receipt_and_parser_revision() -> Non
                 assert len(calls) == 3 and calls[-1] is None, calls
 
 
+def test_resume_stop_after_raw_normalization_preserves_findings(tmp_path, monkeypatch):
+    from threading import Event
+
+    import forensia.pipeline as pipeline
+    from forensia.core.case import Case
+    from forensia.core.control import InvestigationStopped
+    from forensia.db.database import CaseDB
+
+    case = Case.init(tmp_path / "case")
+    (case.raw_dir / "pending.jsonl").write_text("{}\n", encoding="utf-8")
+    with CaseDB(case) as db:
+        db.execute(
+            "INSERT INTO findings (finding_id, rule_id) VALUES ('retained', 'old-rule')"
+        )
+    stop = Event()
+
+    def normalize(*_args):
+        stop.set()
+        return True
+
+    monkeypatch.setattr(pipeline, "_run_normalize_stage", normalize)
+    with pytest.raises(InvestigationStopped):
+        pipeline.run_investigation(case.path, stop_requested=stop)
+    with CaseDB(case, read_only=True) as db:
+        assert db.execute("SELECT finding_id FROM findings").fetchall() == [
+            ("retained",)
+        ]
+
+
 def _stub_llm(captured: list[tuple[str, str]]):
     """Deterministic offline LLM boundary that records every prompt it sees.
 
@@ -198,10 +289,7 @@ def test_case_root_forensia_md_is_adopted_recorded_and_routed_to_investigation_r
     None
 ):
     """V2-05 real CLI path with a normalized match: adoption and prompt routing."""
-    from typer.testing import CliRunner
-
     from forensia import pipeline as pipeline_module
-    from forensia.cli import app as cli_app
     from forensia.core.case import Case
     from forensia.db.database import CaseDB
     from forensia.investigation import case_policy as case_policy_module
@@ -247,28 +335,16 @@ def test_case_root_forensia_md_is_adopted_recorded_and_routed_to_investigation_r
                 "seeded candidate finding fixture",
             )
 
-        runner = CliRunner()
         with ExitStack() as stack:
             for cm in _stub_llm(captured):
                 stack.enter_context(cm)
-            result = runner.invoke(
-                cli_app.app,
-                [
-                    "investigate",
-                    str(input_dir),
-                    "--out",
-                    str(case_dir),
-                    "--llm-base-url",
-                    "http://127.0.0.1:1",
-                    "--model",
-                    "offline-stub",
-                    "--max-iter",
-                    "1",
-                ],
+            pipeline_module.run_investigation(
+                case_dir,
+                input_dir=str(input_dir),
+                llm_base_url="http://127.0.0.1:1",
+                model="offline-stub",
+                max_iter=1,
             )
-        if result.exception is not None:
-            raise result.exception
-        assert result.exit_code == 0, result.output
 
         case = Case.open(case_dir)
         with CaseDB(case) as db:
@@ -428,10 +504,11 @@ def test_resume_keeps_recorded_policy_and_explicit_path_adopts_edited_body() -> 
             assert record3["policy_state"] == "adopted"
             assert "objective-marker-beta" in record3["body"]
 
-            # A large edited file cannot block a pinned resume, while an
-            # explicit reload must still reject content that cannot fit.
+            # A changed file is pinned, but the recorded revision must still
+            # fit the current session budget; explicit reload validates its body.
             with mock.patch(
-                "forensia.pipeline.get_system_prompt_budget_chars", return_value=10
+                "forensia.investigation.case_policy.get_system_prompt_budget_chars",
+                return_value=10,
             ):
                 assert (
                     resolve_forensia_policy_input(
@@ -447,6 +524,9 @@ def test_resume_keeps_recorded_policy_and_explicit_path_adopts_edited_body() -> 
                     pass
                 else:
                     raise AssertionError("oversized explicit reload was accepted")
+                with pytest.raises(ValueError, match="budget allows 5 chars"):
+                    run_investigate(db, None)
+                assert "objective-marker-beta" in latest_record()["body"]
 
             # Removing the file also keeps the last adopted revision on resume.
             policy_path.unlink()
@@ -466,16 +546,17 @@ def test_resume_keeps_recorded_policy_and_explicit_path_adopts_edited_body() -> 
             sessions = db.execute(
                 "SELECT status FROM trace.investigation_sessions ORDER BY session_id"
             ).fetchall()
-            assert all(row[0] in {"completed", "stopped"} for row in sessions), sessions
+            assert all(
+                row[0] in {"completed", "stopped", "failed"} for row in sessions
+            ), sessions
+            assert sum(row[0] == "failed" for row in sessions) == 1, sessions
 
 
 def test_oversized_forensia_md_policy_refuses_with_reason() -> None:
     """An oversized policy refuses the run with the reason and adopts nothing."""
-    from typer.testing import CliRunner
-
-    from forensia.cli import app as cli_app
     from forensia.core.case import Case
     from forensia.db.database import CaseDB
+    from forensia.pipeline import UsageError, run_investigation
 
     with tempfile.TemporaryDirectory() as tmpdir:
         case_dir = Path(tmpdir) / "case"
@@ -484,10 +565,9 @@ def test_oversized_forensia_md_policy_refuses_with_reason() -> None:
         oversized = "P" * (_POLICY_BUDGET_SMALL + 50)
         (case_dir / "FORENSIA.md").write_text(oversized, encoding="utf-8")
 
-        runner = CliRunner()
         with (
             mock.patch(
-                "forensia.pipeline.get_system_prompt_budget_chars",
+                "forensia.investigation.case_policy.get_system_prompt_budget_chars",
                 return_value=2 * _POLICY_BUDGET_SMALL,
             ),
             mock.patch(
@@ -495,35 +575,23 @@ def test_oversized_forensia_md_policy_refuses_with_reason() -> None:
                 side_effect=AssertionError("LLM must not be called"),
             ),
         ):
-            result = runner.invoke(
-                cli_app.app,
-                [
-                    "investigate",
-                    str(input_dir),
-                    "--out",
-                    str(case_dir),
-                    "--llm-base-url",
-                    "http://127.0.0.1:1",
-                    "--model",
-                    "offline-stub",
-                ],
-            )
-        assert result.exit_code == 2, result.output
-        assert "Shorten the policy" in result.output, result.output
+            with pytest.raises(UsageError, match="Shorten the policy"):
+                run_investigation(
+                    case_dir,
+                    input_dir=str(input_dir),
+                    llm_base_url="http://127.0.0.1:1",
+                    model="offline-stub",
+                )
 
         # An explicitly missing path fails the same explicit way.
-        missing = runner.invoke(
-            cli_app.app,
-            [
-                "investigate",
-                "--out",
-                str(case_dir),
-                "--forensia-md",
-                str(case_dir / "nope.md"),
-            ],
-        )
-        assert missing.exit_code == 2, missing.output
-        assert "policy file not found" in missing.output, missing.output
+        with pytest.raises(UsageError, match="policy file not found"):
+            run_investigation(
+                case_dir,
+                input_dir=str(input_dir),
+                llm_base_url="http://127.0.0.1:1",
+                model="offline-stub",
+                forensia_md=case_dir / "nope.md",
+            )
 
         # Nothing was recorded: the unusable policy never reached the loop.
         case = Case.open(case_dir)
@@ -542,9 +610,7 @@ def test_knowledge_index_binds_to_the_run_input_not_the_process() -> None:
     run (no flag) must disclose nothing of the first case — the per-invocation
     reset replaces the index, so cross-case knowledge cannot leak.
     """
-    from typer.testing import CliRunner
-
-    from forensia.cli import app as cli_app
+    from forensia.pipeline import run_investigation
 
     knowledge_body = (
         "---\ntype: knowledge\ntitle: Execution refutation manual\n"
@@ -571,36 +637,26 @@ def test_knowledge_index_binds_to_the_run_input_not_the_process() -> None:
         case_a, input_a = make_case(tmp, "case_a")
         case_b, input_b = make_case(tmp, "case_b")
 
-        runner = CliRunner()
         captured: list[tuple[str, str]] = []
 
-        def run(case_dir: Path, input_dir: Path, extra: list[str]) -> None:
+        def run(
+            case_dir: Path, input_dir: Path, knowledge: Path | None
+        ) -> list[tuple[str, str]]:
             first = len(captured)
             with ExitStack() as stack:
                 for cm in _stub_llm(captured):
                     stack.enter_context(cm)
-                result = runner.invoke(
-                    cli_app.app,
-                    [
-                        "investigate",
-                        str(input_dir),
-                        "--out",
-                        str(case_dir),
-                        "--llm-base-url",
-                        "http://127.0.0.1:1",
-                        "--model",
-                        "offline-stub",
-                        "--max-llm-calls",
-                        "12",
-                        *extra,
-                    ],
+                run_investigation(
+                    case_dir,
+                    input_dir=str(input_dir),
+                    llm_base_url="http://127.0.0.1:1",
+                    model="offline-stub",
+                    max_llm_calls=12,
+                    knowledge_dir=knowledge,
                 )
-            if result.exception is not None:
-                raise result.exception
-            assert result.exit_code == 0, result.output
             return captured[first:]
 
-        prompts_a = run(case_a, input_a, ["--knowledge", str(knowledge_dir)])
+        prompts_a = run(case_a, input_a, knowledge_dir)
         assert prompts_a, "no prompts captured for run A"
         # Run A discloses the manual: the sentinel reaches the plan prompts of
         # the investigation roles — and appears once (no duplicate injection).
@@ -614,7 +670,7 @@ def test_knowledge_index_binds_to_the_run_input_not_the_process() -> None:
 
         # Run B in the same process, with no knowledge input: the previous
         # case's knowledge index must not leak into its prompts.
-        prompts_b = run(case_b, input_b, [])
+        prompts_b = run(case_b, input_b, None)
         assert prompts_b, "no prompts captured for run B"
         leaks = [
             (phase, system[:120])

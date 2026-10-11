@@ -150,20 +150,13 @@ class TestEnforceSystemBudgetCompaction:
             assert "</ORG_KNOWLEDGE>" in result
 
     def test_real_section_plan_prompt_respects_default_budget(self) -> None:
-        import os
-
-        from forensia.config import reload_settings
+        from forensia.config import Settings, settings_scope
         from forensia.context.prompt_context import _enforce_system_budget
         from forensia.report.sections.prompts import (
             build_section_agent_plan_messages,
         )
 
-        old_budget = os.environ.get("FORENSIA_SYSTEM_PROMPT_BUDGET_CHARS")
-        old_total = os.environ.get("FORENSIA_PROMPT_BUDGET_TOKENS")
-        os.environ["FORENSIA_SYSTEM_PROMPT_BUDGET_CHARS"] = "0"
-        os.environ["FORENSIA_PROMPT_BUDGET_TOKENS"] = "0"
-        reload_settings()
-        try:
+        with settings_scope(Settings()):
             messages, _ = build_section_agent_plan_messages(
                 section_key="2_timeline",
                 section_title="Activity Timeline",
@@ -183,32 +176,15 @@ class TestEnforceSystemBudgetCompaction:
             assert len(result) <= 24000
             assert "<TASK>" in result
             assert "Output JSON only" in result
-        finally:
-            if old_budget is None:
-                os.environ.pop("FORENSIA_SYSTEM_PROMPT_BUDGET_CHARS", None)
-            else:
-                os.environ["FORENSIA_SYSTEM_PROMPT_BUDGET_CHARS"] = old_budget
-            if old_total is None:
-                os.environ.pop("FORENSIA_PROMPT_BUDGET_TOKENS", None)
-            else:
-                os.environ["FORENSIA_PROMPT_BUDGET_TOKENS"] = old_total
-            reload_settings()
 
     def test_real_section_plan_retains_question_specific_reference(self) -> None:
-        import os
-
-        from forensia.config import reload_settings
+        from forensia.config import Settings, settings_scope
         from forensia.context.prompt_context import _enforce_system_budget
         from forensia.report.sections.prompts import (
             build_section_agent_plan_messages,
         )
 
-        old_budget = os.environ.get("FORENSIA_SYSTEM_PROMPT_BUDGET_CHARS")
-        old_total = os.environ.get("FORENSIA_PROMPT_BUDGET_TOKENS")
-        os.environ["FORENSIA_SYSTEM_PROMPT_BUDGET_CHARS"] = "0"
-        os.environ["FORENSIA_PROMPT_BUDGET_TOKENS"] = "0"
-        reload_settings()
-        try:
+        with settings_scope(Settings()):
             messages, _ = build_section_agent_plan_messages(
                 section_key="2_timeline",
                 section_title="Activity Timeline",
@@ -233,16 +209,6 @@ class TestEnforceSystemBudgetCompaction:
             result = _enforce_system_budget(system)
             assert len(result) <= 24000
             assert "Event 1102 means the Security log was cleared" in result
-        finally:
-            if old_budget is None:
-                os.environ.pop("FORENSIA_SYSTEM_PROMPT_BUDGET_CHARS", None)
-            else:
-                os.environ["FORENSIA_SYSTEM_PROMPT_BUDGET_CHARS"] = old_budget
-            if old_total is None:
-                os.environ.pop("FORENSIA_PROMPT_BUDGET_TOKENS", None)
-            else:
-                os.environ["FORENSIA_PROMPT_BUDGET_TOKENS"] = old_total
-            reload_settings()
 
     def test_section_plan_uses_neutral_playbook_for_methodology(self) -> None:
         from forensia.report.sections.prompts import (
