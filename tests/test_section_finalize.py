@@ -4,16 +4,12 @@ import json
 import tempfile
 import unittest
 from datetime import UTC, datetime
+from hashlib import sha1
 from pathlib import Path
-from unittest.mock import patch
 
-from forensia.config import (
-    resolve_llm_config,
-)
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
 from forensia.knowledge.rules.engine import execute_event_keyword_fallback_search
-from forensia.report.answers.answer_registry import ensure_universal_question_probes
 from forensia.report.answers.keypoint_catalog import (
     default_keypoints_for_section,
     resolve_evidence_results,
@@ -21,7 +17,6 @@ from forensia.report.answers.keypoint_catalog import (
 from forensia.report.answers.table_registry import collect_flat_evidence_rows
 from forensia.report.render.markdown import sort_markdown_table_by_first_column
 from forensia.report.render.writer import build_report_markdown_from_db
-from forensia.report.report_brief import build_report_brief
 from forensia.report.sections.quality_gates import quality_gate_section
 from forensia.report.sections.report_input import (
     ReportSpecError,
@@ -31,43 +26,12 @@ from forensia.report.sections.report_input import (
 )
 from forensia.report.sections.section_assembly import prepare_section_request
 from forensia.report.sections.section_finalize import finalize_section
-from forensia.report.sections.section_store import _project_claim_provenance
+from forensia.report.sections.section_run_store import replace_section_evidence
 from forensia.report.template_export import export_packaged_report_templates
-
-
-def _agent_plan_router(*_args, **kwargs):
-    """Route section_agent.request_llm_json by which messages were sent.
-
-    Plan messages → "write" short-circuit (no SQL).
-    Check messages → "sufficient" so the loop exits cleanly.
-    Used to avoid hitting a real LLM in unit tests.
-    """
-    messages = kwargs.get("messages")
-    if messages is None and _args:
-        messages = _args[0]
-    system_content = ""
-    if messages:
-        system_content = str(messages[0].get("content", "")).lower()
-    if "section-check" in system_content:
-        return {"verdict": "sufficient", "fact_updates": []}
-    return {"action": "write", "enough_to_write": True}
 
 
 class SectionFinalizeTests(unittest.TestCase):
     """Section request assembly, quality gates, finalize_section, report markdown build."""
-
-    @staticmethod
-    def _llm_base_url() -> str:
-        return resolve_llm_config()[0] or "http://test-llm.invalid"
-
-    def setUp(self) -> None:
-        # Patch the owning JSON request implementation.
-        llm_json_patch = patch(
-            "forensia.llm.json_response.request_llm_json",
-            side_effect=_agent_plan_router,
-        )
-        llm_json_patch.start()
-        self.addCleanup(llm_json_patch.stop)
 
     def test_prepare_section_request_infers_section_evidence_without_template_keypoints(
         self,
@@ -117,8 +81,7 @@ class SectionFinalizeTests(unittest.TestCase):
                     {},
                     report_brief={},
                 )
-                # Evidence resolution moved into section_agent; verify the default
-                # keypoint selection + resolver directly.
+                # Verify default keypoint selection and resolver directly.
                 default_keypoints = default_keypoints_for_section("1_overview")
                 resolved = resolve_evidence_results(db, keypoints=default_keypoints)
 
@@ -279,58 +242,6 @@ class SectionFinalizeTests(unittest.TestCase):
             )
             self.assertEqual(["01_overview"], [s.section_key for s in sources])
 
-    def test_universal_question_probes_are_explicit_and_store_provenance(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(tmpdir)
-            template_path = case.path / "report_template_custom" / "1_overview.md"
-            template_path.parent.mkdir(parents=True, exist_ok=True)
-            template_path.write_text(
-                "# Overview\n\n## Evidence Scope\n<!-- fill -->\n", encoding="utf-8"
-            )
-            with CaseDB(case) as db:
-                db.execute(
-                    "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer, target_user, logon_type) VALUES (?, ?, ?, ?, ?, ?)",
-                    (
-                        "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000001",
-                        4624,
-                        datetime(2015, 3, 22, 14, 34, 28),
-                        "informant-PC",
-                        "informant",
-                        "2",
-                    ),
-                )
-                prepare_section_request(
-                    case,
-                    db,
-                    section_source_from_path(template_path),
-                    {},
-                    report_brief={},
-                )
-                initial_probe_count = db.execute(
-                    "SELECT COUNT(*) FROM section_questions WHERE section_key = '__case_probe__'"
-                ).fetchone()[0]
-                ensure_universal_question_probes(case, db)
-                probe_count = db.execute(
-                    "SELECT COUNT(*) FROM section_questions WHERE section_key = '__case_probe__' AND status = 'case_probe'"
-                ).fetchone()[0]
-                fact = db.execute(
-                    """
-                    SELECT fact_value, evidence_ids
-                    FROM section_facts
-                    WHERE source_section = '__case_probe__'
-                      AND fact_key = 'last_human_logon'
-                    """
-                ).fetchone()
-
-            self.assertEqual(0, initial_probe_count)
-            self.assertGreaterEqual(probe_count, 5)
-            self.assertIsNotNone(fact)
-            self.assertIn("informant", str(fact[0]))
-            self.assertIn(
-                "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000001",
-                str(fact[1]),
-            )
-
     def test_question_marker_enables_structured_mode_without_explicit_mode(
         self,
     ) -> None:
@@ -402,64 +313,6 @@ class SectionFinalizeTests(unittest.TestCase):
         self.assertEqual(1, len(flat))
         self.assertEqual("powershell.exe", flat[0]["process_name"])
 
-    def test_finalize_section_flags_event_specific_disallowed_claims(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(tmpdir)
-            with CaseDB(case) as db:
-                db.execute(
-                    """
-                    INSERT INTO evtx_events (
-                        evidence_id, source_file, channel, event_id, record_id, timestamp, computer,
-                        user_name, target_user, subject_user, src_ip, logon_type, process_name,
-                        command_line, service_name, message, raw_json, tags, severity
-                    ) VALUES (?, ?, ?, ?, ?, now(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        "ev-4720",
-                        "a.evtx",
-                        "Security",
-                        4720,
-                        1,
-                        "host1",
-                        "",
-                        "alice",
-                        "alice",
-                        "admin",
-                        "",
-                        "",
-                        "",
-                        "",
-                        "",
-                        "{}",
-                        "[]",
-                        "info",
-                    ),
-                )
-                result = finalize_section(
-                    db=db,
-                    section_key="3_technical",
-                    title="Technical",
-                    body="## Account Creation\n\nThe evidence suggests privilege escalation occurred.",
-                    evidence_results=[
-                        {
-                            "kind": "rows",
-                            "sample_rows": [
-                                {"event_id": 4720, "evidence_id": "ev-4720"}
-                            ],
-                            "head_rows": [],
-                            "tail_rows": [],
-                            "evidence_ids": ["ev-4720"],
-                            "finding_ids": [],
-                            "hypothesis_ids": [],
-                        }
-                    ],
-                )
-
-            self.assertTrue(
-                any("disallowed wording" in str(gap) for gap in result["gaps"]),
-                msg=f"Expected event-specific claim gap in {result['gaps']}",
-            )
-
     def test_finalize_section_flags_overstated_claims_for_non_confirmed_sources(
         self,
     ) -> None:
@@ -517,17 +370,16 @@ class SectionFinalizeTests(unittest.TestCase):
                     msg=f"Expected strength gap in {result['gaps']}",
                 )
 
-    def test_claims_keep_only_their_explicit_section_provenance(self) -> None:
-        projected = _project_claim_provenance(
-            "H-0010 is the cited hypothesis.",
-            {"hypothesis_ids": ["H-001", "H-0010"]},
-        )
-        self.assertEqual(["H-0010"], projected["hypothesis_ids"])
+    def test_claims_use_current_adjudicated_evidence_roles(self) -> None:
+        from forensia.core.verification import VerificationSpec
+        from forensia.db.evidence_lookup import lookup_evidence_record
+        from forensia.evidence.content_identity import fingerprint_from_record
+        from forensia.evidence.links import verification_spec_fingerprint
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
-                for evidence_id, event_id in (
+                evidence_rows = (
                     (
                         "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000001",
                         4624,
@@ -536,7 +388,12 @@ class SectionFinalizeTests(unittest.TestCase):
                         "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-system-000000000002",
                         7045,
                     ),
-                ):
+                    (
+                        "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-system-000000000003",
+                        7036,
+                    ),
+                )
+                for evidence_id, event_id in evidence_rows:
                     db.execute(
                         """
                         INSERT INTO evtx_events (
@@ -547,74 +404,145 @@ class SectionFinalizeTests(unittest.TestCase):
                         """,
                         (evidence_id, event_id),
                     )
+
+                spec = VerificationSpec()
+                spec_json = json.dumps(spec.model_dump(mode="json"))
+                spec_fingerprint = verification_spec_fingerprint(spec)
+                for hypothesis_id, description, status in (
+                    ("H-confirmed", "credential access", "confirmed"),
+                    ("H-refuted", "lateral movement", "refuted"),
+                ):
+                    db.execute(
+                        """INSERT INTO hypotheses (
+                            hypothesis_id, description, status, verdict,
+                            sufficiency_status, human_review_required,
+                            verification_spec, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, 'sufficient', false, ?, now(), now())""",
+                        [hypothesis_id, description, status, status, spec_json],
+                    )
+                link_roles = (
+                    (
+                        "L-support-current",
+                        "H-confirmed",
+                        evidence_rows[0][0],
+                        "supporting",
+                        "cf-current",
+                    ),
+                    (
+                        "L-context-only",
+                        "H-confirmed",
+                        evidence_rows[1][0],
+                        "contradictory",
+                        "cf-context",
+                    ),
+                    (
+                        "L-support-stale",
+                        "H-confirmed",
+                        evidence_rows[2][0],
+                        "supporting",
+                        "cf-stale",
+                    ),
+                    (
+                        "L-refute-current",
+                        "H-refuted",
+                        evidence_rows[1][0],
+                        "contradictory",
+                        "cf-current",
+                    ),
+                    (
+                        "L-refute-context",
+                        "H-refuted",
+                        evidence_rows[0][0],
+                        "supporting",
+                        "cf-context",
+                    ),
+                )
+                for (
+                    link_id,
+                    hypothesis_id,
+                    evidence_id,
+                    role,
+                    fingerprint,
+                ) in link_roles:
+                    live = lookup_evidence_record(db, evidence_id)
+                    actual_fingerprint = fingerprint_from_record(live)
+                    if fingerprint == "cf-current":
+                        fingerprint = actual_fingerprint
+                    elif fingerprint == "cf-stale":
+                        fingerprint = "cf-stale-content"
+                    db.execute(
+                        """INSERT INTO hypothesis_evidence (
+                            link_id, hypothesis_id, evidence_id, finding_id, assessment_id,
+                            role, source_family, source_file, derivation_group,
+                            content_fingerprint, verification_spec_fingerprint,
+                            assessment_reason, matched_conditions, strength, created_at
+                        ) VALUES (?, ?, ?, '', 'assessment-1', ?, 'evtx', 'source.evtx', ?, ?, ?,
+                                  'matched declared condition', '[\"event_id\"]', 'strong', now())""",
+                        [
+                            link_id,
+                            hypothesis_id,
+                            evidence_id,
+                            role,
+                            evidence_id,
+                            fingerprint,
+                            spec_fingerprint,
+                        ],
+                    )
+
+                # Prior projection values do not survive recomputation.
+                for hypothesis_id in ("H-confirmed", "H-refuted"):
+                    claim_id = sha1(
+                        f"3_technical\0{hypothesis_id}".encode()
+                    ).hexdigest()[:16]
+                    db.execute(
+                        """INSERT INTO claims (
+                            claim_id, section_key, claim_text, support_status,
+                            created_at, updated_at
+                        ) VALUES (?, '3_technical', 'prior claim', 'needs_review', now(), now())""",
+                        [claim_id],
+                    )
+                replace_section_evidence(
+                    db,
+                    "3_technical",
+                    [
+                        {
+                            "kind": "rows",
+                            "block_heading": "Account activity",
+                            "source_ref": "table:technical_accounts",
+                            "evidence_ids": [item[0] for item in evidence_rows],
+                        }
+                    ],
+                )
                 finalize_section(
                     db=db,
                     section_key="3_technical",
                     title="Technical",
-                    body=(
-                        "## Authentication\n\n"
-                        "A logon was observed (evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000001).\n\n"
-                        "## Service\n\n"
-                        "A service was observed (evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-system-000000000002)."
-                    ),
-                    evidence_results=[
-                        {
-                            "kind": "rows",
-                            "evidence_ids": [
-                                "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000001",
-                                "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-system-000000000002",
-                            ],
-                        }
-                    ],
+                    body="## Account activity\n\nRelevant evidence was observed.",
                 )
-
                 claims = db.execute(
-                    "SELECT claim_text, evidence_ids, support_status "
-                    "FROM claims ORDER BY claim_text"
+                    "SELECT hypothesis_ids, evidence_ids, support_status, claim_text FROM claims "
+                    "WHERE section_key = '3_technical'"
                 ).fetchall()
 
-            self.assertEqual(2, len(claims))
-            for claim_text, raw_ids, support_status in claims:
-                evidence_ids = json.loads(raw_ids)
-                self.assertEqual(1, len(evidence_ids))
-                self.assertIn(evidence_ids[0], claim_text)
-                self.assertEqual("supported", support_status)
-
-    def test_finalize_section_rejects_exclusive_evtx_scope_claim(self) -> None:
-        """The artifact-scope guard applies across supported report languages."""
-        cases = (
-            ("english", "All artifacts are EVTX.", "mft_entries", "mft-1"),
-            (
-                "japanese",
-                "アーティファクトはすべてEVTX形式です。",
-                "prefetch_executions",
-                "pf-1",
-            ),
+        projected = {
+            json.loads(hypothesis_ids)[0]: (
+                set(json.loads(evidence_ids)),
+                support,
+                claim_text,
+            )
+            for hypothesis_ids, evidence_ids, support, claim_text in claims
+        }
+        self.assertEqual({"H-confirmed", "H-refuted"}, set(projected))
+        self.assertEqual({evidence_rows[0][0]}, projected["H-confirmed"][0])
+        self.assertEqual("supported", projected["H-confirmed"][1])
+        self.assertEqual({evidence_rows[1][0]}, projected["H-refuted"][0])
+        self.assertEqual("supported", projected["H-refuted"][1])
+        self.assertEqual(
+            "Confirmed hypothesis: credential access", projected["H-confirmed"][2]
         )
-        for language, body, artifact_table, artifact_id in cases:
-            with self.subTest(language=language):
-                with tempfile.TemporaryDirectory() as tmpdir:
-                    case = Case.init(tmpdir)
-                    with CaseDB(case) as db:
-                        db.execute(
-                            "INSERT INTO evtx_events (evidence_id, event_id) VALUES ('ev-1', 4648)"
-                        )
-                        db.execute(
-                            f"INSERT INTO {artifact_table} (evidence_id) VALUES (?)",
-                            (artifact_id,),
-                        )
-                        result = finalize_section(
-                            db=db,
-                            section_key="1_overview",
-                            title="Scope",
-                            body=f"## Scope\n\n{body}",
-                            evidence_results=[],
-                        )
-
-                self.assertTrue(
-                    any("non-EVTX" in str(gap) for gap in result["gaps"]),
-                    msg=f"Expected artifact scope gap in {result['gaps']}",
-                )
+        self.assertEqual(
+            "Refuted hypothesis: lateral movement", projected["H-refuted"][2]
+        )
 
     def test_execute_event_keyword_fallback_search_uses_event_id_keywords(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -740,159 +668,6 @@ class SectionFinalizeTests(unittest.TestCase):
             self.assertIn("# Investigation Gaps", markdown)
             self.assertIn("Gap analysis.", markdown)
             self.assertNotIn("**Status:**", markdown)
-
-    def test_build_report_markdown_adds_appendix_interpretation_to_existing_body(
-        self,
-    ) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(tmpdir)
-            with CaseDB(case) as db:
-                db.execute(
-                    """
-                    INSERT INTO report_sections (
-                        section_key, title, body, confidence, status, update_count,
-                        gaps, last_filled_session, last_filled_at, stale
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, now(), FALSE)
-                    """,
-                    (
-                        "6_appendix",
-                        "Appendix",
-                        "# Appendix\n\n"
-                        "## 1. Endpoint identity\n\n"
-                        "**ID:** Q6\n"
-                        "**Status:** answered\n\n"
-                        "### Answer\n"
-                        "| host_id | evidence_count | first_seen | last_seen | evidence_id |\n"
-                        "| --- | --- | --- | --- | --- |\n"
-                        "| informant-PC | 4453 | 2015-03-22 | 2015-03-25 | evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000001 |\n\n"
-                        "### Queries Run\n"
-                        "- structured:host_identity:evtx_distinct_hosts\n\n"
-                        "### Structured Data\n"
-                        "- JSON: structured/answers.json\n",
-                        0.9,
-                        "ai_exhausted",
-                        1,
-                        "[]",
-                        "S-1",
-                    ),
-                )
-
-                markdown = build_report_markdown_from_db(db)
-
-            self.assertIn("### Interpretation", markdown)
-            self.assertIn("On EVTX", markdown)
-            self.assertIn("### Answer", markdown)
-            self.assertNotIn("evidence_id", markdown)
-            self.assertNotIn(
-                "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000001",
-                markdown,
-            )
-
-    def test_build_report_markdown_refreshes_stale_antiforensic_appendix_block(
-        self,
-    ) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(tmpdir)
-            with CaseDB(case) as db:
-                db.execute(
-                    "INSERT INTO mft_entries (evidence_id, file_path, file_name, si_modified) VALUES (?, ?, ?, ?)",
-                    (
-                        "mft-prefetch-cleaner",
-                        "Windows/Prefetch/CCLEANER64.EXE-779BD542.pf",
-                        "CCLEANER64.EXE-779BD542.pf",
-                        datetime(2015, 3, 25, 15, 15, 50),
-                    ),
-                )
-                db.execute(
-                    "INSERT INTO mft_entries (evidence_id, file_path, file_name, si_modified) VALUES (?, ?, ?, ?)",
-                    (
-                        "mft-cipher-noise",
-                        "Windows/System32/cipher.exe",
-                        "cipher.exe",
-                        datetime(2009, 7, 14, 1, 38, 59),
-                    ),
-                )
-                db.execute(
-                    """
-                    INSERT INTO report_sections (
-                        section_key, title, body, confidence, status, update_count,
-                        gaps, last_filled_session, last_filled_at, stale
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, now(), FALSE)
-                    """,
-                    (
-                        "6_appendix",
-                        "Appendix",
-                        "# Appendix\n\n"
-                        "## 12. Antiforensic activity\n\n"
-                        "**ID:** Q45\n"
-                        "**Status:** answered\n\n"
-                        "### Answer\n"
-                        "| evidence_type | file_name | file_path | evidence_id |\n"
-                        "| --- | --- | --- | --- |\n"
-                        "| tool_or_cleanup_artifact | cipher.exe | Windows/System32/cipher.exe | mft-cipher-noise |\n\n"
-                        "### Queries Run\n"
-                        "- stale\n\n"
-                        "### Structured Data\n"
-                        "- JSON: structured/answers.json\n",
-                        0.9,
-                        "ai_exhausted",
-                        1,
-                        "[]",
-                        "S-1",
-                    ),
-                )
-
-                markdown = build_report_markdown_from_db(db)
-
-            self.assertIn("CCLEANER64.EXE-779BD542.pf", markdown)
-            self.assertNotIn("cipher.exe", markdown)
-            self.assertNotIn("mft-cipher-noise", markdown)
-
-    def test_finalize_section_sanitizes_raw_evidence_tables(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(tmpdir)
-            with CaseDB(case) as db:
-                finalize_section(
-                    db=db,
-                    section_key="6_appendix",
-                    title="Appendix",
-                    body=(
-                        "## 8. E-mail data files\n\n"
-                        "#### Raw Evidence\n\n"
-                        "| timestamp | process_name | message |\n"
-                        "|---|---|---|\n"
-                        "| 2026-05-28 10:00:00 | None | NULL |\n"
-                        "\n## 9. Other\n\nSummary text.\n"
-                    ),
-                    evidence_results=[
-                        {
-                            "kind": "rows",
-                            "source_verdict": "newlead",
-                            "sample_rows": [
-                                {
-                                    "timestamp": "2026-05-28 10:00:00",
-                                    "process_name": "None",
-                                }
-                            ],
-                            "evidence_ids": [],
-                            "finding_ids": [],
-                            "hypothesis_ids": [],
-                        }
-                    ],
-                )
-                row = db.execute(
-                    "SELECT body, gaps FROM report_sections WHERE section_key = ?",
-                    ("6_appendix",),
-                ).fetchone()
-
-            body = str(row[0] or "")
-            gaps = row[1]
-            self.assertNotIn("None", body)
-            self.assertNotIn("NULL", body)
-            self.assertIn(
-                "Raw evidence moved to reports/evidence/6_appendix.json", body
-            )
-            self.assertIn("raw evidence rows were moved", str(gaps).lower())
 
     def test_finalize_section_upserts_section(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1024,97 +799,6 @@ class SectionFinalizeTests(unittest.TestCase):
 
             self.assertTrue(any("repeated too often" in gap for gap in result["gaps"]))
             self.assertLessEqual(result["confidence"], 0.6)
-
-    def test_finalize_section_flags_correlation_only_confirmed_claim(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(tmpdir)
-            now = datetime.now(UTC).replace(tzinfo=None)
-            with CaseDB(case) as db:
-                db.execute(
-                    """
-                    INSERT INTO findings (
-                        finding_id, rule_id, title, summary, severity, confidence, status,
-                        tags, attack, evidence, ai_summary, missing_checks, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        "windows-corr-logon-then-service-0001",
-                        "windows-corr-logon-then-service",
-                        "Correlation",
-                        "Summary",
-                        "medium",
-                        0.65,
-                        "accepted",
-                        "[]",
-                        "[]",
-                        "[]",
-                        "",
-                        "[]",
-                        now,
-                    ),
-                )
-                result = finalize_section(
-                    db=db,
-                    section_key="3_technical",
-                    title="Persistence and Execution",
-                    body="# Persistence and Execution\n\nConfirmed lateral movement based on windows-corr-logon-then-service-0001.",
-                    evidence_results=[],
-                    session_id="S-1",
-                )
-
-            self.assertTrue(
-                any("Correlation-rule findings" in gap for gap in result["gaps"])
-            )
-            self.assertLessEqual(result["confidence"], 0.55)
-
-    def testbuild_report_brief_trims_excerpt_in_sql(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(tmpdir)
-            now = datetime.now(UTC).replace(tzinfo=None)
-            with CaseDB(case) as db:
-                db.execute(
-                    """
-                    INSERT INTO report_sections (
-                        section_key, title, body, confidence, status, update_count, gaps, last_filled_session, last_filled_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        "1_overview",
-                        "Overview",
-                        "x" * 800,
-                        0.9,
-                        "draft",
-                        1,
-                        "[]",
-                        "S-1",
-                        now,
-                    ),
-                )
-                brief = build_report_brief(db)
-
-            self.assertEqual(1, len(brief["prior_sections"]))
-            self.assertLessEqual(len(brief["prior_sections"][0]["body_excerpt"]), 400)
-
-    def testbuild_report_brief_dedupes_existing_claims(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(tmpdir)
-            now = datetime.now(UTC).replace(tzinfo=None)
-            with CaseDB(case) as db:
-                db.execute(
-                    """
-                    INSERT INTO claims (
-                        claim_id, section_key, claim_text, finding_ids, hypothesis_ids, evidence_ids,
-                        support_status, created_at, updated_at
-                    ) VALUES
-                        ('c-1', '1_overview', 'same claim', '[]', '[]', '[]', 'supported', ?, ?),
-                        ('c-2', '2_timeline', 'same claim', '[]', '[]', '[]', 'supported', ?, ?),
-                        ('c-3', '3_technical', 'different claim', '[]', '[]', '[]', 'supported', ?, ?)
-                    """,
-                    (now, now, now, now, now, now),
-                )
-                brief = build_report_brief(db)
-
-            self.assertEqual(2, len(brief["existing_claims"]))
 
 
 if __name__ == "__main__":

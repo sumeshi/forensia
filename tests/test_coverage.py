@@ -13,6 +13,8 @@ from forensia.knowledge.coverage import (
     _load_yaml,
     derive_required_capabilities,
     get_coverage_summary,
+    observation_catalog,
+    observation_condition_error,
     refresh_evidence_coverage,
 )
 
@@ -47,6 +49,158 @@ class RequiredCapabilityDerivationTests(unittest.TestCase):
         self.assertEqual(
             derive_required_capabilities(required_capabilities=[]),
             [],
+        )
+        self.assertEqual(
+            derive_required_capabilities(
+                support_conditions={
+                    "observation": {
+                        "family": "prefetch",
+                        "capability": "process_execution",
+                        "field": "executable_name",
+                        "operator": "equals",
+                        "value": "powershell.exe",
+                    }
+                }
+            ),
+            ["process_execution"],
+        )
+
+    def test_observation_catalog_uses_capability_families_and_schema_fields(
+        self,
+    ) -> None:
+        catalog = observation_catalog()
+        self.assertIn("process_execution", catalog["prefetch"]["capabilities"])
+        self.assertIn("executable_name", catalog["prefetch"]["fields"])
+        self.assertIn("exec_times", catalog["prefetch"]["fields"])
+        self.assertNotIn("exec_time", catalog["prefetch"]["fields"])
+        self.assertIn("file_path", catalog["mft"]["fields"])
+        self.assertNotIn("timestamp", catalog["mft"]["fields"])
+        self.assertEqual(
+            catalog["mft"]["boolean_fields"], ["is_deleted", "is_directory"]
+        )
+        self.assertIn("registry_observation", catalog["registry"]["capabilities"])
+        self.assertIn("key_path", catalog["registry"]["fields"])
+
+    def test_observation_condition_validation_is_shared_and_typed(self) -> None:
+        observation = {
+            "family": "registry",
+            "capability": "registry_observation",
+            "field": "key_path",
+            "operator": "contains",
+            "value": "Run\\",
+        }
+        self.assertIsNone(observation_condition_error({"observation": observation}))
+        self.assertIsNone(
+            observation_condition_error({"observation": observation, "min_count": 2})
+        )
+        self.assertEqual(
+            observation_condition_error(
+                {
+                    "observation": {
+                        "family": "prefetch",
+                        "capability": "process_execution",
+                        "field": "exec_time",
+                        "operator": "equals",
+                        "value": "2015-03-25 14:00:00",
+                    }
+                }
+            ),
+            "observation-field-unsupported",
+        )
+        invalid = (
+            (
+                {"observation": {**observation, "family": "evtx"}},
+                "observation-family-unsupported",
+            ),
+            (
+                {
+                    "observation": observation,
+                    "co_observed_event_ids": [4624],
+                },
+                "mixed-verification-condition-kinds",
+            ),
+            (
+                {"observation": {**observation, "value": "   "}},
+                "observation-value-invalid",
+            ),
+            (
+                {"observation": observation, "min_count": True},
+                "observation-min-count-invalid",
+            ),
+            (
+                {"observation": observation, "min_count": 0},
+                "observation-min-count-invalid",
+            ),
+            (
+                {
+                    "observation": {
+                        **observation,
+                        "operator": "equals",
+                        "value": "Infinity",
+                    }
+                },
+                "observation-value-invalid",
+            ),
+            (
+                {"observation": {**observation, "operator": "contains", "value": 5}},
+                "observation-operator-value-invalid",
+            ),
+            (
+                {
+                    "observation": {
+                        **observation,
+                        "operator": "greater_than",
+                        "value": "sometime later",
+                    }
+                },
+                "observation-operator-value-invalid",
+            ),
+        )
+        for condition, error in invalid:
+            with self.subTest(condition=condition):
+                self.assertEqual(observation_condition_error(condition), error)
+
+    def test_boolean_observations_require_boolean_equality(self) -> None:
+        observation = {
+            "family": "mft",
+            "capability": "file_activity",
+            "field": "is_deleted",
+            "operator": "equals",
+            "value": True,
+        }
+        self.assertIsNone(observation_condition_error({"observation": observation}))
+        self.assertIsNone(
+            observation_condition_error(
+                {"observation": {**observation, "value": False}}
+            )
+        )
+        self.assertEqual(
+            "observation-value-invalid",
+            observation_condition_error(
+                {"observation": {**observation, "value": "true"}}
+            ),
+        )
+        self.assertEqual(
+            "observation-operator-value-invalid",
+            observation_condition_error(
+                {
+                    "observation": {
+                        **observation,
+                        "operator": "contains",
+                    }
+                }
+            ),
+        )
+        self.assertEqual(
+            "observation-value-invalid",
+            observation_condition_error(
+                {
+                    "observation": {
+                        **observation,
+                        "field": "size",
+                    }
+                }
+            ),
         )
 
 

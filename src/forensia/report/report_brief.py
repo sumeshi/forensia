@@ -21,12 +21,7 @@ from forensia.report.render.markdown import (
     _tz_offset_str,
 )
 from forensia.report.report_validation import derive_publication_state
-from forensia.report.sections.report_input import active_report_section_keys
 from forensia.report.sections.section_quality import _collect_section_coverage
-from forensia.report.sections.section_store import (
-    _claim_text_key,
-    fetch_report_sections,
-)
 
 
 def _query_top_findings(
@@ -86,7 +81,7 @@ def _query_top_findings(
     for row in rows:
         item = normalize_value(row)
         if isinstance(item, dict):
-            title_key = _claim_text_key(str(item.get("title") or ""))
+            title_key = " ".join(str(item.get("title") or "").lower().split())
             if title_key and title_key in seen_titles:
                 continue
             finding_id = str(item.get("finding_id") or "")
@@ -206,54 +201,6 @@ def _query_hypotheses_by_status(
     )
 
 
-def _query_prior_sections(db: CaseDB) -> list[dict[str, Any]]:
-    return [
-        {
-            "section_key": row["section_key"],
-            "title": row["title"],
-            "body_excerpt": str(row["body"] or "")[:400],
-            "confidence": row["confidence"],
-            "status": row["status"],
-        }
-        for row in fetch_report_sections(db)
-        if str(row["body"] or "")
-    ]
-
-
-def _query_existing_claims(db: CaseDB, limit: int = 20) -> list[dict[str, Any]]:
-    active = active_report_section_keys(db)
-    if active is not None and not active:
-        return []
-    clause = (
-        "WHERE section_key IN (" + ", ".join("?" for _ in active) + ")"
-        if active is not None
-        else ""
-    )
-    return fetch_records(
-        db,
-        f"""
-        SELECT section_key, claim_text, support_status
-        FROM claims
-        {clause}
-        ORDER BY updated_at DESC, claim_id DESC
-        LIMIT ?
-        """,
-        (*active, limit) if active is not None else (limit,),
-    )
-
-
-def _dedupe_claims(raw: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    deduped: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for item in raw:
-        key = _claim_text_key(str(item.get("claim_text") or ""))
-        if not key or key in seen:
-            continue
-        seen.add(key)
-        deduped.append(normalize_value(item))
-    return deduped
-
-
 def _query_evtx_time_range(db: CaseDB, case: Case | None = None) -> dict[str, str]:
     rows = fetch_records(
         db,
@@ -369,8 +316,6 @@ def _build_report_brief(
             normalize_value(item)
             for item in _query_hypotheses_by_status(db, "untestable")
         ],
-        "prior_sections": _query_prior_sections(db),
-        "existing_claims": _dedupe_claims(_query_existing_claims(db)),
         "evidence_coverage": _summarize_section_coverage(db),
         "case_metrics": query_case_metrics(db),
         "source_timezone": tz_name,

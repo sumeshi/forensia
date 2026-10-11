@@ -217,7 +217,9 @@ def build_sql_receipt(
     used_fallback = fallback_info is not None
     result_summary = rows if rows is not None else []
     evidence_ids = [
-        str(row.get("evidence_id")) for row in result_summary if row.get("evidence_id")
+        str(row.get("evidence_id") or row.get("artifact_id"))
+        for row in result_summary
+        if row.get("evidence_id") or row.get("artifact_id")
     ]
     finding_ids = [
         str(row.get("finding_id")) for row in result_summary if row.get("finding_id")

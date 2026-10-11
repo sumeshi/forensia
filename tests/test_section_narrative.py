@@ -2,12 +2,8 @@ from __future__ import annotations
 
 import tempfile
 import unittest
-from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import patch
 
-from forensia.config import get_settings, settings_scope
 from forensia.core.case import Case
 from forensia.core.textutil import normalize_localized_dates
 from forensia.db.database import CaseDB
@@ -18,20 +14,10 @@ from forensia.report.sections.quality_gates import (
     check_json_object_leak,
     check_recommendations_strength,
 )
-from forensia.report.sections.section_answers import (
-    _format_structured_answer,
-    is_effectively_empty_body,
-)
 from forensia.report.sections.section_assembly import assemble_section_body
-from forensia.report.sections.section_block_narrative import (
-    fallback_narrative_body,
-    narrate_paragraph_with_retry,
-)
 from forensia.report.sections.section_finalize import (
     preprocess_section_body,
 )
-from forensia.report.sections.section_run_store import load_reusable_section_facts
-from forensia.report.sections.section_store import extract_claim_texts
 
 
 class SectionNarrativeTests(unittest.TestCase):
@@ -44,22 +30,11 @@ class SectionNarrativeTests(unittest.TestCase):
             formats_dir.mkdir()
             (formats_dir / "report.yaml").write_text(
                 """version: 1
-narrative_fallback:
-  unsupported: "CUSTOM EMPTY: {heading}"
 structured_answer:
   headings:
     answer: Custom Answer
 """,
                 encoding="utf-8",
-            )
-            fallback = fallback_narrative_body(
-                heading="Network Activity",
-                status="not_found",
-                collected_results=[],
-                flat_evidence=[],
-                actual_query_count=1,
-                actual_query_row_counts=[0],
-                template_dir=template_dir,
             )
             structured = render_structured_answer_markdown(
                 {"id": "Q1", "status": "answered", "answer": ["value"]},
@@ -67,101 +42,7 @@ structured_answer:
                 template_dir=template_dir,
             )
 
-        self.assertEqual("CUSTOM EMPTY: Network Activity", fallback)
         self.assertIn("### Custom Answer", structured)
-
-    def test_status_only_narration_gets_deterministic_fallback(self) -> None:
-        self.assertTrue(is_effectively_empty_body("**Status:** answered"))
-        with settings_scope(replace(get_settings(), llm_output_language="en")):
-            body = fallback_narrative_body(
-                heading="Executive Summary",
-                status="partial",
-                collected_results=[
-                    {
-                        "kind": "rows",
-                        "keypoint": "evidence_query",
-                        "row_count": 2,
-                        "evidence_ids": [
-                            "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000122"
-                        ],
-                        "sample_rows": [
-                            {
-                                "timestamp": "2015-03-22T14:34:28",
-                                "event_id": 4624,
-                                "computer": "informant-PC",
-                                "target_user": "informant",
-                                "evidence_id": "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000122",
-                            }
-                        ],
-                    }
-                ],
-                flat_evidence=[
-                    {
-                        "timestamp": "2015-03-22T14:34:28",
-                        "event_id": 4624,
-                        "computer": "informant-PC",
-                        "target_user": "informant",
-                        "evidence_id": "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000122",
-                    }
-                ],
-                actual_query_count=1,
-                actual_query_row_counts=[2],
-            )
-
-        self.assertIn("Additional correlation is needed", body)
-        self.assertIn(
-            "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000122",
-            body,
-        )
-        # H-2: fallback must not emit review-metadata phrasing.
-        self.assertNotIn("the collected evidence returned", body.lower())
-        self.assertNotIn("Representative row:", body)
-
-    def test_not_found_fallback_does_not_emit_block_skipped_marker(self) -> None:
-        with settings_scope(replace(get_settings(), llm_output_language="en")):
-            body = fallback_narrative_body(
-                heading="Network Activity",
-                status="not_found",
-                collected_results=[
-                    {
-                        "kind": "rows",
-                        "keypoint": "evtx_network_connections",
-                        "row_count": 0,
-                        "sample_rows": [],
-                    }
-                ],
-                flat_evidence=[],
-                actual_query_count=1,
-                actual_query_row_counts=[0],
-            )
-
-        self.assertIn("No supporting evidence was found", body)
-        self.assertNotIn("Block skipped", body)
-        self.assertNotIn("evtx_network_connections", body)
-
-    def test_reusable_section_facts_exclude_case_probe_by_default(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(tmpdir)
-            with CaseDB(case) as db:
-                db.execute(
-                    """
-                    INSERT INTO section_facts (
-                        fact_id, fact_type, fact_key, fact_value, evidence_ids,
-                        source_query, source_section, confidence, created_at, updated_at
-                    ) VALUES
-                        ('sf-case', 'universal_question', 'last_human_logon', '{}', '["evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000001"]', 'structured:last_human_logon', '__case_probe__', 0.9, now(), now()),
-                        ('sf-section', 'observation', 'section_fact', '{}', '["evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000002"]', 'keypoint:test', '1_overview', 0.8, now(), now())
-                    """
-                )
-                normal = load_reusable_section_facts(db, "1_overview")
-                with_case_probe = load_reusable_section_facts(
-                    db, "1_overview", include_case_probe=True
-                )
-
-            self.assertEqual(["section_fact"], [item["fact_key"] for item in normal])
-            self.assertIn(
-                "last_human_logon", [item["fact_key"] for item in with_case_probe]
-            )
 
     def test_assemble_section_body_preserves_template_preamble(self) -> None:
         body = assemble_section_body(
@@ -169,6 +50,37 @@ structured_answer:
         )
         self.assertTrue(
             body.startswith("# Investigation Overview\n\n## Executive Summary")
+        )
+
+    def test_narration_with_new_traceability_failure_is_rejected(self) -> None:
+        from forensia.report.sections.section_refresher import (
+            _narration_admission_reasons,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                projection = {
+                    "request": {"section_key": "1_overview", "title": "Overview"},
+                    "evidence_results": [],
+                    "blocks": [{"heading": "Overview"}],
+                    "first_narrative_index": 0,
+                }
+                fallback = (
+                    "# Overview\n\nObserved activity is summarized from the deterministic "
+                    "projection without assigning an unsupported event claim."
+                )
+                candidate = (
+                    "# Overview\n\nEVTX proves unauthorized activity during the interval, "
+                    "but this sentence has no machine-detectable evidence reference."
+                )
+
+                reasons = _narration_admission_reasons(
+                    db, projection, fallback, candidate
+                )
+
+        self.assertTrue(
+            any(reason.startswith("claim_traceability:") for reason in reasons)
         )
 
     def test_localized_numeric_date_is_normalized(self) -> None:
@@ -181,8 +93,7 @@ structured_answer:
             '## Evidence Scope\n\n[{"Metric":"EVTX rows","Value":12,'
             '"Scope":"security"}]'
         )
-        body, removed_raw = preprocess_section_body("1_overview", raw)
-        self.assertFalse(removed_raw)
+        body = preprocess_section_body(raw)
         self.assertNotIn('[{"Metric"', body)
         self.assertIn("| Metric | Value | Scope |", body)
         self.assertIn("| EVTX rows | 12 | security |", body)
@@ -245,62 +156,6 @@ structured_answer:
         ]
         self.assertEqual(["- single reason string"], bullets)
 
-    def test_narrate_retries_once_when_first_body_is_empty(self) -> None:
-        """RPT-FU-05: narrator must get one coaching turn before we surrender to the fallback prose.
-
-        Without the retry, every CFREDS narrative section degenerates into the deterministic
-        fallback paragraph (as observed in the prior run). Pin the call sequence so a future
-        refactor cannot silently delete the retry.
-        """
-        calls: list[list[dict[str, str]]] = []
-
-        def fake_llm(*, messages, model, base_url, json_schema, **kwargs):
-            calls.append([dict(m) for m in messages])
-            if len(calls) == 1:
-                return {"body": ""}
-            return {
-                "body": "A concrete narrative paragraph that cites evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000122."
-            }
-
-        base_messages = [
-            {"role": "system", "content": "narrate system"},
-            {"role": "user", "content": "narrate user"},
-        ]
-        with patch("forensia.llm.json_response.request_llm_json", side_effect=fake_llm):
-            body = narrate_paragraph_with_retry(
-                narrate_messages=base_messages,
-                narrate_schema={"type": "object"},
-                model="m",
-                base_url="http://x",
-            )
-        self.assertEqual(2, len(calls), msg="retry was not invoked on empty body")
-        self.assertEqual(len(base_messages) + 1, len(calls[1]))
-        self.assertEqual("user", calls[1][-1]["role"])
-        self.assertIn("Retry", calls[1][-1]["content"])
-        self.assertIn(
-            "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000122",
-            body,
-        )
-
-    def test_narrate_does_not_retry_when_first_body_is_substantive(self) -> None:
-        """Single-call happy path must not waste a second LLM round-trip."""
-        calls: list[int] = []
-
-        def fake_llm(**kwargs):
-            calls.append(1)
-            return {
-                "body": "A concrete paragraph long enough to pass the empty-body check."
-            }
-
-        with patch("forensia.llm.json_response.request_llm_json", side_effect=fake_llm):
-            narrate_paragraph_with_retry(
-                narrate_messages=[{"role": "system", "content": "s"}],
-                narrate_schema={"type": "object"},
-                model="m",
-                base_url="http://x",
-            )
-        self.assertEqual(1, len(calls))
-
     def test_missing_reason_section_omitted_when_answered_and_empty(self) -> None:
         """Status=answered with no missing reason should not render `### Missing Reason\\n- none`.
 
@@ -339,99 +194,6 @@ structured_answer:
             "Partial",
         )
         self.assertIn("### Missing Reason", partial_md)
-
-    def test_fallback_narrative_body_stays_compact(self) -> None:
-        """The fallback describes bounded observed rows and avoids keypoint name leakage.
-
-        RPT-FU-06 / RPT-FU-07: protect against regressions where multiple sample rows were
-        joined with ` / ` and exploded the paragraph past 1000 chars, or keypoint identifiers
-        (`overview_top_findings=10`) leaked into the prose.
-        """
-        with settings_scope(replace(get_settings(), llm_output_language="en")):
-            body = fallback_narrative_body(
-                heading="Executive Summary",
-                status="partial",
-                collected_results=[
-                    {
-                        "kind": "rows",
-                        "keypoint": "overview_top_findings",
-                        "row_count": 13,
-                        "evidence_ids": [
-                            "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000001166"
-                        ],
-                        "sample_rows": [
-                            {
-                                "timestamp": "2015-03-25T14:45:59",
-                                "event_id": 4624,
-                                "evidence_id": "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000001166",
-                            },
-                            {
-                                "timestamp": "2015-03-25T15:31:00",
-                                "event_id": 6006,
-                                "evidence_id": "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-system-000000001624",
-                            },
-                            {
-                                "timestamp": "2015-03-25T15:28:47",
-                                "event_id": 4688,
-                                "evidence_id": "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000001200",
-                            },
-                        ],
-                    },
-                    {
-                        "kind": "rows",
-                        "keypoint": "overview_hosts",
-                        "row_count": 3,
-                        "evidence_ids": [],
-                        "sample_rows": [
-                            {
-                                "host_id": "informant-PC",
-                                "evidence_id": "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000001",
-                            }
-                        ],
-                    },
-                ],
-                flat_evidence=[
-                    {
-                        "timestamp": "2015-03-25T14:45:59",
-                        "event_id": 4624,
-                        "evidence_id": "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000001166",
-                    },
-                    {
-                        "timestamp": "2015-03-25T15:31:00",
-                        "event_id": 6006,
-                        "evidence_id": "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-system-000000001624",
-                    },
-                ],
-                actual_query_count=2,
-                actual_query_row_counts=[13, 3],
-            )
-
-        self.assertNotIn("overview_top_findings", body)
-        self.assertNotIn("overview_hosts", body)
-        self.assertNotIn("=10", body)
-        self.assertNotIn("=3", body)
-
-    def test_fallback_prefers_key_points_over_meta_phrasing(self) -> None:
-        """H-2: when key points are available the fallback states observed
-        facts, never review-metadata like 'returned N related rows'."""
-        with settings_scope(replace(get_settings(), llm_output_language="en")):
-            body = fallback_narrative_body(
-                heading="Executive Summary",
-                status="answered",
-                collected_results=[],
-                flat_evidence=[],
-                actual_query_count=1,
-                actual_query_row_counts=[3],
-                key_points=[
-                    "Anti-forensic tool CCLEANER64.EXE was executed",
-                    "The Event Log service was stopped on informant-PC",
-                ],
-            )
-
-        self.assertIn("CCLEANER64.EXE", body)
-        self.assertIn("Event Log service", body)
-        self.assertNotIn("the collected evidence returned", body.lower())
-        self.assertNotIn("related rows", body.lower())
 
     def test_structured_markdown_previews_large_tables(self) -> None:
         markdown = render_structured_answer_markdown(
@@ -510,30 +272,6 @@ structured_answer:
         self.assertNotIn("raw.evtx", markdown)
 
 
-class AnswerFormattingTests(unittest.TestCase):
-    """Plan-action coercion and structured question-answer formatting."""
-
-    def test_format_structured_answer_missing_reason_string_not_split(self):
-        case = SimpleNamespace(reports_dir=Path(tempfile.mkdtemp()))
-        body = _format_structured_answer(
-            {
-                "status": "answered",
-                "picked_row_indices": [],
-                "rationale": "empty answer rationale",
-            },
-            [],
-            {"fields": ["host_id"]},
-            "6_appendix",
-            "1. host",
-            "answered",
-            case,
-            question_id="Q6",
-        )
-        self.assertIn("**Status:** wrong_query", body)
-        self.assertIn("- empty answer rationale", body)
-        self.assertNotIn("- e\n- m", body)
-
-
 class SectionBodyQualityTests(unittest.TestCase):
     """JSON-leak gate and claim extraction over rendered section bodies."""
 
@@ -550,41 +288,6 @@ class SectionBodyQualityTests(unittest.TestCase):
         )
         msg, score = check_json_object_leak("## Heading\n\nSome paragraph text.", ctx)
         self.assertIsNone(msg)
-
-    def test_scaffold_patterns_filter_claims(self):
-        body = "**Status:** answered\n\nReal Content\n\nSome actual claim here."
-        claims = extract_claim_texts(body)
-        self.assertIn("Real Content", claims)
-        self.assertNotIn("**Status:**", " ".join(claims))
-
-    def test_claim_extraction_skips_tables_and_structured_metadata(self):
-        body = """
-## 1. Endpoint identity
-
-**Status:** answered
-
-### Answer
-Substantive narrative claim with evidence evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000122.
-
-| host_id | evidence_count |
-| --- | --- |
-| informant-PC | 10 |
-
-### Queries Run
-- structured:host_identity:evtx_distinct_hosts
-
-### Structured Data
-- JSON: structured/answers.json
-- CSV: structured/Q6.csv
-"""
-        claims = extract_claim_texts(body)
-        joined = " ".join(claims)
-        self.assertIn("Substantive narrative claim", joined)
-        self.assertNotIn("host_id", joined)
-        self.assertNotIn("informant-PC", joined)
-        self.assertNotIn("structured:host_identity", joined)
-        self.assertNotIn("structured/answers.json", joined)
-        self.assertNotIn("### Queries Run", joined)
 
 
 if __name__ == "__main__":

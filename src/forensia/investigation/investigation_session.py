@@ -487,7 +487,6 @@ def _init_session(
         state = SessionState(
             session_id=session_id,
             iteration=0,
-            findings_snapshot=_finding_snapshot(db),
             active_hypotheses=active_hypotheses,
             resolved_hypotheses=resolved_hypotheses,
         )

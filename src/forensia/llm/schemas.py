@@ -228,13 +228,37 @@ def _verification_declaration_fields() -> dict[str, Any]:
                         },
                     },
                 },
+                "observation": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": [
+                        "family",
+                        "capability",
+                        "field",
+                        "operator",
+                        "value",
+                    ],
+                    "properties": {
+                        "family": {"type": "string", "minLength": 1},
+                        "capability": {"type": "string", "minLength": 1},
+                        "field": {"type": "string", "minLength": 1},
+                        "operator": {"enum": ["equals", "contains", "greater_than"]},
+                        "value": {
+                            "anyOf": [
+                                {"type": "string", "minLength": 1},
+                                {"type": "number"},
+                                {"type": "boolean"},
+                            ]
+                        },
+                    },
+                },
                 "same_host": {"type": "boolean"},
                 "within_minutes": {"type": "integer"},
                 "same_entities": {
                     "type": "array",
                     "items": {"enum": SNAKE_CASE_COLUMNS},
                 },
-                "min_count": {"type": "integer", "minimum": 2},
+                "min_count": {"type": "integer", "minimum": 1},
             },
         },
         "refute_when": {"type": "object"},
@@ -255,7 +279,7 @@ VERDICT_REVIEW_SCHEMA: dict[str, Any] = {
         "missing_questions": {
             "type": "array",
             "items": {"type": "string"},
-            "minItems": 1,
+            "description": "Non-empty only when verdict is inconclusive.",
         },
         "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
         "new_hypotheses": {
@@ -353,7 +377,14 @@ def hypothesis_drafter_schema() -> dict[str, Any]:
                 "required": ["description", "required_entities", "confirm_when"],
                 "additionalProperties": False,
                 "properties": {
-                    "description": {"type": "string", "minLength": 30},
+                    "description": {
+                        "type": "string",
+                        "minLength": 30,
+                        "description": (
+                            "For a typed observation condition, use the exact "
+                            "canonical observation statement shown in the prompt."
+                        ),
+                    },
                     "required_entities": {
                         "type": "array",
                         "items": {"enum": SNAKE_CASE_COLUMNS},
@@ -365,86 +396,6 @@ def hypothesis_drafter_schema() -> dict[str, Any]:
         },
     }
 
-
-SECTION_AGENT_PLAN_SCHEMA: dict[str, Any] = {
-    "title": "SectionAgentPlan",
-    "type": "object",
-    "additionalProperties": False,
-    "required": ["action", "enough_to_write"],
-    "properties": {
-        "action": {"enum": ["sql", "template", "keypoint", "facts", "write"]},
-        "keypoint": {"type": "string"},
-        "sql": {"type": "string"},
-        "template_id": {"type": "string"},
-        "params": {"type": "object"},
-        "purpose": {"type": "string"},
-        "enough_to_write": {"type": "boolean"},
-    },
-}
-
-SECTION_OUTLINE_SCHEMA: dict[str, Any] = {
-    "title": "SectionOutline",
-    "type": "object",
-    "additionalProperties": False,
-    "required": ["outline"],
-    "properties": {
-        "outline": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "required": ["heading", "key_points", "evidence_ids"],
-                "additionalProperties": False,
-                "properties": {
-                    "heading": {"type": "string"},
-                    "key_points": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "minItems": 1,
-                    },
-                    "evidence_ids": {"type": "array", "items": {"type": "string"}},
-                },
-            },
-        },
-    },
-}
-
-SECTION_AGENT_CHECK_SCHEMA: dict[str, Any] = {
-    "title": "SectionAgentCheck",
-    "type": "object",
-    "additionalProperties": False,
-    "required": ["verdict"],
-    "properties": {
-        "verdict": {
-            "enum": ["block_supported", "block_needs_more", "block_contradicted"]
-        },
-        "status": {
-            "enum": [
-                "answered",
-                "partial",
-                "not_found",
-                "not_searched",
-                "insufficient_evidence",
-                "wrong_query",
-            ]
-        },
-        "rationale": {"type": "string"},
-        "missing_questions": {"type": "array", "items": {"type": "string"}},
-        "fact_updates": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "fact_type": {"type": "string"},
-                    "fact_key": {"type": "string"},
-                    "fact_value": {},
-                    "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
-                },
-                "required": ["fact_type", "fact_key", "fact_value"],
-            },
-        },
-    },
-}
 
 PARAGRAPH_NARRATE_SCHEMA: dict[str, Any] = {
     "title": "ParagraphNarrate",

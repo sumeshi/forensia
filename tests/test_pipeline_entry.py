@@ -28,7 +28,7 @@ import pytest
 FORBIDDEN = ("typer", "click", "rich", "fastapi", "uvicorn")
 
 # Investigation roles that may receive adopted policy text (V2-05). Every
-# other captured role — checker, evidence, report section agents — must be
+# other captured role — checker, evidence, report narration — must be
 # policy-free: the Evidence/settlement gates are not instruction-driven.
 _POLICY_ROLES = ("plan-broad-gap", "plan-broad-draft", "hypothesis-plan")
 _POLICY_BUDGET_SMALL = 100
@@ -209,6 +209,121 @@ def test_mft_only_resume_uses_normalization_receipt_and_parser_revision() -> Non
                 assert len(calls) == 3 and calls[-1] is None, calls
 
 
+def test_run_add_invalidates_then_renders_standard_report_exports(
+    tmp_path, monkeypatch
+):
+    import forensia.pipeline as pipeline
+    from forensia.core.case import Case
+    from forensia.db.database import CaseDB
+
+    case = Case.init(tmp_path / "case")
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    (case.path / "REPORT.md").write_text("original input", encoding="utf-8")
+    (case.path / "FORENSIA.md").write_text("original policy", encoding="utf-8")
+    custom_export = case.reports_dir / "custom.html"
+    custom_export.write_text("user export", encoding="utf-8")
+    standard = (
+        case.reports_dir / "report.md",
+        case.reports_dir / "report.html",
+        case.reports_dir / "report_validation.json",
+    )
+    for path in standard:
+        path.write_text("old report", encoding="utf-8")
+
+    with CaseDB(case) as db:
+        db.execute(
+            "INSERT INTO trace.investigation_steps "
+            "(step_id, phase, output_json, created_at) VALUES "
+            "('report-input', 'report-input', ?, now())",
+            [
+                json.dumps(
+                    {
+                        "sections": [
+                            {"section_key": "current-section"},
+                            {"section_key": "stale-section"},
+                        ]
+                    }
+                )
+            ],
+        )
+        db.execute(
+            "INSERT INTO report_sections "
+            "(section_key, title, body, status, update_count, stale) VALUES "
+            "('current-section', 'Current', '# Current evidence\\n\\nVerified current source.', 'draft', 1, false), "
+            "('stale-section', 'Stale', '# Old source\\n\\nSTALE-SOURCE-SENTINEL', 'draft', 1, false)"
+        )
+
+        def invalidate(_case, _db, *_args):
+            assert all(not path.exists() for path in standard)
+            _db.execute(
+                "UPDATE report_sections SET stale = true "
+                "WHERE section_key = 'stale-section'"
+            )
+
+        monkeypatch.setattr(pipeline, "_run_evidence_stages", invalidate)
+        pipeline.run_add(case.path, input_dir, db=db)
+
+        markdown = standard[0].read_text(encoding="utf-8")
+        html = standard[1].read_text(encoding="utf-8")
+        validation = json.loads(standard[2].read_text(encoding="utf-8"))
+        assert db.execute(
+            "SELECT body, stale FROM report_sections WHERE section_key = 'stale-section'"
+        ).fetchone() == ("# Old source\\n\\nSTALE-SOURCE-SENTINEL", True)
+
+        standard[0].unlink()
+        from forensia.report.render.html import render_html_report
+
+        render_html_report(case, db)
+        html_without_markdown = standard[1].read_text(encoding="utf-8")
+
+    assert "Verified current source." in markdown
+    assert "STALE-SOURCE-SENTINEL" not in markdown
+    assert "stale-section" in markdown
+    assert "Verified current source." in html
+    assert "STALE-SOURCE-SENTINEL" not in html
+    assert "stale-section" in html
+    assert "STALE-SOURCE-SENTINEL" not in html_without_markdown
+    assert "stale-section" in html_without_markdown
+    assert validation["publication_status"] == "needs_review"
+    assert "stale-section" in validation["publication_state"]["stale_section_keys"]
+    assert custom_export.read_text(encoding="utf-8") == "user export"
+    assert (case.path / "REPORT.md").read_text(encoding="utf-8") == "original input"
+    assert (case.path / "FORENSIA.md").read_text(encoding="utf-8") == "original policy"
+
+
+def test_run_add_render_failure_does_not_leave_old_standard_exports(
+    tmp_path, monkeypatch
+):
+    import forensia.pipeline as pipeline
+    from forensia.core.case import Case
+    from forensia.db.database import CaseDB
+
+    case = Case.init(tmp_path / "case")
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    standard = (
+        case.reports_dir / "report.md",
+        case.reports_dir / "report.html",
+        case.reports_dir / "report_validation.json",
+    )
+    for path in standard:
+        path.write_text("old report", encoding="utf-8")
+
+    def invalidate(*_args):
+        return None
+
+    def fail_render(*_args, **_kwargs):
+        raise RuntimeError("render failed")
+
+    monkeypatch.setattr(pipeline, "_run_evidence_stages", invalidate)
+    monkeypatch.setattr(pipeline, "_run_report_stage", fail_render)
+    with CaseDB(case) as db, pytest.raises(RuntimeError, match="render failed"):
+        pipeline.run_add(case.path, input_dir, db=db)
+
+    assert all(not path.exists() for path in standard)
+
+
 def test_resume_stop_after_raw_normalization_preserves_findings(tmp_path, monkeypatch):
     from threading import Event
 
@@ -251,7 +366,7 @@ def _stub_llm(captured: list[tuple[str, str]]):
         phase = kwargs.get("telemetry_phase", "")
         system_content = str(kwargs["messages"][0].get("content", ""))
         if not phase:
-            phase = "section-check" if "section-check" in system_content else "other"
+            phase = "other"
         captured.append((phase, system_content))
         if "gap_identifier" in system_content:
             return {
@@ -263,9 +378,7 @@ def _stub_llm(captured: list[tuple[str, str]]):
                     }
                 ]
             }
-        if "section-check" in system_content:
-            return {"verdict": "sufficient", "fact_updates": []}
-        return {"action": "write", "enough_to_write": True}
+        return {}
 
     return (
         mock.patch("forensia.llm.json_response.request_llm_json", side_effect=router),
@@ -605,7 +718,7 @@ def test_oversized_forensia_md_policy_refuses_with_reason() -> None:
 def test_knowledge_index_binds_to_the_run_input_not_the_process() -> None:
     """V2-08: the knowledge index is a run input, never a process-global leak.
 
-    Two investigations in one Python process: the first adopts a ``--knowledge``
+    Two investigations in one Python process: the first adopts a knowledge
     directory whose sentinel phrase is disclosed in its plan prompt; the second
     run (no flag) must disclose nothing of the first case — the per-invocation
     reset replaces the index, so cross-case knowledge cannot leak.
@@ -624,7 +737,6 @@ def test_knowledge_index_binds_to_the_run_input_not_the_process() -> None:
         case_dir = tmpdir / name
         input_dir = case_dir / "input"
         input_dir.mkdir(parents=True)
-        (input_dir / "placeholder.evtx").write_bytes(b"")
         return case_dir, input_dir
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -642,6 +754,25 @@ def test_knowledge_index_binds_to_the_run_input_not_the_process() -> None:
         def run(
             case_dir: Path, input_dir: Path, knowledge: Path | None
         ) -> list[tuple[str, str]]:
+            def seed_observation(_case, db):
+                db.execute(
+                    "INSERT INTO prefetch_executions "
+                    "(evidence_id, source_file, executable_name, exec_count) "
+                    "VALUES ('prefetch-knowledge-test', 'knowledge-source', 'TEST.EXE', 1)"
+                )
+                db.execute(
+                    "INSERT INTO evidence_sources "
+                    "(source_id, artifact_family, display_path, ingest_status, row_count) "
+                    "VALUES ('knowledge-source', 'prefetch', 'test.pf', 'normalized', 1)"
+                )
+                db.execute(
+                    "INSERT INTO findings "
+                    "(finding_id, rule_id, title, summary, severity, confidence, status, evidence) "
+                    "VALUES ('F-knowledge', 'execution-test', 'Process execution', "
+                    "'Observed execution activity', 'medium', 0.5, 'accepted', ?)",
+                    [json.dumps([{"evidence_id": "prefetch-knowledge-test"}])],
+                )
+
             first = len(captured)
             with ExitStack() as stack:
                 for cm in _stub_llm(captured):
@@ -653,6 +784,8 @@ def test_knowledge_index_binds_to_the_run_input_not_the_process() -> None:
                     model="offline-stub",
                     max_llm_calls=12,
                     knowledge_dir=knowledge,
+                    pre_investigation=seed_observation,
+                    max_iter=1,
                 )
             return captured[first:]
 

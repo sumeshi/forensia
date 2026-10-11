@@ -42,7 +42,6 @@ from threading import Event, current_thread, main_thread
 from typing import Any
 
 from forensia.config import (
-    get_llm_settings,
     get_settings,
     load_settings,
     resolve_llm_config,
@@ -70,6 +69,7 @@ from forensia.investigation.case_policy import (
 )
 from forensia.investigation.investigator import investigate as investigate_loop
 from forensia.knowledge.catalog import validate_declarations
+from forensia.knowledge.coverage import refresh_evidence_coverage
 from forensia.knowledge.external import scan_knowledge_dir, set_knowledge_docs
 from forensia.knowledge.resources import rules_dir, schema_dir, sigma_bundle_path
 from forensia.knowledge.rules.engine import (
@@ -140,10 +140,6 @@ def _execution_entry(function):
             )
             if kwargs.get(argument) is not None
         }
-        if kwargs.get("report_max_queries_per_section"):
-            overrides["llm_report_max_queries_per_section"] = kwargs[
-                "report_max_queries_per_section"
-            ]
         adopted = replace(adopted, **overrides)
         stop_requested = kwargs.get("stop_requested") or Event()
         kwargs["stop_requested"] = stop_requested
@@ -310,11 +306,8 @@ def reset_case_tables(db: CaseDB) -> None:
             "case_timeline",
             "findings",
             "claims",
-            "section_facts",
             "section_evidence",
-            "query_cache",
             "section_runs",
-            "section_questions",
             "ai_reviews",
             "investigation_sessions",
             "investigation_steps",
@@ -548,8 +541,11 @@ def _overwrite_case(
     if input_dir is None or not Path(input_dir).is_dir():
         raise UsageError("--overwrite requires an existing input_dir directory")
     target = Path(case_dir)
-    if target.is_symlink():
-        raise UsageError("--overwrite cannot delete a symlinked case directory")
+    is_junction = getattr(target, "is_junction", lambda: False)
+    if target.is_symlink() or is_junction():
+        raise UsageError(
+            "--overwrite cannot delete a symlinked case directory or junction"
+        )
     target = target.resolve()
     if Path.cwd().resolve().is_relative_to(target):
         raise UsageError(
@@ -977,7 +973,6 @@ def _run_investigate_stage(
     max_queries_per_hypothesis: int,
     no_progress_limit: int,
     report_every_n_cycles: int,
-    report_max_queries_per_section: int,
     max_llm_calls: int,
     forensia_policy: CasePolicyInput | None = None,
     report_spec: str | Path | None = None,
@@ -1022,8 +1017,6 @@ def _run_investigate_stage(
                 max_queries_per_hypothesis=max_queries_per_hypothesis,
                 no_progress_limit=no_progress_limit,
                 report_every_n_cycles=report_every_n_cycles,
-                report_max_queries_per_section=report_max_queries_per_section
-                or get_llm_settings()["report_max_queries_per_section"],
                 max_llm_calls=max_llm_calls,
                 forensia_policy=forensia_policy,
                 report_spec=report_spec,
@@ -1083,6 +1076,18 @@ def _run_report_stage(
         )
     )
     return report_path
+
+
+def _invalidate_standard_report_exports(case: Case) -> None:
+    """Remove generated exports before a mutation can make them stale."""
+    if not case.reports_dir.exists():
+        return
+    for path in (
+        case.reports_dir / "report.md",
+        case.reports_dir / "report.html",
+        case.reports_dir / "report_validation.json",
+    ):
+        path.unlink(missing_ok=True)
 
 
 def _run_evidence_stages(
@@ -1171,7 +1176,6 @@ def run_investigation(
     max_queries_per_hypothesis: int | None = None,
     no_progress_limit: int = 3,
     report_every_n_cycles: int = 3,
-    report_max_queries_per_section: int = 0,
     max_llm_calls: int | None = None,
     timezone: str = "",
     status: StatusCallback | None = None,
@@ -1313,7 +1317,6 @@ def run_investigation(
                 max_queries_per_hypothesis=max_queries_per_hypothesis,
                 no_progress_limit=no_progress_limit,
                 report_every_n_cycles=report_every_n_cycles,
-                report_max_queries_per_section=report_max_queries_per_section,
                 max_llm_calls=max_llm_calls,
                 forensia_policy=forensia_policy,
                 report_spec=report_spec,
@@ -1333,7 +1336,6 @@ def run_report(
     knowledge_dir: str | Path | None = None,
     llm_base_url: str | None = None,
     model: str | None = None,
-    report_max_queries_per_section: int = 0,
     status: StatusCallback | None = None,
     db: CaseDB | None = None,
     stop_requested: Event | None = None,
@@ -1388,11 +1390,7 @@ def run_report(
         )
         if write:
             template_root = resolve_template_dir(case, template_dir)
-            max_queries = (
-                report_max_queries_per_section
-                or get_llm_settings()["report_max_queries_per_section"]
-            )
-            _show(status, f"Writing report sections (max_queries={max_queries})")
+            _show(status, "Writing report sections")
 
             def discard_progress(*_args: Any, **_kwargs: Any) -> None:
                 return None
@@ -1409,7 +1407,6 @@ def run_report(
                 max_queries_per_hypothesis=0,
                 no_progress_limit=1,
                 report_every_n_cycles=3,
-                report_max_queries_per_section=max_queries,
                 max_llm_calls=get_settings().max_llm_calls,
                 report_spec=report_spec,
                 report_only=True,
@@ -1434,7 +1431,10 @@ def run_add(
         stop_scope(stop_requested),
     ):
         db.runtime_owned = True
+        _invalidate_standard_report_exports(case)
         _run_evidence_stages(case, db, str(input_dir), False, progress_pusher(db), None)
+        refresh_evidence_coverage(db)
+        _run_report_stage(case, db, progress_pusher(db))
         return {
             "normalize_revision": _stage_receipt(db, "pipeline-normalize"),
             "analysis_revision": _stage_receipt(db, "pipeline-analyze"),

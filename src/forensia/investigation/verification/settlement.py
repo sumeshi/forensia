@@ -21,14 +21,14 @@ from typing import Any, Literal
 from forensia.context.retrieval import RetrievalEvaluation
 from forensia.core.session import Hypothesis
 from forensia.db.database import CaseDB
+from forensia.evidence.links import EvidenceLink, load_evidence_links
 from forensia.investigation.verification.sufficiency import (
-    EvidenceLink,
     SufficiencyResult,
     derivation_root_key,
     evaluate_sufficiency,
-    load_evidence_links,
 )
 from forensia.knowledge.coverage import (
+    canonical_observation_claim,
     derive_required_capabilities,
     get_coverage_summary,
     relevant_coverage_states,
@@ -470,6 +470,37 @@ def decide_settlement(
     # adjacent to a password reset).  Never use that correlation alone to
     # override a checker that explicitly found the claim inconclusive.
     is_checker_confirmed = si.checker_verdict == "confirmed"
+    spec = hypothesis.verification_spec
+    support_conditions = spec.support_conditions
+    refute_conditions = spec.refute_conditions
+    has_typed_observation = (
+        "observation" in support_conditions or "observation" in refute_conditions
+    )
+    if is_checker_confirmed and "observation" in support_conditions:
+        canonical_claim = canonical_observation_claim(spec)
+        if (
+            not canonical_claim
+            or str(hypothesis.description or "").strip() != canonical_claim
+        ):
+            return SettlementDecision(
+                verdict="inconclusive",
+                reason=(
+                    "Typed observation scope unproven: hypothesis description "
+                    "does not match its canonical observation claim"
+                ),
+                allowed=False,
+                gates_failed=["observation_claim_scope_unproven"],
+            )
+    if si.checker_verdict == "refuted" and has_typed_observation:
+        return SettlementDecision(
+            verdict="inconclusive",
+            reason=(
+                "Typed observation refutation does not establish that an "
+                "existential observation is absent"
+            ),
+            allowed=False,
+            gates_failed=["observation_refutation_scope_unproven"],
+        )
 
     if is_checker_confirmed:
         gates_passed: list[str] = []

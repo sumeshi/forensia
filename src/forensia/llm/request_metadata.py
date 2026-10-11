@@ -53,5 +53,12 @@ def prompt_metadata(messages: list[dict[str, str]]) -> dict[str, Any]:
         "message_count": len(messages),
         "sections": sections,
         "selected_ids": sorted(selected_ids),
+        "selected_ids_stage": "provider_attempt_messages",
         "input_chars": sum(len(str(item.get("content") or "")) for item in messages),
+        "retrieval_event_ids": list(getattr(messages, "retrieval_event_ids", ())),
+        "retrieval_event_ids_stage": "prompt_builder_selection",
+        "omitted_optional_blocks": [
+            {"name": name, "count": count, "reason": reason}
+            for name, count, reason in getattr(messages, "omitted_optional_blocks", ())
+        ],
     }

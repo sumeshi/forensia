@@ -93,12 +93,9 @@ def _load_report_sections(db: CaseDB) -> tuple[list[dict[str, Any]], str]:
     if report_path.exists():
         report_markdown = report_path.read_text(encoding="utf-8").strip()
     else:
-        ordered = [
-            str(section.get("body") or "").strip()
-            for section in sections
-            if str(section.get("body") or "").strip()
-        ]
-        report_markdown = "\n\n".join(ordered).strip()
+        from forensia.report.render.writer import build_report_markdown_from_db
+
+        report_markdown = build_report_markdown_from_db(db).strip()
     if report_markdown:
         report_markdown += "\n"
     for section in sections:

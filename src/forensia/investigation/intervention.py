@@ -22,10 +22,11 @@ from forensia.db.investigation_state import (
 from forensia.investigation.case_policy import (
     CASE_POLICY_STEP_PHASE,
     CasePolicyInput,
+    PolicySection,
     decide_policy,
-    extract_policy_sections,
     load_recorded_policy,
     policy_objective,
+    update_policy_sections,
 )
 from forensia.investigation.hypotheses.hypothesis_store import load_persisted_hypotheses
 from forensia.investigation.report_gap import inject_gap_hypotheses
@@ -40,7 +41,7 @@ class InterventionProposal(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     action: Literal["update_policy", "add_work", "prioritize_hypothesis"]
-    policy_body: str | None = Field(default=None, max_length=12000)
+    policy_updates: dict[PolicySection, str] = Field(default_factory=dict, max_length=5)
     work_description: str | None = Field(default=None, max_length=1000)
     required_entities: list[str] = Field(default_factory=list, max_length=20)
     confirm_when: dict[str, Any] | None = None
@@ -49,21 +50,21 @@ class InterventionProposal(BaseModel):
     @model_validator(mode="after")
     def validate_action_fields(self) -> InterventionProposal:
         if self.action == "update_policy":
-            if not self.policy_body or not extract_policy_sections(self.policy_body):
-                raise ValueError(
-                    "policy update must contain a recognized policy section"
-                )
+            if not self.policy_updates or any(
+                not text.strip() for text in self.policy_updates.values()
+            ):
+                raise ValueError("policy update requires nonempty named sections")
             if self.work_description or self.hypothesis_id:
                 raise ValueError("policy update contains fields for another action")
         elif self.action == "add_work":
             if not self.work_description or not self.work_description.strip():
                 raise ValueError("new work requires a description")
-            if self.policy_body or self.hypothesis_id:
+            if self.policy_updates or self.hypothesis_id:
                 raise ValueError("new work contains fields for another action")
         elif self.action == "prioritize_hypothesis":
             if not self.hypothesis_id:
                 raise ValueError("prioritization requires a hypothesis ID")
-            if self.policy_body or self.work_description:
+            if self.policy_updates or self.work_description:
                 raise ValueError("prioritization contains fields for another action")
         return self
 
@@ -123,16 +124,21 @@ def _settings_receipt(settings: Settings | None) -> dict[str, Any] | None:
 def _apply_policy(
     db: CaseDB, session_id: str, proposal: InterventionProposal
 ) -> dict[str, Any]:
-    body = proposal.policy_body or ""
+    previous = load_recorded_policy(db)
+    body = update_policy_sections(
+        str(previous["body"]) if previous else "", proposal.policy_updates
+    )
     decision = decide_policy(
         CasePolicyInput(
             body=body, source="explicit_path", source_path="human-intervention"
         ),
-        load_recorded_policy(db),
+        previous,
     )
     if decision.applied is None or decision.record is None:
         raise ValueError("policy update was not adopted")
-    objective = policy_objective(decision.applied)
+    objective = policy_objective(decision.applied) or str(
+        (load_investigation_state(db) or {}).get("objective") or ""
+    )
     if not objective:
         raise ValueError("policy update must define an objective or scope")
     ensure_investigation_state(db, objective=objective)
@@ -150,7 +156,15 @@ def _apply_policy(
             f"{session_id}-{CASE_POLICY_STEP_PHASE}",
             session_id,
             CASE_POLICY_STEP_PHASE,
-            json.dumps({"source": "human_intervention"}),
+            json.dumps(
+                {
+                    "source": "human_intervention",
+                    "previous_revision": previous["content_sha256"]
+                    if previous
+                    else None,
+                    "updated_sections": list(proposal.policy_updates),
+                }
+            ),
             json.dumps(decision.record, ensure_ascii=False),
         ],
     )
@@ -160,6 +174,8 @@ def _apply_policy(
         "objective": objective,
         "objective_gap_id": objective_gap_id,
         "policy_sha256": decision.applied.content_sha256,
+        "previous_policy_sha256": previous["content_sha256"] if previous else None,
+        "updated_sections": list(proposal.policy_updates),
         "new_policy": body,
     }
 
@@ -235,7 +251,7 @@ def apply_intervention(
     recorded_policy = load_recorded_policy(db)
     case_context = {
         "objective": str(investigation.get("objective") or ""),
-        "current_policy": str(recorded_policy.get("body") or "")[:6000]
+        "current_policy": str(recorded_policy.get("body") or "")
         if recorded_policy
         else "",
         "unresolved_hypotheses": [
@@ -254,10 +270,10 @@ def apply_intervention(
                         "Return only the requested typed JSON. Never claim that a fact "
                         "was observed, verified, or proven. Preserve the user's intent. "
                         "Choose update_policy only when they change investigation goals, "
-                        "scope, priorities, constraints, or guidance; provide a complete "
-                        "replacement Markdown policy with an Objective or Scope section. "
-                        "When replacing policy, preserve existing goals, constraints, and "
-                        "guidance that the user did not ask to change. "
+                        "scope, priorities, constraints, or guidance; provide policy_updates "
+                        "with ONLY the named sections the user explicitly wants changed. "
+                        "Each value is the complete body of that section, without a heading. "
+                        "Other sections are preserved by the host. Never rewrite them. "
                         "Choose add_work for a new investigable question or external task. "
                         "Choose prioritize_hypothesis only with the exact ID of a hypothesis "
                         "listed in the supplied case context. Do not invent IDs or facts. "

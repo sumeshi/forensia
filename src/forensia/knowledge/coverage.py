@@ -10,11 +10,14 @@ import json
 import logging
 import re
 from datetime import UTC, datetime
+from decimal import Decimal, InvalidOperation
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 import yaml
 
+from forensia.core.verification import VerificationSpec
 from forensia.db.database import CaseDB
 from forensia.evidence.timestamp_policy import (
     TimestampPolicy,
@@ -146,6 +149,185 @@ def _load_yaml(path: Path) -> dict[str, Any]:
 def load_artifact_capabilities() -> dict[str, Any]:
     """Load artifact capability declarations from data/schema/artifact_capabilities.yaml."""
     return load_artifact_capabilities_config()
+
+
+@lru_cache(maxsize=1)
+def _declared_boolean_fields() -> dict[str, frozenset[str]]:
+    """Read Boolean columns from the same authoritative DDL as declared_schema."""
+    import duckdb
+
+    from forensia.db.schema import CORE_SCHEMA_SQL
+
+    with duckdb.connect() as conn:
+        conn.execute(CORE_SCHEMA_SQL)
+        rows = conn.execute(
+            "SELECT table_name, column_name FROM information_schema.columns "
+            "WHERE table_schema = 'main' AND data_type = 'BOOLEAN'"
+        ).fetchall()
+    result: dict[str, set[str]] = {}
+    for table, column in rows:
+        result.setdefault(str(table), set()).add(str(column))
+    return {table: frozenset(columns) for table, columns in result.items()}
+
+
+def observation_catalog() -> dict[str, dict[str, list[str]]]:
+    """Return artifact families, capabilities, and normalized observation fields.
+
+    Capability declarations come from the artifact catalog, while fields come
+    only from each family's authoritative record table used by evidence lookup.
+    """
+    from forensia.db.evidence_lookup import canonical_record_table
+    from forensia.db.schema import declared_schema
+
+    catalog = load_artifact_capabilities().get("families", {})
+    schema = declared_schema()
+    boolean_fields = _declared_boolean_fields()
+    metadata_fields = {
+        "artifact_id",
+        "created_at",
+        "dataset_id",
+        "evidence_id",
+        "raw_json",
+        "severity",
+        "source_file",
+        "source_ids",
+        "tags",
+        "timeline_id",
+    }
+    result: dict[str, dict[str, list[str]]] = {}
+    for family, config in sorted(catalog.items()):
+        table = canonical_record_table(str(family))
+        if table is None:
+            continue
+        columns = {
+            column for column in schema.get(table, ()) if column not in metadata_fields
+        }
+        if not columns:
+            continue
+        result[str(family)] = {
+            "capabilities": sorted(
+                str(name) for name in (config.get("capabilities") or {})
+            ),
+            "fields": sorted(columns),
+            "boolean_fields": sorted(columns & boolean_fields.get(table, frozenset())),
+        }
+    return result
+
+
+def observation_condition_error(condition: Any) -> str | None:
+    """Return the admission/evaluation error for one typed observation spec."""
+    if not isinstance(condition, dict) or "observation" not in condition:
+        return "invalid-observation-condition"
+    if set(condition) not in ({"observation"}, {"observation", "min_count"}):
+        return "mixed-verification-condition-kinds"
+    min_count = condition.get("min_count", 1)
+    if not isinstance(min_count, int) or isinstance(min_count, bool) or min_count < 1:
+        return "observation-min-count-invalid"
+    observation = condition["observation"]
+    if not isinstance(observation, dict) or set(observation) != {
+        "family",
+        "capability",
+        "field",
+        "operator",
+        "value",
+    }:
+        return "invalid-observation-condition"
+
+    family, capability, field, operator = (
+        observation.get(key) for key in ("family", "capability", "field", "operator")
+    )
+    if any(
+        not isinstance(value, str) or not value.strip()
+        for value in (family, capability, field, operator)
+    ):
+        return "invalid-observation-condition"
+    family = family.strip().lower()
+    capability = capability.strip()
+    field = field.strip()
+    operator = operator.strip()
+
+    catalog = observation_catalog()
+    if family == "evtx" or family not in catalog:
+        return "observation-family-unsupported"
+    if capability not in catalog[family]["capabilities"]:
+        return "observation-capability-unsupported"
+    if field not in catalog[family]["fields"]:
+        return "observation-field-unsupported"
+    if operator not in {"equals", "contains", "greater_than"}:
+        return "observation-operator-unsupported"
+
+    expected = observation.get("value")
+    if field in catalog[family]["boolean_fields"]:
+        if operator != "equals":
+            return "observation-operator-value-invalid"
+        if not isinstance(expected, bool):
+            return "observation-value-invalid"
+    elif (
+        expected is None
+        or isinstance(expected, bool)
+        or not isinstance(expected, (str, int, float))
+        or isinstance(expected, str)
+        and not expected.strip()
+        or isinstance(expected, float)
+        and not _finite_observation_decimal(expected)
+    ):
+        return "observation-value-invalid"
+    if operator == "equals" and isinstance(expected, str):
+        try:
+            numeric_text = Decimal(expected)
+        except InvalidOperation:
+            numeric_text = None
+        if numeric_text is not None and not numeric_text.is_finite():
+            return "observation-value-invalid"
+    if operator == "contains" and not isinstance(expected, str):
+        return "observation-operator-value-invalid"
+    if operator == "greater_than":
+        numeric = _finite_observation_decimal(expected)
+        if not numeric:
+            from datetime import datetime
+
+            try:
+                datetime.fromisoformat(str(expected).replace("Z", "+00:00"))
+            except ValueError:
+                return "observation-operator-value-invalid"
+    return None
+
+
+def _finite_observation_decimal(value: Any) -> bool:
+    """Test numeric observation operands without float precision or range loss."""
+    try:
+        return Decimal(str(value)).is_finite()
+    except InvalidOperation:
+        return False
+
+
+def canonical_observation_claim(spec: VerificationSpec | dict[str, Any]) -> str | None:
+    """Render only the narrow observation admitted by the shared catalog."""
+    if isinstance(spec, VerificationSpec):
+        conditions = spec.support_conditions
+    elif isinstance(spec, dict):
+        conditions = spec.get("support_conditions") or {}
+    else:
+        return None
+    if observation_condition_error(conditions):
+        return None
+    observation = conditions["observation"]
+    count = conditions.get("min_count", 1)
+    operator_text = {
+        "equals": "equals",
+        "contains": "contains",
+        "greater_than": "greater than",
+    }[observation["operator"].strip()]
+    try:
+        value = json.dumps(observation["value"], ensure_ascii=False, allow_nan=False)
+    except TypeError, ValueError:
+        return None
+    record = "observation" if count == 1 else "observations"
+    verb = "has" if count == 1 else "have"
+    return (
+        f"At least {count} {observation['family'].strip().lower()} {record} {verb} "
+        f"{observation['field'].strip()} {operator_text} {value}."
+    )
 
 
 def load_evidence_sufficiency_policy() -> dict[str, Any]:
@@ -535,6 +717,15 @@ def derive_required_capabilities(
     inferred: set[str] = set()
     conditions = support_conditions or {}
     if conditions:
+        observation = conditions.get("observation")
+        if isinstance(observation, dict):
+            family = str(observation.get("family") or "").strip().lower()
+            capability = str(observation.get("capability") or "").strip()
+            family_config = (
+                load_artifact_capabilities().get("families", {}).get(family, {})
+            )
+            if capability in (family_config.get("capabilities") or {}):
+                return [capability]
         # Structured event requirements do not need a table-name keyword in
         # their JSON to identify the capabilities declared for those events.
         event_ids = {
@@ -634,6 +825,12 @@ def disclosure_tables_for_spec(spec: Any) -> tuple[tuple[str, ...], tuple[str, .
         declared = spec.required_capabilities
     else:
         return (), ()
+    observation = conditions.get("observation")
+    if isinstance(observation, dict):
+        family = str(observation.get("family") or "").strip().lower()
+        family_config = load_artifact_capabilities().get("families", {}).get(family, {})
+        tables = tuple(str(table) for table in family_config.get("tables") or [])
+        return tables, tables[:1]
     return capability_disclosure_tables(
         derive_required_capabilities(list(declared), conditions)
     )

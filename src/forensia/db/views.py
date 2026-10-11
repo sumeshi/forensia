@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
@@ -20,7 +20,14 @@ DetailKind = Literal[
     "step",
     "query_receipt",
     "command_receipt",
+    "assessment",
+    "reasoning",
+    "section",
+    "retrieval",
+    "llm_call",
+    "llm_attempt",
 ]
+DETAIL_KINDS = frozenset(get_args(DetailKind))
 _DETAIL_LIMIT = 100
 _VALUE_LIMIT = 16_384
 
@@ -56,14 +63,16 @@ def _bounded(
     return value
 
 
-def _row(db: CaseDB, sql: str, params: tuple[Any, ...]) -> dict[str, Any] | None:
+def _row(
+    db: CaseDB, sql: str, params: tuple[Any, ...], *, bounded: bool = True
+) -> dict[str, Any] | None:
     result = db.execute(sql, params)
     columns = [item[0] for item in result.description]
     row = result.fetchone()
     if row is None:
         return None
     return {
-        key: _bounded(_json_value(value))
+        key: _bounded(_json_value(value)) if bounded else _json_value(value)
         for key, value in zip(columns, row, strict=True)
     }
 
@@ -106,12 +115,9 @@ def case_snapshot(case: Case, db: CaseDB) -> dict[str, Any]:
         )
         usage = None
         if session:
-            usage_row = db.execute(
-                "SELECT SUM(input_tokens), SUM(output_tokens) FROM trace.llm_provider_attempts WHERE session_id = ?",
-                [session["session_id"]],
-            ).fetchone()
-            if usage_row and (usage_row[0] is not None or usage_row[1] is not None):
-                usage = {"input_tokens": usage_row[0], "output_tokens": usage_row[1]}
+            aggregate = llm_session_aggregates(db, session["session_id"])
+            if aggregate["provider_attempt_count"]:
+                usage = aggregate
         report = db.execute(
             "SELECT status, stale, COUNT(*) FROM report_sections GROUP BY status, stale ORDER BY status, stale"
         ).fetchall()
@@ -256,11 +262,13 @@ def case_events(
 
 
 def case_detail(
-    db: CaseDB, kind: DetailKind, id: str, limit: int = 100
+    db: CaseDB, kind: DetailKind, id: str, limit: int = 100, *, offset: int = 0
 ) -> dict[str, Any] | None:
     """Resolve a stable typed ID through fixed read queries only."""
     if limit < 1 or limit > _DETAIL_LIMIT:
         raise ValueError(f"limit must be between 1 and {_DETAIL_LIMIT}")
+    if type(offset) is not int or offset < 0:
+        raise ValueError("detail offset must be a nonnegative integer")
     queries: dict[str, tuple[str, str]] = {
         "hypothesis": (
             "SELECT * FROM hypotheses WHERE hypothesis_id = ?",
@@ -278,26 +286,69 @@ def case_detail(
         ),
         "query_receipt": (
             "SELECT step_id, session_id, hypothesis_id, iteration, input_json, output_json, created_at "
-            "FROM trace.investigation_steps WHERE phase = 'do' AND ("
-            "json_extract_string(output_json, '$.tool_receipt.receipt_id') = ? OR "
-            "json_extract_string(input_json, '$.planned_query.query_id') = ?) "
-            "ORDER BY CASE WHEN json_extract_string(output_json, '$.tool_receipt.receipt_id') = ? THEN 0 ELSE 1 END, created_at DESC LIMIT 1",
+            "FROM trace.investigation_steps WHERE phase = 'do' AND "
+            "json_extract_string(output_json, '$.tool_receipt.receipt_id') = ? "
+            "ORDER BY created_at DESC LIMIT 1",
             "receipt_id",
         ),
         "command_receipt": (
             "SELECT command_id, operation, status, reason, result, created_at, updated_at FROM trace.runtime_commands WHERE command_id = ?",
             "command_id",
         ),
+        "assessment": (
+            "SELECT assessment_id, hypothesis_id, role, assessment_reason, "
+            "matched_conditions, verification_spec_fingerprint, "
+            "list(evidence_id ORDER BY evidence_id) AS evidence_ids, "
+            "list(DISTINCT derivation_group ORDER BY derivation_group) AS derivation_groups "
+            "FROM hypothesis_evidence WHERE assessment_id = ? "
+            "GROUP BY ALL",
+            "assessment_id",
+        ),
+        "reasoning": (
+            "SELECT * FROM trace.hypothesis_reasoning WHERE entry_id = ?",
+            "entry_id",
+        ),
+        "section": (
+            "SELECT * FROM report_sections WHERE section_key = ?",
+            "section_key",
+        ),
+        "retrieval": (
+            "SELECT * FROM trace.retrieval_events WHERE event_id = ?",
+            "event_id",
+        ),
+        "llm_call": (
+            "SELECT c.*, (SELECT list(attempt_id ORDER BY start_time, attempt_id) "
+            "FROM trace.llm_provider_attempts a WHERE a.logical_call_id = c.logical_call_id) "
+            "AS attempt_ids FROM trace.llm_logical_calls c WHERE logical_call_id = ?",
+            "logical_call_id",
+        ),
+        "llm_attempt": (
+            "SELECT * FROM trace.llm_provider_attempts WHERE attempt_id = ?",
+            "attempt_id",
+        ),
     }
     if kind == "evidence":
         row = lookup_evidence_record(db, id)
-        return _bounded(row, _VALUE_LIMIT, limit) if row else None
+        return _detail_page(row, kind, id, offset) if row else None
     try:
         sql, _id_field = queries[kind]
     except KeyError as exc:
         raise ValueError(f"unsupported detail kind: {kind}") from exc
-    params = (id, id, id) if kind == "query_receipt" else (id,)
-    row = _row(db, sql, params)
+    row = _row(db, sql, (id,), bounded=False)
+    if kind == "assessment":
+        recorded = _row(
+            db,
+            "SELECT step_id, session_id, hypothesis_id, created_at, "
+            "json_extract(output_json, '$.assessment') AS assessment "
+            "FROM trace.investigation_steps "
+            "WHERE json_extract_string(output_json, '$.assessment.assessment_id') = ? "
+            "ORDER BY created_at DESC, step_id DESC LIMIT 1",
+            (id,),
+            bounded=False,
+        )
+        if recorded:
+            recorded["current_links"] = row
+            row = recorded
     if kind == "query_receipt" and row:
         output = row.get("output_json") or {}
         receipt = output.get("tool_receipt", {}) if isinstance(output, dict) else {}
@@ -312,4 +363,80 @@ def case_detail(
             for evidence_id in evidence_ids[:limit]
             if (evidence := lookup_evidence_record(db, str(evidence_id))) is not None
         ]
-    return _bounded(row, _VALUE_LIMIT, limit) if row else None
+    return _detail_page(row, kind, id, offset) if row else None
+
+
+def _detail_page(
+    row: dict[str, Any], kind: DetailKind, item_id: str, offset: int
+) -> dict[str, Any]:
+    """Page the original detail; previews must not permanently hide its tail."""
+    serialized = json.dumps(
+        row,
+        ensure_ascii=False,
+        indent=2,
+        default=lambda value: (
+            value.isoformat() if isinstance(value, datetime) else str(value)
+        ),
+    )
+    if offset == 0 and len(serialized) <= _VALUE_LIMIT:
+        return json.loads(serialized)
+    end = min(offset + _VALUE_LIMIT, len(serialized))
+    return {
+        "kind": kind,
+        "id": item_id,
+        "text": serialized[offset:end],
+        "offset": offset,
+        "next_offset": end if end < len(serialized) else None,
+        "total_chars": len(serialized),
+    }
+
+
+def llm_session_aggregates(db: CaseDB, session_id: str) -> dict[str, Any]:
+    sid = session_id
+    logical = db.execute(
+        "SELECT COUNT(*) FROM trace.llm_logical_calls WHERE session_id = ?", (sid,)
+    ).fetchone()[0]
+    row = db.execute(
+        """
+        SELECT
+            COUNT(*),
+            SUM(CASE WHEN error_type IS NOT NULL OR http_status >= 400 THEN 1 ELSE 0 END),
+            SUM(CASE WHEN retry_ordinal > 0 THEN 1 ELSE 0 END),
+            SUM(CASE WHEN duplicate_of IS NOT NULL THEN 1 ELSE 0 END),
+            SUM(CASE WHEN input_tokens_source = 'provider_actual' THEN input_tokens ELSE 0 END),
+            SUM(CASE WHEN output_tokens_source = 'provider_actual' THEN output_tokens ELSE 0 END),
+            SUM(CASE WHEN input_tokens_source = 'local_estimate' THEN input_tokens ELSE 0 END),
+            SUM(CASE WHEN output_tokens_source = 'local_estimate' THEN output_tokens ELSE 0 END),
+            SUM(CASE WHEN input_tokens_source = 'unknown' OR input_tokens IS NULL THEN 1 ELSE 0 END),
+            SUM(CASE WHEN output_tokens_source = 'unknown' OR output_tokens IS NULL THEN 1 ELSE 0 END),
+            SUM(CASE WHEN input_tokens_source = 'provider_actual' THEN 1 ELSE 0 END),
+            SUM(CASE WHEN output_tokens_source = 'provider_actual' THEN 1 ELSE 0 END),
+            SUM(CASE WHEN input_tokens_source = 'local_estimate' THEN 1 ELSE 0 END),
+            SUM(CASE WHEN output_tokens_source = 'local_estimate' THEN 1 ELSE 0 END)
+        FROM trace.llm_provider_attempts WHERE session_id = ?
+        """,
+        (sid,),
+    ).fetchone()
+    det = db.execute(
+        "SELECT COUNT(*) FROM trace.llm_deterministic_ops WHERE session_id = ?",
+        (sid,),
+    ).fetchone()[0]
+    return {
+        "session_id": sid,
+        "logical_call_count": logical,
+        "provider_attempt_count": row[0] or 0,
+        "provider_attempt_failures": row[1] or 0,
+        "provider_attempt_retries": row[2] or 0,
+        "duplicate_attempts": row[3] or 0,
+        "actual_input_tokens": row[4] if row[10] else None,
+        "actual_output_tokens": row[5] if row[11] else None,
+        "estimated_input_tokens": row[6] if row[12] else None,
+        "estimated_output_tokens": row[7] if row[13] else None,
+        "unknown_input_usage_attempts": row[8] or 0,
+        "unknown_output_usage_attempts": row[9] or 0,
+        "actual_input_usage_attempts": row[10] or 0,
+        "actual_output_usage_attempts": row[11] or 0,
+        "estimated_input_usage_attempts": row[12] or 0,
+        "estimated_output_usage_attempts": row[13] or 0,
+        "deterministic_op_count": det,
+    }

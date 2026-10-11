@@ -178,6 +178,13 @@ def test_case_snapshot_reports_ingest_work_elapsed_and_remaining_llm_budget() ->
             db.execute(
                 "INSERT INTO trace.llm_logical_calls (logical_call_id, session_id) VALUES ('L-1', 'S-1'), ('L-2', 'S-1')"
             )
+            db.execute(
+                "INSERT INTO trace.llm_provider_attempts "
+                "(attempt_id, session_id, input_tokens, input_tokens_source) VALUES "
+                "('actual', 'S-1', 12, 'provider_actual'), "
+                "('estimate', 'S-1', 7, 'local_estimate'), "
+                "('unknown', 'S-1', NULL, 'unknown')"
+            )
             record_progress_event(
                 db,
                 progress_event(
@@ -196,3 +203,6 @@ def test_case_snapshot_reports_ingest_work_elapsed_and_remaining_llm_budget() ->
         assert snapshot["current_work"]["summary"] == "Scanning input files"
         assert snapshot["elapsed_seconds"] is not None
         assert snapshot["budget_remaining_llm_calls"] == 8
+        assert snapshot["budget_usage"]["actual_input_tokens"] == 12
+        assert snapshot["budget_usage"]["estimated_input_tokens"] == 7
+        assert snapshot["budget_usage"]["unknown_input_usage_attempts"] == 1

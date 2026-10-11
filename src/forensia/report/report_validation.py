@@ -101,37 +101,82 @@ class ValidationFinding:
 
 
 def derive_publication_state(db: Any) -> dict[str, Any]:
-    """Derive the publication gate from durable investigation state.
+    """Derive report readiness, investigation status, and evidence confidence.
 
-    ``report_sections.status`` describes generation state, while the evidence
-    confidence below describes whether an investigative conclusion is actually
-    established.  They are intentionally kept as separate values: an
-    ``ai_exhausted`` section with a high prose score is not evidence that a
-    hypothesis was confirmed.
+    Publication readiness is determined by current output for the adopted
+    report sections and resolvable evidence links. Investigation status and
+    confidence describe separate durable case facts and do not gate a report.
     """
     state: dict[str, Any] = {
-        "publication_status": "complete",
+        "publication_status": "needs_review",
+        "report_complete": False,
         "confirmed_hypothesis_count": 0,
         "confirmed_without_evidence_count": 0,
         "hypothesis_execution_step_count": 0,
         "plan_step_count": 0,
         "draft_sections": [],
         "section_statuses": {},
-        "evidence_confidence": "established",
-        "claim_scope": "confirmed_conclusions",
+        "missing_section_keys": [],
+        "stale_section_keys": [],
+        "invalid_reference_sections": [],
+        "investigation_status": "unknown",
+        "stop_reason_code": "",
+        "stop_reason": "",
+        "evidence_confidence": "not_established",
+        "claim_scope": "deterministic_signals_only",
         "reasons": [],
+        "investigation_reasons": [],
     }
     if db is None:
-        state.update(
-            {
-                "publication_status": "needs_review",
-                "evidence_confidence": "not_established",
-                "claim_scope": "deterministic_signals_only",
-                "reasons": ["database_unavailable"],
-            }
-        )
+        state["reasons"].append("database_unavailable")
+        state["investigation_reasons"].append("database_unavailable")
         return state
 
+    try:
+        from forensia.report.sections.status import build_report_status
+
+        report = build_report_status(db)
+        state["report_complete"] = bool(report.get("complete"))
+        state["missing_section_keys"] = list(report.get("missing_section_keys") or [])
+        state["stale_section_keys"] = list(report.get("stale_section_keys") or [])
+        state["invalid_reference_sections"] = list(
+            report.get("invalid_reference_sections") or []
+        )
+        statuses = {
+            str(item.get("section_key") or ""): str(item.get("status") or "draft")
+            for item in report.get("items", [])
+            if item.get("section_key")
+        }
+        state["section_statuses"] = statuses
+        state["draft_sections"] = sorted(
+            key for key, status in statuses.items() if status == "draft"
+        )
+        if not report.get("required_section_keys"):
+            state["reasons"].append("no_adopted_report_sections")
+        if state["missing_section_keys"]:
+            state["reasons"].append("report_sections_missing_current_output")
+        if state["stale_section_keys"]:
+            state["reasons"].append("report_sections_stale")
+        if state["invalid_reference_sections"]:
+            state["reasons"].append("report_sections_have_unresolved_evidence")
+    except Exception:
+        state["reasons"].append("report_status_unavailable")
+
+    try:
+        row = db.execute(
+            "SELECT status, stop_reason_code, stop_reason "
+            "FROM investigation_state WHERE state_id = 'case'"
+        ).fetchone()
+        if row:
+            state["investigation_status"] = str(row[0] or "active")
+            state["stop_reason_code"] = str(row[1] or "")
+            state["stop_reason"] = str(row[2] or "")
+        else:
+            state["investigation_reasons"].append("investigation_state_unavailable")
+    except Exception:
+        state["investigation_reasons"].append("investigation_state_unavailable")
+
+    confidence_reasons = state["investigation_reasons"]
     try:
         state["confirmed_hypothesis_count"] = int(
             db.execute(
@@ -139,25 +184,26 @@ def derive_publication_state(db: Any) -> dict[str, Any]:
             ).fetchone()[0]
         )
     except Exception:
-        state["reasons"].append("confirmed_hypotheses_unavailable")
+        confidence_reasons.append("confirmed_hypotheses_unavailable")
 
     try:
-        state["confirmed_without_evidence_count"] = int(
-            len(
-                db.execute(
-                    """
-                SELECT COUNT(*)
-                FROM hypotheses h
-                LEFT JOIN hypothesis_evidence he ON he.hypothesis_id = h.hypothesis_id
-                WHERE h.status = 'confirmed'
-                GROUP BY h.hypothesis_id
-                HAVING COUNT(he.link_id) = 0
-                """
-                ).fetchall()
+        from forensia.evidence.links import load_evidence_links
+
+        confirmed_ids = [
+            str(row[0])
+            for row in db.execute(
+                "SELECT hypothesis_id FROM hypotheses WHERE status = 'confirmed'"
+            ).fetchall()
+        ]
+        for hypothesis_id in confirmed_ids:
+            has_current_support = any(
+                link.assessment_id and link.role in {"supporting", "corroborating"}
+                for link in load_evidence_links(db, hypothesis_id, current_only=True)
             )
-        )
+            if not has_current_support:
+                state["confirmed_without_evidence_count"] += 1
     except Exception:
-        state["reasons"].append("hypothesis_evidence_unavailable")
+        confidence_reasons.append("hypothesis_evidence_unavailable")
 
     # Hypothesis ``do`` and ``check`` are the durable receipts that prove the
     # planner actually investigated a hypothesis. Section query runs are not a
@@ -176,65 +222,70 @@ def derive_publication_state(db: Any) -> dict[str, Any]:
             ).fetchone()[0]
         )
     except Exception:
-        state["reasons"].append("hypothesis_execution_receipts_unavailable")
+        confidence_reasons.append("hypothesis_execution_receipts_unavailable")
 
-    try:
-        rows = fetch_report_sections(db)
-        statuses = {
-            str(row["section_key"]): str(row["status"] or "draft") for row in rows
-        }
-        state["section_statuses"] = statuses
-        state["draft_sections"] = sorted(
-            key for key, status in statuses.items() if status == "draft"
-        )
-    except Exception:
-        state["reasons"].append("section_statuses_unavailable")
-
-    reasons = state["reasons"]
     if state["confirmed_hypothesis_count"] == 0:
-        reasons.append("no_confirmed_hypotheses")
+        confidence_reasons.append("no_confirmed_hypotheses")
     if state["confirmed_without_evidence_count"]:
-        reasons.append("confirmed_hypotheses_without_evidence")
-    if state["hypothesis_execution_step_count"] == 0:
-        reasons.append("hypothesis_investigation_not_executed")
-    if state["draft_sections"]:
-        reasons.append("draft_sections_present")
-    if reasons:
-        state["publication_status"] = "needs_review"
-        state["evidence_confidence"] = "not_established"
-        state["claim_scope"] = "deterministic_signals_only"
+        confidence_reasons.append("confirmed_hypotheses_without_evidence")
+    if (
+        not any(
+            reason in confidence_reasons
+            for reason in (
+                "confirmed_hypotheses_unavailable",
+                "hypothesis_evidence_unavailable",
+            )
+        )
+        and state["confirmed_hypothesis_count"] > 0
+        and not state["confirmed_without_evidence_count"]
+    ):
+        state["evidence_confidence"] = "established"
+        state["claim_scope"] = "confirmed_conclusions"
+
+    if state["report_complete"]:
+        state["publication_status"] = "complete"
     return state
 
 
 def check_publication_readiness(db: Any) -> list[ValidationFinding]:
-    """Fail publication when generated prose outruns durable investigation."""
-    state = derive_publication_state(db)
+    """Require current output and resolvable evidence for adopted sections."""
+    from forensia.report.sections.status import build_report_status
+
+    state = build_report_status(db)
     findings: list[ValidationFinding] = []
-    if state["confirmed_hypothesis_count"] == 0:
+    if state["missing_section_keys"]:
         findings.append(
             ValidationFinding(
                 "publication_readiness",
                 "error",
-                "No confirmed hypothesis exists; rule findings are deterministic signals/review candidates, not confirmed conclusions",
-                "evidence_confidence=not_established",
+                "Adopted report sections are missing current output",
+                f"sections={state['missing_section_keys']}",
             )
         )
-    if state["hypothesis_execution_step_count"] == 0:
+    if state["stale_section_keys"]:
         findings.append(
             ValidationFinding(
                 "publication_readiness",
                 "error",
-                "No hypothesis do/check execution receipt exists; investigation is incomplete",
-                f"plan_steps={state['plan_step_count']}",
+                "Adopted report sections have stale output",
+                f"sections={state['stale_section_keys']}",
             )
         )
-    if state["draft_sections"]:
+    if state["invalid_reference_sections"]:
         findings.append(
             ValidationFinding(
                 "publication_readiness",
                 "error",
-                "Draft report sections cannot be published without an explicit needs_review warning",
-                f"sections={state['draft_sections']}",
+                "Adopted report sections contain unresolved evidence references",
+                f"sections={state['invalid_reference_sections']}",
+            )
+        )
+    if not state["required_section_keys"]:
+        findings.append(
+            ValidationFinding(
+                "publication_readiness",
+                "error",
+                "No adopted report sections are available",
             )
         )
     return findings

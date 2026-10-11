@@ -16,7 +16,6 @@ from forensia.core.case import Case
 from forensia.core.session import Hypothesis, SessionState
 from forensia.db.database import CaseDB
 from forensia.investigation.hypotheses.hypothesis_manager import (
-    MAX_SECTION_UPDATES,
     admit_new_hypothesis,
     merge_active_hypotheses,
     qualify_event_contexts,
@@ -68,6 +67,81 @@ class TestHypothesisAdmissionConformance(unittest.TestCase):
                 description,
                 {**base, "same_entities": ["src_ip", "target_user"], "min_count": 2},
             ),
+        )
+
+    def test_admits_catalogued_non_evtx_observation_specs(self) -> None:
+        state = SessionState(session_id="S-observation")
+        for family, capability, field in (
+            ("prefetch", "process_execution", "executable_name"),
+            ("mft", "file_activity", "file_path"),
+            ("registry", "registry_observation", "key_path"),
+        ):
+            candidate = Hypothesis(
+                id=f"draft-{family}",
+                description=f"Observed {field} in {family} evidence",
+                confirm_when={
+                    "observation": {
+                        "family": family,
+                        "capability": capability,
+                        "field": field,
+                        "operator": "contains",
+                        "value": "example",
+                    }
+                },
+            )
+            self.assertEqual((True, "accepted"), admit_new_hypothesis(candidate, state))
+
+        invalid = Hypothesis(
+            id="draft-invalid-observation",
+            description="Observed an unsupported field",
+            confirm_when={
+                "observation": {
+                    "family": "prefetch",
+                    "capability": "process_execution",
+                    "field": "raw_json",
+                    "operator": "equals",
+                    "value": "anything",
+                }
+            },
+        )
+        self.assertEqual(
+            (False, "observation-field-unsupported"),
+            admit_new_hypothesis(invalid, state),
+        )
+
+    def test_admits_boolean_observation_with_boolean_operand(self) -> None:
+        state = SessionState(session_id="S-boolean-observation")
+        valid = Hypothesis(
+            id="draft-mft-deleted",
+            description="An MFT record marks the file as deleted",
+            confirm_when={
+                "observation": {
+                    "family": "mft",
+                    "capability": "file_activity",
+                    "field": "is_deleted",
+                    "operator": "equals",
+                    "value": True,
+                }
+            },
+        )
+        self.assertEqual((True, "accepted"), admit_new_hypothesis(valid, state))
+
+        invalid = Hypothesis(
+            id="draft-mft-deleted-string",
+            description="An MFT record marks the file as deleted",
+            confirm_when={
+                "observation": {
+                    "family": "mft",
+                    "capability": "file_activity",
+                    "field": "is_deleted",
+                    "operator": "equals",
+                    "value": "true",
+                }
+            },
+        )
+        self.assertEqual(
+            (False, "observation-value-invalid"),
+            admit_new_hypothesis(invalid, state),
         )
 
     def test_rejects_known_event_reinterpretations(self) -> None:
@@ -431,6 +505,10 @@ class TestResolvedHypothesisDedup:
                 )
 
     def test_spec_change_reopens_resolved_hypothesis(self) -> None:
+        from forensia.evidence.links import (
+            evidence_link_currentness,
+            load_evidence_links,
+        )
         from forensia.investigation.hypotheses.hypothesis_manager import (
             _merge_active_hypotheses_in_transaction,
         )
@@ -441,8 +519,6 @@ class TestResolvedHypothesisDedup:
         from forensia.investigation.selection import select_focus_hypotheses
         from forensia.investigation.verification.sufficiency import (
             create_hypothesis_evidence_link,
-            evidence_link_currentness,
-            load_evidence_links,
         )
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -455,7 +531,7 @@ class TestResolvedHypothesisDedup:
                     summary="Previously confirmed",
                     target_keypoint_id="host_execution_activity",
                 )
-                _insert_section(db, "3_technical", update_count=MAX_SECTION_UPDATES)
+                _insert_section(db, "3_technical", update_count=17)
                 _upsert_hypothesis(
                     db,
                     resolved,
@@ -807,14 +883,14 @@ class StalePropagationViaDescriptionTests(unittest.TestCase):
                 self.assertTrue(_stale_status(db, "3_technical"))
 
 
-class StalePropagationUpdateCountCapTests(unittest.TestCase):
-    """Sections with update_count >= max should not be marked stale."""
+class StalePropagationUpdateCountTests(unittest.TestCase):
+    """Source changes stale sections even after many prior refreshes."""
 
-    def test_section_at_cap_not_marked_stale(self) -> None:
+    def test_section_with_high_update_count_is_marked_stale(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
-                _insert_section(db, "3_technical", update_count=MAX_SECTION_UPDATES)
+                _insert_section(db, "3_technical", update_count=17)
                 state = SessionState(
                     session_id="S-1",
                     iteration=1,
@@ -827,6 +903,7 @@ class StalePropagationUpdateCountCapTests(unittest.TestCase):
                         )
                     ],
                 )
+                _setup_confirmed_invariant(db, "H-5")
                 resolve_hypothesis(
                     db=db,
                     state=state,
@@ -835,16 +912,16 @@ class StalePropagationUpdateCountCapTests(unittest.TestCase):
                     summary="confirmed",
                     session_id="S-1",
                 )
-                self.assertFalse(
+                self.assertTrue(
                     _stale_status(db, "3_technical"),
-                    "section at update_count cap should NOT be marked stale",
+                    "invalidation must not be disabled by prior refresh count",
                 )
 
-    def test_section_below_cap_marked_stale(self) -> None:
+    def test_section_with_low_update_count_is_marked_stale(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
-                _insert_section(db, "3_technical", update_count=MAX_SECTION_UPDATES - 1)
+                _insert_section(db, "3_technical", update_count=1)
                 state = SessionState(
                     session_id="S-1",
                     iteration=1,
@@ -868,7 +945,7 @@ class StalePropagationUpdateCountCapTests(unittest.TestCase):
                 )
                 self.assertTrue(
                     _stale_status(db, "3_technical"),
-                    "section below cap should be marked stale",
+                    "section should be marked stale",
                 )
 
 
@@ -908,147 +985,6 @@ class StalePropagationRulepackDeclTests(unittest.TestCase):
                     _stale_status(db, "2_timeline"),
                     "rulepack declaration should mark 2_timeline stale",
                 )
-
-
-class CollectSectionRequestsTests(unittest.TestCase):
-    """R6-01: the stale-section query must survive contact with real DuckDB rows.
-
-    The previous implementation did dict-style access on raw fetchall() tuples
-    and crashed with TypeError on the first stale row — killing every report
-    refresh after the initial fill (sessions 89dae1d15b9a / 907bd96e669c)."""
-
-    def test_stale_section_produces_render_request(self) -> None:
-        from pathlib import Path
-
-        from forensia.report.sections.report_input import sections_from_template_dir
-        from forensia.report.sections.section_refresher import collect_section_requests
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(tmpdir)
-            template_dir = Path(tmpdir) / "templates"
-            template_dir.mkdir()
-            (template_dir / "1_overview.md").write_text(
-                "# Investigation Overview\n\n## Executive Summary\n<!-- mode: narrative; summary -->\n",
-                encoding="utf-8",
-            )
-            (template_dir / "4_gaps.md").write_text(
-                "# Investigation Gaps\n\n## Evidence Gaps\n<!-- mode: table; builder: gaps_evidence -->\n",
-                encoding="utf-8",
-            )
-            with CaseDB(case) as db:
-                # 1_overview: filled and fresh → must NOT be re-rendered.
-                db.execute(
-                    "INSERT INTO report_sections (section_key, title, body, confidence, status, update_count, stale) "
-                    "VALUES ('1_overview', 'Overview', 'filled body text', 0.8, 'ai_exhausted', 1, FALSE)"
-                )
-                # 4_gaps: filled but stale → must be re-rendered.
-                db.execute(
-                    "INSERT INTO report_sections (section_key, title, body, confidence, status, update_count, stale) "
-                    "VALUES ('4_gaps', 'Gaps', 'old gap body', 0.5, 'draft', 1, TRUE)"
-                )
-                prior_filled = {
-                    "1_overview": "filled body text",
-                    "4_gaps": "old gap body",
-                }
-                requests = collect_section_requests(
-                    case,
-                    db,
-                    sections_from_template_dir(template_dir),
-                    prior_filled,
-                    report_brief={},
-                )
-
-        keys = [str(r.get("section_key")) for r in requests]
-        self.assertIn("4_gaps", keys, "stale section must produce a render request")
-        self.assertNotIn("1_overview", keys, "fresh filled section must be skipped")
-        gap_request = next(r for r in requests if r["section_key"] == "4_gaps")
-        self.assertTrue(gap_request["is_stale"])
-
-    def test_failure_marker_produces_retry_request_even_when_fresh(self) -> None:
-        from pathlib import Path
-
-        from forensia.report.sections.report_input import section_source_from_path
-        from forensia.report.sections.section_refresher import collect_section_requests
-
-        marker = "_Section could not be generated due to an internal error._"
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(tmpdir)
-            template_path = Path(tmpdir) / "1_overview.md"
-            template_path.write_text(
-                "# Investigation Overview\n\n## Executive Summary\n<!-- mode: narrative; summary -->\n",
-                encoding="utf-8",
-            )
-            with CaseDB(case) as db:
-                db.execute(
-                    """
-                    INSERT INTO report_sections (
-                        section_key, title, body, confidence, status, update_count, stale
-                    ) VALUES ('1_overview', 'Overview', ?, 0, 'draft', 1, FALSE)
-                    """,
-                    [marker],
-                )
-                requests = collect_section_requests(
-                    case,
-                    db,
-                    [section_source_from_path(template_path)],
-                    {"1_overview": marker},
-                    report_brief={},
-                )
-
-        self.assertEqual(["1_overview"], [item["section_key"] for item in requests])
-        self.assertTrue(requests[0]["is_stale"])
-
-    def test_force_all_returns_every_template(self) -> None:
-        from pathlib import Path
-
-        from forensia.report.sections.report_input import sections_from_template_dir
-        from forensia.report.sections.section_refresher import collect_section_requests
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(tmpdir)
-            template_dir = Path(tmpdir) / "templates"
-            template_dir.mkdir()
-            (template_dir / "1_overview.md").write_text(
-                "# Investigation Overview\n\n## Executive Summary\n<!-- mode: narrative; summary -->\n",
-                encoding="utf-8",
-            )
-            (template_dir / "4_gaps.md").write_text(
-                "# Investigation Gaps\n\n## Evidence Gaps\n<!-- mode: table; builder: gaps_evidence -->\n",
-                encoding="utf-8",
-            )
-            with CaseDB(case) as db:
-                db.execute(
-                    "INSERT INTO report_sections (section_key, title, body, confidence, status, update_count, stale) "
-                    "VALUES ('1_overview', 'Overview', 'filled body text', 0.8, 'ai_exhausted', 1, FALSE)"
-                )
-                db.execute(
-                    "INSERT INTO report_sections (section_key, title, body, confidence, status, update_count, stale) "
-                    "VALUES ('4_gaps', 'Gaps', 'old gap body', 0.5, 'draft', 5, FALSE)"
-                )
-                prior_filled = {
-                    "1_overview": "filled body text",
-                    "4_gaps": "old gap body",
-                }
-                requests = collect_section_requests(
-                    case,
-                    db,
-                    sections_from_template_dir(template_dir),
-                    prior_filled,
-                    report_brief={},
-                    force_all=True,
-                )
-
-        keys = [str(r.get("section_key")) for r in requests]
-        self.assertIn("1_overview", keys, "force_all must include fresh sections")
-        self.assertIn("4_gaps", keys, "force_all must include at-cap sections")
-        for r in requests:
-            self.assertTrue(
-                r["is_stale"], f"force_all must mark {r['section_key']} as stale"
-            )
-            self.assertTrue(
-                r["needs_refresh"],
-                f"force_all must mark {r['section_key']} as needs_refresh",
-            )
 
 
 if __name__ == "__main__":

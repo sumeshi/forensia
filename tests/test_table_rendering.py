@@ -14,9 +14,6 @@ from forensia.report.answers.keypoint_catalog import (
 )
 from forensia.report.evidence_refs import extract_needed_evidence
 from forensia.report.sections.report_input import section_source_from_path
-from forensia.report.sections.section_exec import (
-    structured_digest_from_answers,
-)
 from forensia.report.sections.template_parsing import parse_block_hints
 
 
@@ -77,58 +74,6 @@ class TableRenderingTests(unittest.TestCase):
         self.assertIn("section_instructions", block_body)
         self.assertIn("Separate facts from assessments.", block_body)
         self.assertIn("<!-- mode: narrative -->", block_body)
-
-    def test_async_render_section_blocks_renders_table_mode_without_llm(self) -> None:
-        """The async render path (used by the investigate loop)
-        must execute table builders deterministically instead of routing table
-        blocks through the LLM agent."""
-        import asyncio
-
-        from forensia.report.sections.section_refresher import render_section_blocks
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(tmpdir)
-            with CaseDB(case) as db:
-                db.execute(
-                    "INSERT INTO report_sections (section_key, title, body, confidence, status, update_count, stale) "
-                    "VALUES ('1_overview', 'Overview', '', 0.0, 'draft', 0, TRUE)"
-                )
-                request = {
-                    "case": case,
-                    "section_key": "1_overview",
-                    "title": "Investigation Overview",
-                    "template_preamble": "",
-                    "context_sections": {},
-                    "report_brief": {},
-                    "is_stale": True,
-                    "block_requests": [
-                        {
-                            "heading": "Evidence Scope",
-                            "template_body": "<!-- mode: table; builder: overview_evidence_scope -->",
-                            "mode": "table",
-                            "builder": "overview_evidence_scope",
-                            "evidence_keypoints": [],
-                        }
-                    ],
-                }
-                # base_url points nowhere: if the table branch regresses into the
-                # LLM agent path, this test fails loudly instead of passing.
-                _, body = asyncio.run(
-                    render_section_blocks(
-                        request,
-                        case,
-                        db,
-                        base_url="http://127.0.0.1:1",
-                        model="none",
-                        max_queries_per_section=1,
-                        iteration=1,
-                        session_id="S-table",
-                        progress_callback=None,
-                        focus_sections=None,
-                    )
-                )
-        self.assertIn("## Evidence Scope", body)
-        self.assertIn("| Metric | Value |", body)
 
     def test_render_rows_template_grammar(self) -> None:
         """R6-03: shared placeholder grammar for captions and interpretations."""
@@ -212,109 +157,6 @@ class TableRenderingTests(unittest.TestCase):
         iexplore = next(r for r in rows if r["executable"] == "IEXPLORE.EXE")
         self.assertEqual(16, int(iexplore["execution_count"]))
         self.assertIn("15:22:07", str(iexplore["last_execution"]))
-
-    def test_prepare_block_context_merges_section_table_digest(self) -> None:
-        """R6-05: same-section table digest reaches the narrator context."""
-        from forensia.report.sections.section_block_context import prepare_block_context
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(tmpdir)
-            with CaseDB(case) as db:
-                ctx = prepare_block_context(
-                    case=case,
-                    db=db,
-                    section_key="2_timeline",
-                    title="Activity Timeline",
-                    block_heading="Log Integrity",
-                    template_body="<!-- mode: narrative; x -->",
-                    base_url="http://127.0.0.1:1",
-                    model="none",
-                    max_queries=1,
-                    evidence_keypoints=None,
-                    question_mode=False,
-                    section_table_digest="<SECTION_TABLES>\n### Phase Summary\n| Date |\n</SECTION_TABLES>",
-                )
-        self.assertIn("<SECTION_TABLES>", ctx.structured_digest)
-        self.assertIn("Phase Summary", ctx.structured_digest)
-
-    def test_async_render_blocks_feed_table_digest_to_narrative_in_template_order(
-        self,
-    ) -> None:
-        """R6-05: tables render first and feed the narrative agent; the
-        assembled body keeps template order (narrative before table here)."""
-        import asyncio
-        from unittest import mock
-
-        from forensia.report.sections import section_refresher
-        from forensia.report.sections.section_exec import SectionBlockResult
-
-        captured: dict = {}
-
-        async def _stub_agent(**kwargs):
-            captured.update(kwargs)
-            return SectionBlockResult(
-                body="narrative body",
-                evidence_results=[],
-                iterations=1,
-                status="answered",
-            )
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(tmpdir)
-            with CaseDB(case) as db:
-                request = {
-                    "case": case,
-                    "section_key": "1_overview",
-                    "title": "Investigation Overview",
-                    "template_preamble": "",
-                    "context_sections": {},
-                    "report_brief": {},
-                    "is_stale": True,
-                    "block_requests": [
-                        {
-                            "heading": "Executive Summary",
-                            "template_body": "<!-- mode: narrative; summary -->",
-                            "mode": "narrative",
-                            "evidence_keypoints": [],
-                        },
-                        {
-                            "heading": "Evidence Scope",
-                            "template_body": "<!-- mode: table; builder: overview_evidence_scope -->",
-                            "mode": "table",
-                            "builder": "overview_evidence_scope",
-                            "evidence_keypoints": [],
-                        },
-                    ],
-                }
-                with mock.patch.object(
-                    section_refresher, "async_run_section_block_agent", _stub_agent
-                ):
-                    _, body = asyncio.run(
-                        section_refresher.render_section_blocks(
-                            request,
-                            case,
-                            db,
-                            base_url="http://127.0.0.1:1",
-                            model="none",
-                            max_queries_per_section=1,
-                            iteration=1,
-                            session_id="S-table",
-                            progress_callback=None,
-                            focus_sections=None,
-                        )
-                    )
-
-        digest = str(captured.get("section_table_digest") or "")
-        self.assertIn(
-            "<SECTION_TABLES>", digest, "narrative agent must receive the table digest"
-        )
-        self.assertIn("Evidence Scope", digest)
-        self.assertIn("| Metric | Value |", digest)
-        self.assertLess(
-            body.index("## Executive Summary"),
-            body.index("## Evidence Scope"),
-            "assembly must keep template order even though tables render first",
-        )
 
     def test_log_integrity_keypoints_ignore_non_eventlog_104(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -544,74 +386,6 @@ class TableRenderingTests(unittest.TestCase):
                     "Missing EDR telemetry for process tree", rows[0]["description"]
                 )
 
-    def test_structured_digest_empty_case(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(tmpdir)
-            digest = structured_digest_from_answers(case)
-            self.assertEqual("", digest)
-
-    def test_structured_digest_from_synthetic_answers(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(tmpdir)
-            answers_path = case.reports_dir / "structured" / "answers.json"
-            answers_path.parent.mkdir(parents=True, exist_ok=True)
-            synthetic = [
-                {
-                    "id": "probe_host_identity",
-                    "answer_spec": "host_identity",
-                    "status": "answered",
-                    "answer": [
-                        {
-                            "host": "HOST-A",
-                            "evidence_id": "E1",
-                            "timestamp": "2024-01-15T10:00:00",
-                        },
-                        {
-                            "host": "HOST-B",
-                            "evidence_id": "E2",
-                            "timestamp": "2024-01-15T11:00:00",
-                        },
-                    ],
-                    "columns": ["host", "timestamp"],
-                },
-                {
-                    "id": "probe_not_searched",
-                    "answer_spec": "unused_spec",
-                    "status": "not_searched",
-                    "answer": [],
-                    "columns": [],
-                },
-                {
-                    "id": "antiforensic_activity",
-                    "answer_spec": "antiforensic_activity",
-                    "status": "answered",
-                    "answer": [
-                        {
-                            "tool_name": "Eraser",
-                            "timestamp": "2024-01-15T12:00:00",
-                        },
-                    ],
-                    "columns": ["tool_name", "timestamp"],
-                },
-            ]
-            answers_path.write_text(
-                json.dumps(synthetic, ensure_ascii=False), encoding="utf-8"
-            )
-            digest = structured_digest_from_answers(case)
-            self.assertIn("host_identity", digest)
-            self.assertIn("antiforensic_activity", digest)
-            self.assertNotIn("unused_spec", digest)
-            self.assertNotIn("not_searched", digest)
-            self.assertIn("STRUCTURED_OBSERVATIONS", digest)
-            self.assertIn("HOST-A | HOST-B", digest)
-            self.assertIn("Eraser", digest)
-            self.assertIn("rows=2", digest)
-            self.assertIn("refs=E1 | E2", digest)
-            self.assertLess(
-                digest.index("antiforensic_activity"), digest.index("host_identity")
-            )
-            self.assertLess(len(digest), 1500)
-
     def test_structured_digest_in_prompt_for_overview(self) -> None:
         """Verify that build_paragraph_narrate_messages injects STRUCTURED_OBSERVATIONS for overview blocks."""
         from forensia.report.sections.prompts import build_paragraph_narrate_messages
@@ -645,62 +419,6 @@ class TableRenderingTests(unittest.TestCase):
         )
         combined = "\n".join(m.get("content", "") for m in messages)
         self.assertNotIn("STRUCTURED_OBSERVATIONS", combined)
-
-    def test_structured_digest_context_in_prepare_block_context(self) -> None:
-        """Verify prepare_block_context computes digest for overview and not for appendix."""
-        from forensia.report.sections.section_block_context import prepare_block_context
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(tmpdir)
-            answers_path = case.reports_dir / "structured" / "answers.json"
-            answers_path.parent.mkdir(parents=True, exist_ok=True)
-            answers_path.write_text(
-                json.dumps(
-                    [
-                        {
-                            "id": "probe_host",
-                            "answer_spec": "host_identity",
-                            "status": "answered",
-                            "answer": [
-                                {"host": "HOST-A", "timestamp": "2024-01-15T10:00:00"}
-                            ],
-                            "columns": ["host", "timestamp"],
-                        },
-                    ]
-                ),
-                encoding="utf-8",
-            )
-            with CaseDB(case) as db:
-                ctx_overview = prepare_block_context(
-                    case=case,
-                    db=db,
-                    section_key="1_overview",
-                    title="Overview",
-                    block_heading="Test",
-                    template_body="## Test",
-                    base_url="",
-                    model="test",
-                    max_queries=3,
-                    evidence_keypoints=None,
-                    question_mode=False,
-                    report_brief={},
-                )
-                ctx_appendix = prepare_block_context(
-                    case=case,
-                    db=db,
-                    section_key="6_appendix",
-                    title="Appendix",
-                    block_heading="Test",
-                    template_body="## Test",
-                    base_url="",
-                    model="test",
-                    max_queries=3,
-                    evidence_keypoints=None,
-                    question_mode=False,
-                    report_brief={},
-                )
-                self.assertIn("host_identity", ctx_overview.structured_digest)
-                self.assertEqual(ctx_appendix.structured_digest, "")
 
 
 if __name__ == "__main__":

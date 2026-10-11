@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import time
 from collections.abc import Callable
@@ -22,6 +24,8 @@ from forensia.core.session import (
 )
 from forensia.db.database import CaseDB
 from forensia.db.query import fetch_records, summarize_query_result
+from forensia.evidence.content_identity import fingerprint_from_record
+from forensia.evidence.links import verification_spec_fingerprint
 from forensia.investigation.hypotheses.execution import (
     build_receipt_step_payload,
     build_sql_receipt,
@@ -34,7 +38,10 @@ from forensia.investigation.hypotheses.hypothesis_manager import (
     _resolve_hypothesis_in_transaction,
     admit_new_hypothesis,
 )
-from forensia.investigation.hypotheses.hypothesis_store import _upsert_hypothesis
+from forensia.investigation.hypotheses.hypothesis_store import (
+    _upsert_hypothesis,
+    load_hypothesis_attempts,
+)
 from forensia.investigation.hypotheses.relations import insert_relation
 from forensia.investigation.investigation_session import (
     Ctx,
@@ -52,7 +59,10 @@ from forensia.investigation.progress import (
     HypothesisProgressTracker,
     query_fingerprint,
 )
-from forensia.investigation.verification.assessment import assess_evidence_group
+from forensia.investigation.verification.assessment import (
+    EvidenceAssessment,
+    assess_evidence_group,
+)
 from forensia.investigation.verification.checker import check_query_result
 from forensia.investigation.verification.settlement import (
     SettlementInput,
@@ -66,7 +76,10 @@ from forensia.investigation.verification.sufficiency import (
     create_evidence_links_for_query,
     record_unlinkable_observation,
 )
-from forensia.knowledge.coverage import derive_required_capabilities
+from forensia.knowledge.coverage import (
+    derive_required_capabilities,
+    load_artifact_capabilities,
+)
 
 
 def _unavailable_missing_event_ids(
@@ -138,6 +151,293 @@ def _rationale_signature(rationale: str) -> str:
     return "eid:" + ",".join(eids) + "|kw:" + ",".join(keywords)
 
 
+def _result_evidence_ids(rows: list[dict[str, Any]]) -> list[str]:
+    """Return every linkable row identity, including Registry artifact IDs."""
+    return list(
+        dict.fromkeys(
+            str(row.get("evidence_id") or row.get("artifact_id") or "").strip()
+            for row in rows
+            if row.get("evidence_id") or row.get("artifact_id")
+        )
+    )
+
+
+def _query_artifact_families(sql: str) -> list[str]:
+    """Find catalogued evidence families named by the validated SQL."""
+    from sqlglot import exp, parse_one
+
+    family_by_table = {
+        str(table).lower(): str(family)
+        for family, config in load_artifact_capabilities().get("families", {}).items()
+        for table in config.get("tables", [])
+    }
+    try:
+        tree = parse_one(sql, read="duckdb")
+    except Exception:
+        return []
+    return sorted(
+        {
+            family_by_table[table.name.lower()]
+            for table in tree.find_all(exp.Table)
+            if table.name.lower() in family_by_table
+        }
+    )
+
+
+def _evidence_scope_fingerprint(db: CaseDB, sql: str) -> str:
+    """Fingerprint source revisions for the artifact families a query reads."""
+    receipt_row = db.execute(
+        "SELECT output_json FROM trace.investigation_steps "
+        "WHERE phase = 'pipeline-normalize' "
+        "ORDER BY created_at DESC, step_id DESC LIMIT 1"
+    ).fetchone()
+    normalize_revision = None
+    if receipt_row is not None:
+        try:
+            receipt = json.loads(str(receipt_row[0]))
+        except TypeError, ValueError:
+            receipt = {}
+        if isinstance(receipt, dict) and receipt.get("status") == "completed":
+            revision = str(receipt.get("revision") or "")
+            if revision:
+                normalize_revision = {
+                    "revision": revision,
+                    "parser_revision": str(receipt.get("parser_revision") or ""),
+                }
+    source_fields = (
+        "source_id, artifact_family, ingest_status, parser_name, parser_version, "
+        "row_count, channel, hosts, volume_id, min_time, max_time, error_code, "
+        "error_summary"
+    )
+    families = _query_artifact_families(sql)
+    if families:
+        placeholders = ", ".join("?" for _ in families)
+        rows = db.execute(
+            f"SELECT {source_fields} "
+            f"FROM evidence_sources WHERE artifact_family IN ({placeholders}) "
+            "ORDER BY artifact_family, source_id",
+            families,
+        ).fetchall()
+    else:
+        rows = db.execute(
+            f"SELECT {source_fields} "
+            "FROM evidence_sources ORDER BY artifact_family, source_id"
+        ).fetchall()
+    normalized_rows = []
+    for row in rows:
+        values = list(row)
+        hosts = values[7]
+        if isinstance(hosts, str):
+            try:
+                hosts = json.loads(hosts)
+            except TypeError, ValueError:
+                hosts = []
+        values[7] = (
+            sorted({str(host) for host in hosts if host})
+            if isinstance(hosts, (list, tuple, set))
+            else []
+        )
+        normalized_rows.append(values)
+    encoded = json.dumps(
+        {
+            "sources": normalized_rows,
+            "pipeline_normalize": normalize_revision,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        default=str,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _canonical_evidence_rows(
+    db: CaseDB, rows: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], list[str], dict[str, str]]:
+    """Hydrate canonical evidence rows and fingerprint the fetched records."""
+    from forensia.db.evidence_lookup import fetch_evidence_records, routed_family
+
+    observed_ids = _result_evidence_ids(rows)
+    records = fetch_evidence_records(db, observed_ids)
+    canonical_ids = sorted(
+        evidence_id for evidence_id in observed_ids if evidence_id in records
+    )
+    fingerprints = {
+        evidence_id: fingerprint_from_record(records[evidence_id])
+        for evidence_id in canonical_ids
+    }
+    canonical_rows = []
+    for evidence_id in canonical_ids:
+        record = records[evidence_id]
+        canonical_rows.append(
+            {
+                **record,
+                "evidence_id": evidence_id,
+                "raw_json": record.get("raw"),
+                "source_family": routed_family(evidence_id) or "",
+            }
+        )
+    return canonical_rows, canonical_ids, fingerprints
+
+
+def _finding_ids_by_evidence(db: CaseDB, evidence_ids: list[str]) -> dict[str, str]:
+    """Map canonical evidence IDs to persisted finding provenance."""
+    ids = sorted(
+        {str(evidence_id).strip() for evidence_id in evidence_ids if evidence_id}
+    )
+    if not ids:
+        return {}
+    placeholders = ", ".join("?" for _ in ids)
+    rows = db.execute(
+        "SELECT f.finding_id, json_extract_string(j.value, '$.evidence_id') "
+        "FROM findings f, json_each(f.evidence) j "
+        f"WHERE json_extract_string(j.value, '$.evidence_id') IN ({placeholders}) "
+        "ORDER BY 2, 1",
+        ids,
+    ).fetchall()
+    finding_ids: dict[str, str] = {}
+    for finding_id, evidence_id in rows:
+        normalized_finding = str(finding_id or "").strip()
+        normalized_evidence = str(evidence_id or "").strip()
+        if normalized_finding and normalized_evidence:
+            finding_ids.setdefault(normalized_evidence, normalized_finding)
+    return finding_ids
+
+
+def _canonical_query_summary(
+    rows: list[dict[str, Any]],
+    assessment: EvidenceAssessment,
+    *,
+    observed_row_count: int,
+    sample_size: int = 10,
+    finding_ids_by_evidence: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Build evaluation summaries only from unique canonical records."""
+    summary = summarize_query_result(rows, sample_size=sample_size)
+    witness_ids: set[str] = set()
+    if assessment.role in {"supporting", "contradictory"}:
+        witness_ids = {
+            evidence_id for group in assessment.witness_groups for evidence_id in group
+        }
+    rows_by_id = {
+        str(row.get("evidence_id") or row.get("artifact_id") or "").strip(): row
+        for row in rows
+        if row.get("evidence_id") or row.get("artifact_id")
+    }
+    chosen_ids: list[str] = []
+    for evidence_id in sorted(witness_ids):
+        if evidence_id in rows_by_id:
+            chosen_ids.append(evidence_id)
+            if len(chosen_ids) >= sample_size:
+                break
+    for row in summary.get("sample_rows") or []:
+        evidence_id = str(
+            row.get("evidence_id") or row.get("artifact_id") or ""
+        ).strip()
+        if (
+            evidence_id
+            and evidence_id not in chosen_ids
+            and len(chosen_ids) < sample_size
+        ):
+            chosen_ids.append(evidence_id)
+
+    summary["sample_rows"] = [rows_by_id[evidence_id] for evidence_id in chosen_ids]
+    summary["evidence_ids"] = chosen_ids
+    row_finding_ids_by_evidence = {
+        str(row.get("evidence_id") or row.get("artifact_id")): str(
+            row.get("finding_id")
+        )
+        for row in summary["sample_rows"]
+        if (row.get("evidence_id") or row.get("artifact_id")) and row.get("finding_id")
+    }
+    for evidence_id, finding_id in (finding_ids_by_evidence or {}).items():
+        row_finding_ids_by_evidence.setdefault(evidence_id, finding_id)
+    summary["finding_ids_by_evidence"] = {
+        evidence_id: row_finding_ids_by_evidence[evidence_id]
+        for evidence_id in chosen_ids
+        if evidence_id in row_finding_ids_by_evidence
+    }
+    summary["finding_ids"] = list(
+        dict.fromkeys(summary["finding_ids_by_evidence"].values())
+    )
+    summary["observed_row_count"] = observed_row_count
+    return summary
+
+
+def _is_transient_execution_error(error: str) -> bool:
+    text = (error or "").casefold()
+    return any(
+        marker in text
+        for marker in (
+            "timed out",
+            "timeout",
+            "temporarily",
+            "connection reset",
+            "connection closed",
+            "database is locked",
+            "resource temporarily unavailable",
+            "i/o error",
+        )
+    )
+
+
+def _repeat_gate_decision(
+    db: CaseDB,
+    hypothesis: Hypothesis,
+    *,
+    query_fp: str,
+    verification_fp: str,
+    scope_fp: str,
+) -> dict[str, Any]:
+    attempts = load_hypothesis_attempts(db, hypothesis.id)
+    matching = [
+        attempt
+        for attempt in attempts
+        if attempt.get("query_fingerprint") == query_fp
+        and attempt.get("verification_spec_fingerprint") == verification_fp
+        and attempt.get("evidence_scope_fingerprint") == scope_fp
+    ]
+    if not matching:
+        return {"decision": "execute", "reason_code": "new_attempt_fingerprint"}
+
+    retry_count = sum(
+        1
+        for attempt in matching
+        if (attempt.get("repeat_gate") or {}).get("decision") == "retry"
+    )
+    previous = matching[-1]
+    previous_status = str(previous.get("status") or "")
+    if previous_status == "skipped":
+        return {
+            "decision": "skip",
+            "reason_code": "duplicate_attempt_already_blocked",
+            "attempt_ref": previous.get("attempt_ref"),
+        }
+    if previous_status == "error":
+        if previous.get("retryable") and retry_count < 1:
+            return {
+                "decision": "retry",
+                "reason_code": "bounded_transient_execution_retry",
+                "retry_of": previous.get("attempt_ref"),
+            }
+        return {
+            "decision": "skip",
+            "reason_code": "same_revision_execution_failure",
+            "attempt_ref": previous.get("attempt_ref"),
+        }
+    if not previous.get("check_verdict") and retry_count < 1:
+        return {
+            "decision": "retry",
+            "reason_code": "bounded_retry_after_missing_check",
+            "retry_of": previous.get("attempt_ref"),
+        }
+    return {
+        "decision": "skip",
+        "reason_code": "duplicate_query_same_verification_and_evidence_scope",
+        "attempt_ref": previous.get("attempt_ref"),
+    }
+
+
 @dataclass
 class _HypothesisRunState:
     """Mutable state shared across the phases of one hypothesis run."""
@@ -162,13 +462,21 @@ class _HypothesisRunState:
     hypothesis_plan: Any = None
     planned_query: Any = None
     rows: list[Any] | None = None
+    canonical_evidence_ids: list[str] | None = None
+    finding_ids_by_evidence: dict[str, str] | None = None
+    observed_evidence_ids: list[str] | None = None
+    canonicalization_error: str = ""
     fallback_info: dict[str, Any] | None = None
     result_summary: dict[str, Any] | None = None
     check_result: Any = None
+    evidence_assessment: EvidenceAssessment | None = None
     missing_checks_raw: list[Any] | None = None
     retrieval_evaluation: Any = None
     sufficiency_result: SufficiencyResult | None = None
     planner_retry_granted: bool = False
+    attempt_ref: str = ""
+    attempt_fingerprints: dict[str, str] | None = None
+    repeat_gate: dict[str, Any] | None = None
 
 
 async def _phase_plan(rs: _HypothesisRunState) -> str:
@@ -257,12 +565,92 @@ def _phase_execute(rs: _HypothesisRunState) -> str:
             reasoning_entry_id=reasoning_entry_id,
         )
     query_fp = query_fingerprint(planned_query.sql)
+    verification_fp = verification_spec_fingerprint(hypothesis.verification_spec)
+    scope_fp = _evidence_scope_fingerprint(db, planned_query.sql)
+    rs.attempt_fingerprints = {
+        "query_fingerprint": query_fp,
+        "verification_spec_fingerprint": verification_fp,
+        "evidence_scope_fingerprint": scope_fp,
+    }
+    rs.repeat_gate = _repeat_gate_decision(
+        db,
+        hypothesis,
+        query_fp=query_fp,
+        verification_fp=verification_fp,
+        scope_fp=scope_fp,
+    )
+    if rs.repeat_gate["decision"] == "skip":
+        gate_attempt_ref = (
+            f"gate:{session_id}:{plan_cycle}:{query_index}:{query_fp[:12]}"
+        )
+        _save_step(
+            db=db,
+            session_id=session_id,
+            iteration=plan_cycle,
+            phase="do",
+            hypothesis_id=hypothesis.id,
+            input_json={
+                "planned_query": planned_query.model_dump(),
+                "query_index": query_index,
+            },
+            output_json={
+                "repeat_gate": rs.repeat_gate,
+                "attempt": {
+                    "attempt_ref": gate_attempt_ref,
+                    **rs.attempt_fingerprints,
+                    "status": "skipped",
+                    "reason": rs.repeat_gate["reason_code"],
+                    "normalized_sql": planned_query.sql,
+                    "purpose": planned_query.purpose,
+                },
+            },
+            suffix=f"{planned_query.query_id}-{query_index:02d}",
+        )
+        append_hypothesis_reasoning(
+            db=db,
+            hypothesis_id=hypothesis.id,
+            session_id=session_id,
+            iteration=plan_cycle,
+            phase="repeat_gate",
+            body=json.dumps(rs.repeat_gate, sort_keys=True),
+            query_id=planned_query.query_id,
+        )
+        if rs.ctx.progress_callback:
+            rs.ctx.progress_callback(
+                progress_event(
+                    "investigation.search",
+                    "skipped",
+                    severity="warning",
+                    reason=rs.repeat_gate["reason_code"],
+                    refs={
+                        "hypothesis_id": hypothesis.id,
+                        "query_id": planned_query.query_id,
+                        "attempt_ref": gate_attempt_ref,
+                        "blocked_attempt_ref": rs.repeat_gate.get("attempt_ref"),
+                    },
+                    stage="execute",
+                    iteration=plan_cycle,
+                    session_id=session_id,
+                    summary="repeated SQL attempt skipped for unchanged verification and evidence scope",
+                )
+            )
+        return "break"
     started = time.monotonic()
     required_capabilities = derive_required_capabilities(
         hypothesis.verification_spec.required_capabilities,
         hypothesis.verification_spec.support_conditions,
     )
     scope_status, source_families = sql_absence_scope(hypothesis, planned_query.sql)
+    observation = hypothesis.verification_spec.support_conditions.get("observation")
+    observation_family = (
+        str(observation.get("family") or "").strip().lower()
+        if isinstance(observation, dict)
+        else ""
+    )
+    if observation_family:
+        source_families = [observation_family]
+    elif source_families is None:
+        source_families = _query_artifact_families(planned_query.sql)
     try:
         rows = fetch_records(db, planned_query.sql)
         original_row_count = len(rows)
@@ -272,7 +660,7 @@ def _phase_execute(rs: _HypothesisRunState) -> str:
         )
     except Exception as exc:
         err_msg = str(exc)
-        tracker.record(query_fp, verdict="exec_error", row_count=0)
+        tracker.record(verdict="exec_error", row_count=0)
         receipt = build_sql_receipt(
             db=db,
             session_id=session_id,
@@ -286,12 +674,32 @@ def _phase_execute(rs: _HypothesisRunState) -> str:
             original_row_count=None,
             error=err_msg,
         )
+        rs.attempt_ref = receipt.receipt_id
         evaluation = evaluate_retrieval(
             receipt,
             required_fields=["normalized_sql"],
             required_capabilities=required_capabilities,
         )
         rs.retrieval_evaluation = evaluation
+        attempt = {
+            "attempt_ref": receipt.receipt_id,
+            **(rs.attempt_fingerprints or {}),
+            "status": receipt.status,
+            "retrieval_outcome": evaluation.outcome,
+            "returned_count": receipt.returned_count,
+            "evidence_ids": receipt.result_refs.evidence_ids,
+            "purpose": planned_query.purpose,
+            "normalized_sql": planned_query.sql,
+            "template_id": planned_query.template_id,
+            "params": planned_query.params,
+            "reason": receipt.reason or "",
+            "error": err_msg[:500],
+            "retryable": _is_transient_execution_error(err_msg),
+            "repeat_gate": rs.repeat_gate or {},
+        }
+        output = build_receipt_step_payload(receipt, evaluation)
+        output["attempt"] = attempt
+        output["repeat_gate"] = rs.repeat_gate or {}
         _save_step(
             db=db,
             session_id=session_id,
@@ -302,7 +710,7 @@ def _phase_execute(rs: _HypothesisRunState) -> str:
                 "planned_query": planned_query.model_dump(),
                 "query_index": query_index,
             },
-            output_json=build_receipt_step_payload(receipt, evaluation),
+            output_json=output,
             suffix=f"{planned_query.query_id}-{query_index:02d}",
         )
         _log(
@@ -343,14 +751,6 @@ def _phase_execute(rs: _HypothesisRunState) -> str:
                 )
             )
         return "continue"
-    result_summary = summarize_query_result(rows)
-    if fallback_info is not None:
-        # The checker receives the bounded rows, but must also know that the
-        # fallback was capped before it interprets the observation.
-        result_summary["original_row_count"] = fallback_info.get(
-            "original_row_count", len(rows)
-        )
-        result_summary["truncated"] = bool(fallback_info.get("truncated"))
     receipt = build_sql_receipt(
         db=db,
         session_id=session_id,
@@ -364,6 +764,7 @@ def _phase_execute(rs: _HypothesisRunState) -> str:
         original_row_count=original_row_count,
         fallback_info=fallback_info,
     )
+    rs.attempt_ref = receipt.receipt_id
     evaluation = evaluate_retrieval(
         receipt,
         required_fields=["normalized_sql"],
@@ -372,6 +773,65 @@ def _phase_execute(rs: _HypothesisRunState) -> str:
         source_families=source_families,
     )
     rs.retrieval_evaluation = evaluation
+    observed_evidence_ids = _result_evidence_ids(rows)
+    canonicalization_error = ""
+    canonical_content_fingerprints: dict[str, str] = {}
+    try:
+        (
+            canonical_rows,
+            canonical_evidence_ids,
+            canonical_content_fingerprints,
+        ) = _canonical_evidence_rows(db, rows)
+    except Exception as exc:
+        canonical_rows, canonical_evidence_ids = [], []
+        canonicalization_error = str(exc)[:500]
+        _log(
+            "ASSESS",
+            f"canonical evidence hydration failed for {planned_query.query_id}: {exc}",
+            level="error",
+        )
+    assessment = assess_evidence_group(
+        hypothesis=hypothesis,
+        rows=canonical_rows,
+        evidence_ids=canonical_evidence_ids,
+        retrieval_outcome=evaluation.outcome,
+        content_fingerprints=canonical_content_fingerprints,
+    )
+    finding_ids_by_evidence = _finding_ids_by_evidence(db, canonical_evidence_ids)
+    result_summary = _canonical_query_summary(
+        canonical_rows,
+        assessment,
+        observed_row_count=len(rows),
+        finding_ids_by_evidence=finding_ids_by_evidence,
+    )
+    if fallback_info is not None:
+        result_summary["original_row_count"] = fallback_info.get(
+            "original_row_count", len(rows)
+        )
+        result_summary["truncated"] = bool(fallback_info.get("truncated"))
+    if canonicalization_error:
+        result_summary["canonicalization_error"] = canonicalization_error
+    attempt = {
+        "attempt_ref": receipt.receipt_id,
+        **(rs.attempt_fingerprints or {}),
+        "status": receipt.status,
+        "retrieval_outcome": evaluation.outcome,
+        "returned_count": receipt.returned_count,
+        "evidence_ids": receipt.result_refs.evidence_ids,
+        "purpose": planned_query.purpose,
+        "normalized_sql": planned_query.sql,
+        "template_id": planned_query.template_id,
+        "params": planned_query.params,
+        "reason": receipt.reason or "",
+        "error": "",
+        "retryable": False,
+        "repeat_gate": rs.repeat_gate or {},
+    }
+    output = build_receipt_step_payload(receipt, evaluation, result_summary)
+    output["observed_evidence_ids"] = observed_evidence_ids
+    output["canonical_evidence_ids"] = canonical_evidence_ids
+    output["attempt"] = attempt
+    output["repeat_gate"] = rs.repeat_gate or {}
     _save_step(
         db=db,
         session_id=session_id,
@@ -382,11 +842,16 @@ def _phase_execute(rs: _HypothesisRunState) -> str:
             "planned_query": planned_query.model_dump(),
             "query_index": query_index,
         },
-        output_json=build_receipt_step_payload(receipt, evaluation, result_summary),
+        output_json=output,
         suffix=f"{planned_query.query_id}-{query_index:02d}",
     )
     rs.planned_query = planned_query
-    rs.rows = rows
+    rs.rows = canonical_rows
+    rs.canonical_evidence_ids = canonical_evidence_ids
+    rs.finding_ids_by_evidence = finding_ids_by_evidence
+    rs.evidence_assessment = assessment
+    rs.observed_evidence_ids = observed_evidence_ids
+    rs.canonicalization_error = canonicalization_error
     rs.fallback_info = fallback_info
     rs.result_summary = result_summary
     if rs.ctx.progress_callback:
@@ -449,20 +914,6 @@ async def _phase_check(rs: _HypothesisRunState) -> str:
             query_id=planned_query.query_id,
         )
         return "continue"
-    _save_step(
-        db=db,
-        session_id=session_id,
-        iteration=plan_cycle,
-        phase="check",
-        hypothesis_id=hypothesis.id,
-        input_json={
-            "planned_query": planned_query.model_dump(),
-            "hypothesis": hypothesis.model_dump(),
-            "result_summary": result_summary,
-        },
-        output_json=check_result.raw_response,
-        suffix=f"{planned_query.query_id}-{query_index:02d}",
-    )
     reasoning_entry_id = append_hypothesis_reasoning(
         db=db,
         hypothesis_id=hypothesis.id,
@@ -492,6 +943,8 @@ async def _phase_check(rs: _HypothesisRunState) -> str:
             query_id=planned_query.query_id,
             hypothesis_id=hypothesis.id,
             reasoning_entry_id=reasoning_entry_id,
+            receipt_id=rs.attempt_ref,
+            attempt_ref=rs.attempt_ref,
         )
     state.history.append(
         HistoryEntry(
@@ -509,102 +962,185 @@ async def _phase_check(rs: _HypothesisRunState) -> str:
     rs.check_result = check_result
     # Assess every evidence ID returned by an adequate validated query before
     # cumulative sufficiency. Checker selections and verdicts are not inputs.
+    assessment_payload: dict[str, Any] | None = None
+    evidence_link_writes: list[dict[str, Any]] = []
+    unlinkable_reason = ""
+    assessment_progress: dict[str, Any] | None = None
     if check_result:
-        evidence_ids = list(
-            dict.fromkeys(
-                str(evidence_id)
-                for evidence_id in result_summary.get("evidence_ids", [])
-                if evidence_id
-            )
+        # Rows stay authoritative here. result_summary.evidence_ids is a
+        # bounded LLM sample and must not decide which EvidenceLinks receive
+        # a supporting/contradictory role.
+        observed_evidence_ids = rs.observed_evidence_ids or _result_evidence_ids(rows)
+        canonical_rows = rows
+        evidence_ids = (
+            rs.canonical_evidence_ids
+            if rs.canonical_evidence_ids is not None
+            else _result_evidence_ids(rows)
         )
+        observed_row_count = int(result_summary.get("observed_row_count") or 0)
         retrieval_adequate = (
             rs.retrieval_evaluation is not None
             and rs.retrieval_evaluation.outcome == "adequate"
         )
-        finding_ids_by_evidence = result_summary.get("finding_ids_by_evidence") or {}
-        if evidence_ids and retrieval_adequate:
-            assessment = assess_evidence_group(
-                hypothesis=hypothesis,
-                rows=rows or [],
-                evidence_ids=evidence_ids,
-            )
+        finding_ids_by_evidence = rs.finding_ids_by_evidence or {}
+        assessment = rs.evidence_assessment
+        if assessment is not None:
+            assessment_payload = {
+                "assessment_id": assessment.assessment_id,
+                "hypothesis_id": hypothesis.id,
+                "role": assessment.role,
+                "reason": assessment.reason,
+                "origin": assessment.origin,
+                "spec_version": assessment.spec_version,
+                "matched_conditions": list(assessment.matched_conditions),
+                "evidence_ids": list(assessment.evidence_ids),
+                "observed_evidence_ids": observed_evidence_ids,
+                "canonical_evidence_ids": evidence_ids,
+                "witness_evidence_ids": [
+                    evidence_id
+                    for group in assessment.witness_groups
+                    for evidence_id in group
+                ],
+                "witness_groups": [],
+                "content_fingerprints": dict(assessment.content_fingerprints),
+                "contextual_evidence_ids": list(assessment.contextual_evidence_ids),
+            }
+        if evidence_ids and retrieval_adequate and assessment is not None:
             role = assessment.role
-            create_evidence_links_for_query(
-                db,
-                hypothesis_id=hypothesis.id,
-                evidence_ids=evidence_ids,
-                query_id=planned_query.query_id if planned_query else "",
-                role=role,
-                created_session=session_id,
-                assessment_id=assessment.assessment_id,
-                # Judgment grounds (R08) travel with the link so each
-                # assessment stays explainable via existing IDs after the
-                # observed rows themselves are gone or re-normalized.
-                assessment_reason=assessment.reason,
-                matched_conditions=assessment.matched_conditions,
-                # Each link's derivation root is its own evidence row;
-                # explicit derivation groups are not derived from the query.
-                # The query id remains acquisition history: the same evidence
-                # re-fetched by a different query cannot become multiple
-                # independent sufficiency groups.
-                finding_ids_by_evidence=finding_ids_by_evidence,
-            )
-            if rs.ctx.progress_callback:
-                rs.ctx.progress_callback(
-                    progress_event(
-                        "investigation.assessment",
-                        "completed",
-                        severity="success",
-                        refs={
-                            "hypothesis_id": hypothesis.id,
-                            "query_id": planned_query.query_id,
-                            "assessment_id": assessment.assessment_id,
-                            "evidence_ids": evidence_ids[:8],
-                        },
-                        stage="assess",
-                        iteration=plan_cycle,
-                        session_id=session_id,
-                        summary=f"assessed {len(evidence_ids)} evidence items as {role}",
-                    )
+            witness_group_refs: list[dict[str, Any]] = []
+            for witness_group in assessment.witness_groups:
+                if not witness_group:
+                    continue
+                group_ids = sorted(set(witness_group))
+                group_ref = (
+                    "EA-group-"
+                    + hashlib.sha256("\0".join(group_ids).encode("utf-8")).hexdigest()[
+                        :20
+                    ]
                 )
-        elif rows:
+                evidence_link_writes.append(
+                    {
+                        "evidence_ids": group_ids,
+                        "query_id": planned_query.query_id if planned_query else "",
+                        "role": role,
+                        "created_session": session_id,
+                        "assessment_id": assessment.assessment_id,
+                        "assessment_reason": assessment.reason,
+                        "matched_conditions": assessment.matched_conditions,
+                        "derivation_group": group_ref,
+                        "finding_ids_by_evidence": finding_ids_by_evidence,
+                    }
+                )
+                witness_group_refs.append(
+                    {"evidence_ids": group_ids, "derivation_group": group_ref}
+                )
+            if assessment.contextual_evidence_ids:
+                evidence_link_writes.append(
+                    {
+                        "evidence_ids": list(assessment.contextual_evidence_ids),
+                        "query_id": planned_query.query_id if planned_query else "",
+                        "role": "contextual"
+                        if role in {"supporting", "contradictory"}
+                        else role,
+                        "created_session": session_id,
+                        "assessment_id": assessment.assessment_id,
+                        "assessment_reason": (
+                            "observed row did not witness the matched condition"
+                            if role in {"supporting", "contradictory"}
+                            else assessment.reason
+                        ),
+                        "matched_conditions": (),
+                        "finding_ids_by_evidence": finding_ids_by_evidence,
+                    }
+                )
+            assessment_payload["witness_groups"] = witness_group_refs
+            assessment_progress = {
+                "status": "completed",
+                "severity": "success",
+                "reason": role,
+                "refs": {
+                    "hypothesis_id": hypothesis.id,
+                    "query_id": planned_query.query_id,
+                    "assessment_id": assessment.assessment_id,
+                    "evidence_ids": list(assessment.evidence_ids[:8]),
+                    "observed_evidence_ids": observed_evidence_ids[:8],
+                },
+                "summary": f"assessed {len(canonical_rows)} evidence items as {role}",
+            }
+        elif observed_row_count:
             # Rows were observed but could not be turned into an admissible
             # EvidenceLink (retrieval not adequate, or no evidence_id could be
             # extracted).  Keep the retrieval_adequate gate, but record a
             # structured unlinkable reason so sufficiency does not misreport a
             # bare "No evidence links found" when rows did exist.
-            reason = (
-                "retrieval outcome not adequate"
+            if rs.canonicalization_error:
+                reason = "canonical evidence hydration failed"
+            elif not retrieval_adequate:
+                reason = "retrieval outcome not adequate"
+            else:
+                reason = "no linkable evidence_id in observation"
+            unlinkable_reason = reason
+            assessment_progress = {
+                "status": "skipped",
+                "severity": "warning",
+                "reason": "retrieval_not_adequate"
                 if not retrieval_adequate
-                else "no linkable evidence_id in observation"
+                else "no_linkable_evidence_id",
+                "refs": {
+                    "hypothesis_id": hypothesis.id,
+                    "query_id": planned_query.query_id,
+                    "receipt_id": rs.attempt_ref,
+                    "attempt_ref": rs.attempt_ref,
+                    "observed_evidence_ids": observed_evidence_ids[:8],
+                },
+                "summary": "observed rows did not produce eligible evidence links",
+            }
+    check_step_output = dict(check_result.raw_response or {})
+    check_step_output["attempt_ref"] = rs.attempt_ref
+    check_step_output["check_verdict"] = check_result.verdict
+    check_step_output["check_summary"] = check_result.report_text or ""
+    if assessment_payload is not None:
+        check_step_output["assessment"] = assessment_payload
+    _save_step(
+        db=db,
+        session_id=session_id,
+        iteration=plan_cycle,
+        phase="check",
+        hypothesis_id=hypothesis.id,
+        input_json={
+            "planned_query": planned_query.model_dump(),
+            "hypothesis": hypothesis.model_dump(),
+            "result_summary": result_summary,
+            "attempt_ref": rs.attempt_ref,
+        },
+        output_json=check_step_output,
+        suffix=f"{planned_query.query_id}-{query_index:02d}",
+    )
+    for link_write in evidence_link_writes:
+        create_evidence_links_for_query(db, hypothesis_id=hypothesis.id, **link_write)
+    if unlinkable_reason:
+        record_unlinkable_observation(
+            db,
+            hypothesis_id=hypothesis.id,
+            query_id=planned_query.query_id if planned_query else "",
+            reason=unlinkable_reason,
+            observed_rows=observed_row_count,
+            created_session=session_id,
+        )
+    if rs.ctx.progress_callback and assessment_progress:
+        rs.ctx.progress_callback(
+            progress_event(
+                "investigation.assessment",
+                assessment_progress["status"],
+                severity=assessment_progress["severity"],
+                reason=assessment_progress["reason"],
+                refs=assessment_progress["refs"],
+                stage="assess",
+                iteration=plan_cycle,
+                session_id=session_id,
+                summary=assessment_progress["summary"],
             )
-            record_unlinkable_observation(
-                db,
-                hypothesis_id=hypothesis.id,
-                query_id=planned_query.query_id if planned_query else "",
-                reason=reason,
-                observed_rows=len(rows or []),
-                created_session=session_id,
-            )
-            if rs.ctx.progress_callback:
-                rs.ctx.progress_callback(
-                    progress_event(
-                        "investigation.assessment",
-                        "skipped",
-                        severity="warning",
-                        reason="retrieval_not_adequate"
-                        if not retrieval_adequate
-                        else "no_linkable_evidence_id",
-                        refs={
-                            "hypothesis_id": hypothesis.id,
-                            "query_id": planned_query.query_id,
-                        },
-                        stage="assess",
-                        iteration=plan_cycle,
-                        session_id=session_id,
-                        summary="observed rows did not produce eligible evidence links",
-                    )
-                )
+        )
     return "ok"
 
 
@@ -707,7 +1243,8 @@ def _phase_apply_verdict(rs: _HypothesisRunState) -> None:
     """
     check_result, state, db = rs.check_result, rs.state, rs.db
     session_id, hypothesis = rs.session_id, rs.hypothesis
-    planned_query, rows = rs.planned_query, rs.rows
+    planned_query = rs.planned_query
+    rows = rs.rows or []
     ctx = rs.ctx
     plan_cycle, query_index = rs.plan_cycle, rs.query_index
     emit_fn = rs.emit_fn
@@ -898,12 +1435,11 @@ def _phase_apply_verdict(rs: _HypothesisRunState) -> None:
 
 
 def _phase_track_progress(rs: _HypothesisRunState) -> None:
-    """Register query/check fingerprints on the progress tracker."""
-    check_result, planned_query = rs.check_result, rs.planned_query
+    """Register check and retrieval feedback used by settlement."""
+    check_result = rs.check_result
     result_summary, tracker = rs.result_summary, rs.tracker
     row_count = int(result_summary.get("row_count") or 0)
-    query_fp = query_fingerprint(planned_query.sql)
-    tracker.record(query_fp, check_result.verdict, row_count)
+    tracker.record(check_result.verdict, row_count)
     missing_checks_raw = (
         check_result.raw_response.get("missing_questions")
         or check_result.raw_response.get("missing_checks")
@@ -919,20 +1455,13 @@ def _phase_track_progress(rs: _HypothesisRunState) -> None:
 
 
 def _phase_auto_resolve(rs: _HypothesisRunState) -> str:
-    """Deterministic auto-resolution: untestable/pivot/auto-refute/confirm.
+    """Deterministic auto-resolution: untestable/auto-refute/confirm.
 
     R8-01: ALL settlement paths route through the unified ``settle_hypothesis``
     gate.  Direct calls to ``resolve_hypothesis`` are prohibited.
     """
-    tracker, hypothesis = rs.tracker, rs.hypothesis
+    hypothesis = rs.hypothesis
     state, db, session_id = rs.state, rs.db, rs.session_id
-
-    if tracker.should_pivot():
-        _log(
-            "PIVOT",
-            f"{hypothesis.id} — duplicate query fingerprint detected, auto-exhausted",
-        )
-        return "break"
 
     # Build the unified settlement input
     si = _build_settlement_input(rs)
@@ -1053,7 +1582,10 @@ async def _investigate_one_hypothesis(
                 limit += 1
                 rs.planner_retry_granted = True
             continue
-        if _phase_execute(rs) == "continue":
+        execute_flow = _phase_execute(rs)
+        if execute_flow == "break":
+            break
+        if execute_flow == "continue":
             continue
         if await _phase_check(rs) == "continue":
             continue

@@ -64,7 +64,7 @@ def prepare_section_request(
     context_sections: dict[str, str],
     report_brief: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Normalize one section template source into block requests for section agents.
+    """Normalize one section template source into report block requests.
 
     ``source`` is a :class:`~forensia.report.sections.report_input.SectionSource`
     — the single normalized section-contract input produced for both the

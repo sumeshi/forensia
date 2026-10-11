@@ -25,6 +25,7 @@ from forensia.core.ownership import (
     control_dir,
     controller_lock_path,
 )
+from forensia.db.views import DETAIL_KINDS
 
 _MAX_MESSAGE = 1_048_576
 
@@ -144,7 +145,7 @@ def probe_runtime(case_dir: str | Path) -> bool:
             RuntimeClient(case_dir, timeout=1).request({"type": "status"}).get("ready")
             is True
         )
-    except OSError, RuntimeError, ValueError, AttributeError:
+    except EOFError, OSError, RuntimeError, ValueError, AttributeError:
         return False
 
 
@@ -161,8 +162,10 @@ def start_runtime(
     timeout: float = 20.0,
 ) -> RuntimeClient:
     requested_case = Path(case_dir).expanduser()
-    if overwrite and requested_case.is_symlink():
-        raise ValueError("--overwrite cannot delete a symlinked case directory")
+    if overwrite and (requested_case.is_symlink() or requested_case.is_junction()):
+        raise ValueError(
+            "--overwrite cannot delete a symlinked case directory or junction"
+        )
     case = requested_case.resolve()
     if input_dir is not None and case.exists():
         if not case.is_dir():
@@ -380,31 +383,24 @@ class RuntimeServer:
                 raise ValueError("Invalid event page")
             return self.engine.events(after_index=after_index, limit=limit)
         if kind == "detail":
-            detail_kind, item_id, limit = (
+            detail_kind, item_id, limit, offset = (
                 req.get("kind"),
                 req.get("id"),
                 req.get("limit", 100),
+                req.get("offset", 0),
             )
             if (
-                detail_kind
-                not in {
-                    "hypothesis",
-                    "task",
-                    "gap",
-                    "finding",
-                    "evidence",
-                    "step",
-                    "query_receipt",
-                    "command_receipt",
-                }
+                detail_kind not in DETAIL_KINDS
                 or not isinstance(item_id, str)
                 or not item_id
                 or len(item_id) > 256
                 or type(limit) is not int
                 or not 1 <= limit <= 100
+                or type(offset) is not int
+                or offset < 0
             ):
                 raise ValueError("Invalid detail request")
-            return self.engine.detail(detail_kind, item_id, limit=limit)
+            return self.engine.detail(detail_kind, item_id, limit=limit, offset=offset)
         if kind == "command":
             if (
                 self.controller_id is not None

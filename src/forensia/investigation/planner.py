@@ -22,7 +22,9 @@ from forensia.context.sql_templates import (
 )
 from forensia.core.session import Hypothesis, PlannedQuery, SessionState
 from forensia.db.database import CaseDB
-from forensia.investigation.hypotheses.hypothesis_store import _recent_reasoning_rows
+from forensia.investigation.hypotheses.hypothesis_store import (
+    load_hypothesis_attempts,
+)
 from forensia.investigation.prompts import (
     build_query_intent_messages,
 )
@@ -37,25 +39,10 @@ from forensia.llm.schemas import (
 logger = logging.getLogger(__name__)
 
 
-def eligible_query_actions(phase: str) -> tuple[str, ...]:
-    """Return the bounded action menu for one query-intent phase."""
-
-    if phase == "initial":
-        return ("sql.query",)
-    raise ValueError(f"unknown query-intent phase: {phase}")
-
-
 def normalize_query_intent_action(
     payload: dict[str, Any],
-    *,
-    phase: str = "initial",
 ) -> tuple[SQLQueryAction | None, str | None]:
     """Validate the single action envelope emitted by the current planner."""
-
-    try:
-        eligible = eligible_query_actions(phase)
-    except ValueError as exc:
-        return None, str(exc)
     if not isinstance(payload, dict):
         return None, "action payload is not an object"
 
@@ -64,8 +51,6 @@ def normalize_query_intent_action(
     except ValidationError:
         return None, "unknown or malformed action"
 
-    if action.type not in eligible:
-        return None, f"{action.type} is not eligible in {phase} phase"
     return action, None
 
 
@@ -263,24 +248,15 @@ def _build_hypothesis_history(
     db: CaseDB | None = None,
     limit: int = 10,
 ) -> list[dict[str, Any]]:
-    """Build hypothesis history list and seen query IDs from state history and DB reasoning rows."""
-    hypothesis_history = [
+    """Build chronological attempt history without deduplicating display IDs."""
+    if db is not None:
+        attempts = load_hypothesis_attempts(db, hypothesis.id)
+        return attempts[-limit:] if limit > 0 else attempts
+    return [
         item.model_dump()
         for item in state.history
         if item.hypothesis_id == hypothesis.id
-    ]
-    seen_query_ids = {
-        str(item.get("query_id")) for item in hypothesis_history if item.get("query_id")
-    }
-    if db is not None:
-        for row in _recent_reasoning_rows(db, hypothesis.id, limit=limit):
-            query_id = str(row.get("query_id") or "").strip()
-            if query_id and query_id in seen_query_ids:
-                continue
-            hypothesis_history.append(row)
-            if query_id:
-                seen_query_ids.add(query_id)
-    return hypothesis_history
+    ][-limit:]
 
 
 def _build_working_state_block(db: CaseDB | None, hypothesis_id: str) -> str:

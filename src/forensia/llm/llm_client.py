@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     import httpx
 
 from forensia.config import get_llm_settings, get_settings
+from forensia.context.prompt_context import fit_prompt_messages
 from forensia.core.control import check_stop
 from forensia.core.progress_event import progress_event
 from forensia.llm.attempt import _post_attempt
@@ -255,6 +256,9 @@ def chat_completion(
         logical_call_id = telemetry.begin_logical_call(phase=phase or "chat_completion")
         owned = True
     try:
+        messages = (
+            fit_prompt_messages(messages, max_output_tokens=max_tokens) or messages
+        )
         configured, reserve, requested, effective = compute_effective_output_limit(
             requested_override=max_tokens,
             known_context_limit=llm_settings.get("llm_context_window_tokens"),

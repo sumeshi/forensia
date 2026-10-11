@@ -243,10 +243,10 @@ class RuntimeEngine:
             return case_events(db, after_index, limit)
 
     def detail(
-        self, kind: str, item_id: str, *, limit: int = 100
+        self, kind: str, item_id: str, *, limit: int = 100, offset: int = 0
     ) -> dict[str, Any] | None:
         with self._database() as db:
-            return case_detail(db, kind, item_id, limit)
+            return case_detail(db, kind, item_id, limit, offset=offset)
 
     def command(
         self, command_id: str, operation: str, payload: dict[str, Any]

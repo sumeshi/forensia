@@ -350,18 +350,15 @@ def _feed_verdict_to_timeline(
 # Re-exported via the import at the top of this file.
 
 
-MAX_SECTION_UPDATES = 5
-
-
 # _sections_for_keypoint: canonical implementation moved to report/section_taxonomy.py
 # Re-exported via the import at the top of this file.
 
 
 def mark_section_stale(db: CaseDB, section_key: str) -> None:
-    """Mark a report section as stale, respecting the update_count cap."""
+    """Mark a report section stale when its supporting judgment changes."""
     db.execute(
-        "UPDATE report_sections SET stale = TRUE WHERE section_key = ? AND update_count < ?",
-        (section_key, MAX_SECTION_UPDATES),
+        "UPDATE report_sections SET stale = TRUE WHERE section_key = ?",
+        [section_key],
     )
 
 
@@ -479,7 +476,7 @@ def _resolve_hypothesis_in_transaction(
     # R8-01: DB invariant enforcement for confirmed verdicts
     needs_review_blocked = False
     if verdict == "confirmed":
-        from forensia.investigation.verification.sufficiency import load_evidence_links
+        from forensia.evidence.links import load_evidence_links
 
         # Check sufficiency invariant
         suff_row = db.execute(
@@ -672,6 +669,19 @@ def _claim_spec_conformance_error(candidate: Hypothesis) -> str | None:
     support = candidate.verification_spec.support_conditions
     if not support:
         return "empty-verification-spec"
+    if "observation" in support:
+        from forensia.knowledge.coverage import observation_condition_error
+
+        validation_error = observation_condition_error(support)
+        if validation_error:
+            return validation_error
+        if re.search(
+            r"\b(?:repeated|multiple)\s+(?:\w+\s+){0,2}(?:events?|logons?|attempts?|connections?|executions?)\b",
+            description,
+            re.I,
+        ):
+            return "claim-spec-min-count-missing"
+        return None
     event_ids = support.get("co_observed_event_ids")
     if not isinstance(event_ids, list) or not event_ids:
         return "non-testable-verification-spec"

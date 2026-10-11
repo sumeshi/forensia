@@ -184,14 +184,6 @@ class CaseDbMaintenanceTests(unittest.TestCase):
                 )
                 db.execute(
                     """
-                    INSERT INTO section_facts (
-                        fact_id, fact_type, fact_key, fact_value, evidence_ids, source_query,
-                        source_section, confidence, created_at, updated_at
-                    ) VALUES ('SF-1', 'universal_question', 'host_identity', '{}', '[]', 'structured:host_identity', '1_overview', 0.9, now(), now())
-                    """
-                )
-                db.execute(
-                    """
                     INSERT INTO section_evidence (
                         section_key, block_heading, evidence_id, role, source_query, created_at
                     ) VALUES ('1_overview', 'Scope', 'evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000001', 'supporting', 'overview_hosts', now())
@@ -199,24 +191,8 @@ class CaseDbMaintenanceTests(unittest.TestCase):
                 )
                 db.execute(
                     """
-                    INSERT INTO query_cache (sql_hash, sql_text, result_json, executed_at)
-                    VALUES ('hash-1', 'SELECT 1', '[{"x":1}]', now())
-                    """
-                )
-                db.execute(
-                    """
                     INSERT INTO section_runs (run_id, section_key, block_heading, iteration, phase, payload, verdict, created_at)
                     VALUES ('SR-1', '1_overview', 'Scope', 1, 'query', '{}', 'sufficient', now())
-                    """
-                )
-                db.execute(
-                    """
-                    INSERT INTO section_questions (
-                        question_id, section_key, block_heading, question_text, question_type,
-                        answer_spec, intent, confidence, matched_rule, required_evidence,
-                        status, created_at, updated_at
-                    ) VALUES ('SQ-1', '1_overview', 'Scope', 'question', 'host_identity',
-                              'host_identity', 'List hosts', 1.0, 'host_identity', '{}', 'resolved', now(), now())
                     """
                 )
                 db.execute(
@@ -283,20 +259,10 @@ class CaseDbMaintenanceTests(unittest.TestCase):
                     db.execute("SELECT COUNT(*) FROM prefetch_timeline").fetchone()[0],
                 )
                 self.assertEqual(
-                    0, db.execute("SELECT COUNT(*) FROM section_facts").fetchone()[0]
-                )
-                self.assertEqual(
                     0, db.execute("SELECT COUNT(*) FROM section_evidence").fetchone()[0]
                 )
                 self.assertEqual(
-                    0, db.execute("SELECT COUNT(*) FROM query_cache").fetchone()[0]
-                )
-                self.assertEqual(
                     0, db.execute("SELECT COUNT(*) FROM section_runs").fetchone()[0]
-                )
-                self.assertEqual(
-                    0,
-                    db.execute("SELECT COUNT(*) FROM section_questions").fetchone()[0],
                 )
                 self.assertEqual(
                     0,

@@ -22,7 +22,6 @@ class Settings:
     llm_max_tokens: int = 4096
     llm_temperature: float = 0.0
     llm_output_language: str = "ja"
-    llm_report_max_queries_per_section: int = 3
     llm_reasoning_reserve_tokens: int = 0
     llm_context_window_tokens: int = 0
     forensia_system_prompt_budget_chars: int = 0
@@ -39,11 +38,6 @@ class Settings:
             _validate_base_url(self.llm_base_url)
         for name, value, minimum in (
             ("llm_max_tokens", self.llm_max_tokens, 1),
-            (
-                "llm_report_max_queries_per_section",
-                self.llm_report_max_queries_per_section,
-                1,
-            ),
             ("llm_reasoning_reserve_tokens", self.llm_reasoning_reserve_tokens, 0),
             ("llm_context_window_tokens", self.llm_context_window_tokens, 0),
             (
@@ -200,9 +194,6 @@ def load_settings(
         llm_max_tokens=_int(env, "LLM_MAX_TOKENS", 4096, 1),
         llm_temperature=_float(env, "LLM_TEMPERATURE", 0.0, 0.0, 2.0),
         llm_output_language=language,
-        llm_report_max_queries_per_section=_int(
-            env, "FORENSIA_REPORT_MAX_QUERIES_PER_SECTION", 3, 1
-        ),
         llm_reasoning_reserve_tokens=_int(env, "LLM_REASONING_RESERVE_TOKENS", 0, 0),
         llm_context_window_tokens=_int(env, "LLM_CONTEXT_WINDOW_TOKENS", 0, 0),
         forensia_system_prompt_budget_chars=_int(
@@ -235,7 +226,6 @@ def get_llm_settings() -> dict:
         "max_tokens": settings.llm_max_tokens,
         "temperature": settings.llm_temperature,
         "output_language": settings.llm_output_language,
-        "report_max_queries_per_section": settings.llm_report_max_queries_per_section,
         "reasoning_reserve_tokens": settings.llm_reasoning_reserve_tokens,
         "llm_context_window_tokens": settings.llm_context_window_tokens or None,
     }

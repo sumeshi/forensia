@@ -33,7 +33,11 @@ forensia attach ./case001
 
 調査サイクル数やモデルの接続先などの細かな設定は`.env`で管理します。`--out`はケースの保存先です。`--background`はRuntimeを起動して端末へ戻り、`attach`で後から同じケースを開けます。通常起動ではTUIを接続しますが、端末を閉じてもRuntimeは停止しません。保存済みケースを`investigate`へ渡しても再開しません。閲覧や操作には`attach`を使います。入力証拠と明示指定したMarkdown文書はケース外に置いてください。
 
-`attach`のTUIは保存済みケースの状態と進捗イベントを読み取り、Runtimeが動作中なら操作を送ります。`/stop`、`/resume`、`/add <input_dir>`、`/report`、`/report --write`と、通常文のsteeringを入力できます。`/report`は採用済みsectionを表示用に出力し、`/report --write`はLLMでsectionを更新して書き込みます。`/detail <kind> <id>`で詳細を開き、引数なしの`/detail`で閉じます。`/older`と`/newer`はイベント履歴を移動し、`/detach`は画面だけを閉じます。
+`attach`のTUIは保存済みケースの状態と進捗イベントを読み取り、Runtimeが動作中なら操作を送ります。`/stop`、`/resume`、`/add <input_dir>`、`/report`、`/report --write`と、通常文のsteeringを入力できます。`/report`は採用済みsectionを表示用に出力し、`/report --write`はsectionを更新して書き込みます。`/detail <kind> <id>`で詳細を開き、長い記録は`/more`で次ページを読みます。引数なしの`/detail`で閉じます。`/older`と`/newer`はイベント履歴を移動し、`/detach`は画面だけを閉じます。
+
+Evidence、Assessment、reasoning、section、retrieval、LLM call/attemptなどの詳細を、保存済みIDから参照できます。query receiptは一意なreceipt IDで指定します。繰り返し使われる表示用query IDは参照キーにしません。LLM使用量はprovider実測、ローカル推定、不明を分けて表示します。
+
+retrieval eventは予算調整前の文脈選択を記録します。provider attemptの`selected_ids`は実際の送信文に残ったID、`omitted_optional_blocks`は入力予算や接続先の文脈上限により省略したblockです。何を送信したかは、そのattemptのrequest本文から確認します。
 
 停止済みケースでは`/resume`がRuntimeを起動して調査を再開します。`/add`、`/report`、`/report --write`、steeringはRuntimeをアイドル状態で起動してから、その操作だけを送ります。`/stop`は停止済みのままです。Runtimeが接続中に失われた場合、TUIは保存済み状態を表示し、操作を新しいRuntimeへ自動送信しません。再接続するには`attach`を開き直してください。
 
@@ -76,6 +80,8 @@ uv run python -c 'from forensia.pipeline import run_investigation; run_investiga
 ```
 
 採用した方針は、そのセッション中は固定されます。初回採用または明示的な再読込みで、設定したシステムプロンプト文字数予算の半分を超える入力は、理由付きで拒否します。Runtimeのsteerも同じ文字数予算を適用します。固定のrole・出力スキーマと、Evidence/Assessment/Sufficiency/Settlementの検査は引き続き適用されます。[case_policy.py](src/forensia/investigation/case_policy.py)を参照してください。
+
+steeringによる方針変更はObjective、Scope、Priority、Constraints、Guidanceのうち、依頼した節の本文だけを更新します。変更対象でない節はホストがそのまま保持し、旧revisionと変更した節をreceiptに記録します。新しい調査要件の追加は、方針の編集とは別に既存のGap/Task admissionを通ります。
 
 ### REPORT.md: 報告書仕様
 
@@ -161,7 +167,17 @@ Evidence、Case State、Trace Stateは`db/case.duckdb`に保存します。Evide
 
 Working Stateは作業ごとにDBから直接構成し、生成したMarkdownを再読込みしません。旧ケースの`memory/`には人のメモが含まれ得るため、ケースの保全時にはそのまま残してください。`raw/`はパーサー出力のJSONLであり、取得した原本は別途保存します。通常のFinding保存先はDBです。
 
-TUIはTextualで構成し、Headerにケース状態・仮説status・作業時間・LLM使用状況を、中央に永続イベント、下部に入力欄を表示します。RuntimeへのIPCはPOSIXではUnix domain socket、Windowsではnamed pipeを使います。Windowsでの実機検証はまだ行っていません。TUIはRuntimeのcontroller claimを取得して操作を送信し、終了時にclaimを解放します。停止済みケースの制御lockもケース外に置き、複数TUIから同時に操作しないようにします。
+検索結果のEvidence IDから正規化済みの証拠行を取得し直し、VerificationSpecを満たす証拠の組だけに支持・反証の役割を付けます。SQLの別名や定数、LLMの選んだサンプルは判定の正本にしません。EVTXの共観測条件と、Prefetch・MFT・Registryの型付きfield条件は同じAssessment経路を通ります。Assessmentと根拠リンクには証拠内容・検証条件のidentityを残し、置換後に古い支持を再利用しません。過去の試行は既存Traceから読み、同じ検証条件・証拠状態・検索の繰返しは実行前に制限します。
+
+型付きの観測条件で自動確定できるのは、VerificationSpecから導出する観測文だけです。実行痕跡から意図や因果関係まで述べた解釈は未確定に留めます。Prefetchの各実行時刻は同じ原本レコードからの派生であり、別々の独立証拠には数えません。観測条件には原本の`exec_times`などを使い、`min_count`は異なるEvidence IDの数を指定します。
+
+MFTの`is_deleted`などのBoolean列は、JSONの`true`/`false`を使う`equals`条件で評価します。数値や文字列からBooleanへの変換は行いません。
+
+報告書は採用したREPORTの要求と現在のCase/Evidenceから決定論的な材料を作り、保存してから任意の文章化を行います。Report Engineは独自の計画・検索・判定ループや永続query cacheを持ちません。ClaimはSettlement後の仮説と現在有効な根拠リンクから導出し、Sufficiencyだけで支持済みへ更新しません。JSON/CSVは再生成できる出力です。変更したsectionにつき文章化は最大1回とし、予算切れや停止でも保存済み材料を残します。文章化が既存の品質・引用検査に新しい問題を加える場合は採用せず、保存済み材料を保持します。最終検査で公開不可となった場合はMarkdown・HTMLにも監査状態と停止理由を表示します。報告書の完成、調査の停止、仮説の支持・反証・未確定、最終監査の結果は別の状態です。引用IDが実在することだけでは、文章と証拠の意味的一致までは保証できません。
+
+証拠追加・置換では、標準のMarkdown・HTML・検査JSONを先に失効させ、現在のDBから再出力します。再出力に失敗しても古い成果物を残しません。staleな節の本文はDBに保持し、現在の報告書から除外します。入力の`REPORT.md`・`FORENSIA.md`と、独自の出力先は変更しません。
+
+TUIはTextualで構成し、Headerにケース状態・仮説status・作業時間・LLM使用状況を、中央に永続イベント、下部に入力欄を表示します。RuntimeへのIPCはPOSIXではUnix domain socket、Windowsではnamed pipeを使います。Windows 10・Python 3.14.5では、配布wheelのdoctorと、実IPC・lock・背景起動・停止・再開・アイドル上書き・異常終了からの復旧・実Prefetch parserによるsource置換・標準レポートの失効と再出力・headless TUIの23テストを確認しました。実際のWindows端末での手動描画と実モデル調査は未検証です。TUIはRuntimeのcontroller claimを取得して操作を送信し、終了時にclaimを解放します。停止済みケースの制御lockもケース外に置き、複数TUIから同時に操作しないようにします。
 
 細かな列、応答形式、判定条件は、次の実行可能な契約を正本にします。
 

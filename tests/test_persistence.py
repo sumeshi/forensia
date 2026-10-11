@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from unittest.mock import patch
 
-from forensia.config import load_settings, resolve_llm_config, settings_scope
+from forensia.config import load_settings, settings_scope
 from forensia.core.case import Case
 from forensia.core.session import Hypothesis, PlannedQuery, SessionState
 from forensia.core.verification import VerificationSpec
@@ -28,33 +28,10 @@ from forensia.investigation.verification.check_apply import (
 )
 from forensia.investigation.verification.check_normalize import CheckResult
 from forensia.report.sections.section_quality import collect_gaps, section_confidence
-from forensia.report.sections.section_store import extract_claim_texts
-
-
-def _agent_plan_router(*_args, **kwargs):
-    """Route section_agent.request_llm_json by which messages were sent.
-
-    Plan messages → "write" short-circuit (no SQL).
-    Check messages → "sufficient" so the loop exits cleanly.
-    Used to avoid hitting a real LLM in unit tests.
-    """
-    messages = kwargs.get("messages")
-    if messages is None and _args:
-        messages = _args[0]
-    system_content = ""
-    if messages:
-        system_content = str(messages[0].get("content", "")).lower()
-    if "section-check" in system_content:
-        return {"verdict": "sufficient", "fact_updates": []}
-    return {"action": "write", "enough_to_write": True}
 
 
 class PersistenceTests(unittest.TestCase):
     """Investigation-state persistence: reasoning rows, hypothesis merge/gap injection."""
-
-    @staticmethod
-    def _llm_base_url() -> str:
-        return resolve_llm_config()[0] or "http://test-llm.invalid"
 
     def test_runtime_threads_keep_results_and_transactions_isolated(self) -> None:
         """IPC reads keep their cursor and cannot observe an uncommitted update."""
@@ -89,15 +66,6 @@ class PersistenceTests(unittest.TestCase):
                     raise RuntimeError("rollback")
                 self.assertEqual(1, reader.result(timeout=2))
 
-    def setUp(self) -> None:
-        # Patch the owning JSON request implementation.
-        llm_json_patch = patch(
-            "forensia.llm.json_response.request_llm_json",
-            side_effect=_agent_plan_router,
-        )
-        llm_json_patch.start()
-        self.addCleanup(llm_json_patch.stop)
-
     def test_collect_gaps_supports_english_and_japanese_placeholders(self) -> None:
         self.assertEqual(
             ["no logon data"],
@@ -119,17 +87,11 @@ class PersistenceTests(unittest.TestCase):
             ),
         )
 
-    def testsection_confidence_and_claim_extraction_respect_english_gap_placeholder(
+    def test_section_confidence_respects_english_gap_placeholder(
         self,
     ) -> None:
         self.assertEqual(1.0, section_confidence("no gaps here"))
         self.assertLess(section_confidence("[INSUFFICIENT EVIDENCE: x]"), 1.0)
-        self.assertEqual(
-            [], extract_claim_texts("[INSUFFICIENT EVIDENCE: missing evidence]")
-        )
-        self.assertEqual(
-            ["same claim"], extract_claim_texts("same claim\n\nsame claim")
-        )
 
     def test_append_hypothesis_reasoning_is_idempotent_per_query_phase(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

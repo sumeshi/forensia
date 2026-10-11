@@ -452,9 +452,7 @@ def _select_candidate_drafts(
         limit=max(0, min(20, limit)),
         eligible=eligible,
     )
-    counts = {
-        key: int(value or 0) for key, value in (projection.get("counts") or {}).items()
-    }
+    counts = dict(projection.get("counts") or {})
     selected = []
     for candidate in projection.get("candidates") or []:
         fingerprint = str(candidate.get("candidate_fingerprint") or "")
@@ -473,8 +471,11 @@ def _select_candidate_drafts(
             "unexamined_candidate_count": max(
                 0, counts.get("candidate_count", 0) - examined_count
             ),
-            "draft_cap_omitted_count": max(
-                0, counts.get("eligible_candidate_count", 0) - len(selected)
+            "draft_cap_omitted_count": (
+                max(0, counts["eligible_candidate_count"] - len(selected))
+                if counts.get("eligibility_complete")
+                and counts.get("eligible_candidate_count") is not None
+                else None
             ),
         }
     )
@@ -815,9 +816,11 @@ def _emit_broad_plan_result(
     candidate_summary: dict[str, Any],
 ) -> None:
     candidate_count = int(candidate_summary.get("candidate_count", 0))
-    unassessed_count = int(
-        candidate_summary.get("unexamined_candidate_count", 0)
-        + candidate_summary.get("draft_cap_omitted_count", 0)
+    omitted_count = candidate_summary.get("draft_cap_omitted_count", 0)
+    unassessed_count = (
+        candidate_summary.get("unexamined_candidate_count", 0) + omitted_count
+        if omitted_count is not None
+        else "unknown"
     )
     _log(
         "PLAN",
@@ -1045,7 +1048,7 @@ async def _run_broad_plan_step(
         raise
     except Exception as exc:
         save_terminal_plan(exc)
-        err_msg = f"LLM failed: {exc}"
+        err_msg = f"Planning failed: {exc}"
         _log("PLAN_BROAD", err_msg, level="error")
         if emit_fn:
             emit_fn(
@@ -1055,7 +1058,7 @@ async def _run_broad_plan_step(
                 kind="investigation.plan_failed",
                 status="failed",
                 severity="error",
-                reason="llm_call_failed",
+                reason="planning_error",
             )
         return False
     except BaseException as exc:

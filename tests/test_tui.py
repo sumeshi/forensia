@@ -29,6 +29,7 @@ def test_tui_command_boundary_maps_to_runtime_operations() -> None:
         {"kind": "evidence", "id": "evtx-1"},
     )
     assert _command("/detail") == ("detail_close", {})
+    assert _command("/more") == ("more", {})
     assert _command("Prioritize host HOST-1") == (
         "steer",
         {"text": "Prioritize host HOST-1"},

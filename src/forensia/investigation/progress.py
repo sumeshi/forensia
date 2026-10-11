@@ -1,11 +1,10 @@
-"""Per-hypothesis query fingerprints and consecutive retrieval feedback."""
+"""Per-hypothesis consecutive retrieval feedback."""
 
 from __future__ import annotations
 
 import hashlib
 import logging
-from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from sqlglot import parse_one
 from sqlglot.optimizer.normalize_identifiers import normalize_identifiers
@@ -46,16 +45,14 @@ def query_fingerprint(sql: str | None) -> str:
 
 @dataclass(slots=True)
 class HypothesisProgressTracker:
-    """Track duplicate queries and feedback consumed by the settlement gate."""
+    """Track feedback consumed by the settlement gate."""
 
     zero_row_inconclusive_count: int = 0
-    query_fingerprints: list[str] = field(default_factory=list)
     _last_missing_signature: str = ""
     consecutive_same_missing: int = 0
 
-    def record(self, query_fingerprint: str, verdict: str, row_count: int) -> None:
-        """Record a query execution result."""
-        self.query_fingerprints.append(query_fingerprint)
+    def record(self, verdict: str, row_count: int) -> None:
+        """Record a retrieval result for zero-row settlement feedback."""
         if verdict == "inconclusive" and row_count == 0:
             self.zero_row_inconclusive_count += 1
         else:
@@ -72,11 +69,3 @@ class HypothesisProgressTracker:
         elif verdict != "inconclusive":
             self.consecutive_same_missing = 0
             self._last_missing_signature = ""
-
-    def should_pivot(self, threshold: int = 2) -> bool:
-        """Detect if any query fingerprint appears >= threshold times."""
-        fp_counts = Counter(self.query_fingerprints)
-        most_common = fp_counts.most_common(1)
-        if most_common and most_common[0][1] >= threshold:
-            return True
-        return False

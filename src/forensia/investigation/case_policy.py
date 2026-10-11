@@ -23,8 +23,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal, get_args
 
 from forensia.config import get_system_prompt_budget_chars
 from forensia.db.database import CaseDB
@@ -60,7 +61,8 @@ def validate_policy_body(body: str) -> int:
 
 #: Markdown section headings that can carry admission input (objective /
 #: scope). Anything else is guidance passed through as text only.
-_POLICY_SECTION_KEYS = ("objective", "scope", "priority", "constraints", "guidance")
+PolicySection = Literal["objective", "scope", "priority", "constraints", "guidance"]
+_POLICY_SECTION_KEYS = get_args(PolicySection)
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,32 +108,65 @@ def _short_hash(digest: str) -> str:
     return digest[:16]
 
 
-def extract_policy_sections(body: str) -> dict[str, str]:
-    """Extract §labeled sections from an ATX-heading Markdown outline.
+def _policy_section_spans(body: str) -> list[tuple[str, int, int]]:
+    """Locate policy bodies while retaining the original Markdown outside them."""
+    headings = []
+    offset = 0
+    for line in body.splitlines(keepends=True):
+        match = re.match(r"^ {0,3}(#{1,6})\s+(.+?)\s*#*\s*$", line)
+        if match:
+            title = match[2].casefold()
+            key = next((k for k in _POLICY_SECTION_KEYS if k in title), None)
+            headings.append((offset, offset + len(line), len(match[1]), key))
+        offset += len(line)
+    spans = []
+    for index, (_start, content_start, level, key) in enumerate(headings):
+        if key is None:
+            continue
+        end = next(
+            (h[0] for h in headings[index + 1 :] if h[3] is not None or h[2] <= level),
+            len(body),
+        )
+        spans.append((key, content_start, end))
+    return spans
 
-    Tiny sugar-level extraction only: a heading whose lowercased text contains
-    one of the policy keys owns its body until the next heading. Host-fixed
-    structure never grows beyond this.
-    """
-    sections: dict[str, str] = {}
-    current_key: str | None = None
-    buf: list[str] = []
-    for line in body.splitlines():
-        if line.lstrip().startswith("#"):
-            if current_key is not None:
-                sections[current_key] = "\n".join(buf).strip()
-            current_key = None
-            buf = []
-            heading = line.lstrip("#").strip().lower()
-            for key in _POLICY_SECTION_KEYS:
-                if key in heading:
-                    current_key = key
-                    break
-        elif current_key is not None:
-            buf.append(line)
-    if current_key is not None:
-        sections[current_key] = "\n".join(buf).strip()
-    return {key: text for key, text in sections.items() if text}
+
+def extract_policy_sections(body: str) -> dict[str, str]:
+    return {
+        key: text
+        for key, start, end in _policy_section_spans(body)
+        if (text := body[start:end].strip())
+    }
+
+
+def update_policy_sections(body: str, updates: dict[PolicySection, str]) -> str:
+    """Replace only explicitly proposed sections; preserve every other byte."""
+    spans = _policy_section_spans(body)
+    replacements = []
+    missing = []
+    for key, text in updates.items():
+        if key not in _POLICY_SECTION_KEYS or not text.strip():
+            raise ValueError("policy updates require a named nonempty section")
+        # A section body cannot introduce another policy section behind the
+        # host's bounded update contract.
+        if _policy_section_spans(text):
+            raise ValueError("policy section body contains another policy heading")
+        matches = [(start, end) for name, start, end in spans if name == key]
+        if len(matches) > 1:
+            raise ValueError(f"ambiguous policy section: {key}")
+        if matches:
+            start, end = matches[0]
+            replacements.append((start, end, "\n" + text.strip() + "\n\n"))
+        else:
+            missing.append(f"# {key.title()}\n\n{text.strip()}\n")
+    for start, end, replacement in sorted(replacements, reverse=True):
+        body = body[:start] + replacement + body[end:]
+    for section in missing:
+        separator = ""
+        if body and not body.endswith("\n\n"):
+            separator = "\n" if body.endswith("\n") else "\n\n"
+        body += separator + section
+    return body
 
 
 def policy_objective(policy: AppliedCasePolicy) -> str:

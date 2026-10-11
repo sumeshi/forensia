@@ -16,7 +16,7 @@ section_verdict:
     - block_supported
     - block_needs_more
     - block_contradicted
-  description: "Verdict from section agent check phase"
+  description: "Verdict from a report block check"
 
 structured_status:
   values:

@@ -15,6 +15,7 @@ from forensia.core.progress_event import progress_event
 from forensia.core.session import Hypothesis, SessionState
 from forensia.core.textutil import normalize_text as _normalize_text
 from forensia.db.database import CaseDB
+from forensia.evidence.links import EvidenceLink
 from forensia.investigation.hypotheses.hypothesis_manager import admit_new_hypothesis
 from forensia.investigation.hypotheses.hypothesis_model import (
     _extract_entities_from_text,
@@ -22,10 +23,7 @@ from forensia.investigation.hypotheses.hypothesis_model import (
     hypothesis_similarity,
 )
 from forensia.investigation.hypotheses.hypothesis_store import _upsert_hypothesis
-from forensia.investigation.verification.sufficiency import (
-    EvidenceLink,
-    derivation_root_key,
-)
+from forensia.investigation.verification.sufficiency import derivation_root_key
 from forensia.investigation.work_judgment import open_work_refs
 from forensia.report.sections.section_store import fetch_report_sections
 

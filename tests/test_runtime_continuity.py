@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import struct
 import subprocess
 import sys
 import threading
@@ -13,7 +14,11 @@ from pathlib import Path
 import pytest
 
 from forensia.core.case import Case
+from forensia.core.session import Hypothesis
+from forensia.core.verification import VerificationSpec
 from forensia.db.database import CaseDB
+from forensia.db.evidence_sources import register_evidence_source
+from forensia.investigation.hypotheses.hypothesis_store import _upsert_hypothesis
 from forensia.runtime import RuntimeClient, start_runtime
 
 
@@ -66,7 +71,7 @@ class _FixedProvider(ThreadingHTTPServer):
         self.server_close()
         self.thread.join(timeout=2)
 
-    def wait_for_requests(self, count: int, timeout: float = 10) -> bool:
+    def wait_for_requests(self, count: int, timeout: float = 30) -> bool:
         deadline = time.monotonic() + timeout
         with self.request_condition:
             while self.requests < count:
@@ -117,18 +122,41 @@ def _receipt(
     raise AssertionError(f"Runtime did not finish {operation}: {command_id}")
 
 
+def _synthetic_prefetch(run_count: int) -> bytes:
+    # Minimal v23 bytes keep this test independent of the ignored CFReDS corpus.
+    executable = "TEST.EXE"
+    filenames = (
+        r"\DEVICE\HARDDISKVOLUME1\USERS\TEST\APPDATA\LOCAL\TEMP\TEST.DLL".encode(
+            "utf-16le"
+        )
+        + b"\0\0"
+    )
+    metrics_offset = 240
+    filenames_offset = metrics_offset + 32
+    data = bytearray(filenames_offset + len(filenames))
+    struct.pack_into("<I", data, 0, 23)
+    data[4:8] = b"SCCA"
+    struct.pack_into("<I", data, 12, len(data))
+    executable_utf16 = executable.encode("utf-16le")
+    data[16 : 16 + len(executable_utf16)] = executable_utf16
+    struct.pack_into("<I", data, 76, 0x12345678)
+    struct.pack_into("<II", data, 84, metrics_offset, 1)
+    struct.pack_into("<II", data, 100, filenames_offset, len(filenames))
+    struct.pack_into("<I", data, 124, 1)
+    struct.pack_into("<Q", data, 128, 133801632000000000)
+    struct.pack_into("<I", data, 152, run_count)
+    struct.pack_into("<Q", data, metrics_offset + 24, 0x300000000FEC0)
+    data[filenames_offset:] = filenames
+    return bytes(data)
+
+
 def test_public_background_runtime_stop_busy_and_idle_overwrite(tmp_path):
     provider = _FixedProvider()
     case_dir = tmp_path / "case"
     input_dir = tmp_path / "input"
     input_dir.mkdir()
-    source_prefetch = (
-        Path(__file__).resolve().parents[1]
-        / "sample/cfreds/Prefetch/CCLEANER64.EXE-779BD542.pf"
-    )
-    has_prefetch = source_prefetch.is_file()
-    if has_prefetch:
-        shutil.copy2(source_prefetch, input_dir / source_prefetch.name)
+    prefetch_path = input_dir / "TEST.EXE-12345678.pf"
+    prefetch_path.write_bytes(_synthetic_prefetch(run_count=2))
     system_prompt = tmp_path / "FORENSIA.md"
     system_prompt.write_text(
         "# Objective\n\nInvestigate this test case carefully.\n", encoding="utf-8"
@@ -161,12 +189,12 @@ def test_public_background_runtime_stop_busy_and_idle_overwrite(tmp_path):
             "--background",
             env=env,
         )
+        client = RuntimeClient(case_dir)
         assert started.returncode == 0, started.stdout + started.stderr
-        assert provider.request_started.wait(10), (
+        assert provider.request_started.wait(30), (
             "initial investigation never reached provider"
         )
 
-        client = RuntimeClient(case_dir, timeout=2)
         first_status = client.request({"type": "status"})
         assert first_status["ready"] is True
         assert client.request({"type": "snapshot"})["case_name"] == "case"
@@ -238,25 +266,24 @@ run_investigation(
     forensia_md=sys.argv[4], report_spec=sys.argv[5],
 )
 """
-        if has_prefetch:
-            direct = subprocess.run(
-                [
-                    sys.executable,
-                    "-c",
-                    direct_code,
-                    str(direct_case),
-                    str(input_dir),
-                    provider.base_url,
-                    str(direct_system_prompt),
-                    str(direct_template),
-                ],
-                capture_output=True,
-                text=True,
-                env=env,
-                timeout=30,
-                check=False,
-            )
-            assert direct.returncode == 0, direct.stdout + direct.stderr
+        direct = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                direct_code,
+                str(direct_case),
+                str(input_dir),
+                provider.base_url,
+                str(direct_system_prompt),
+                str(direct_template),
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=30,
+            check=False,
+        )
+        assert direct.returncode == 0, direct.stdout + direct.stderr
 
         def judgments(path: Path) -> tuple[list, list, list]:
             with CaseDB(Case.open(path), read_only=True) as db:
@@ -274,60 +301,64 @@ run_investigation(
                 ).fetchall()
             return evidence, findings, hypotheses
 
-        if has_prefetch:
-            runtime_judgments = judgments(case_dir)
-            assert runtime_judgments[0], (
-                "CFReDS Prefetch produced no durable evidence rows"
-            )
-            assert runtime_judgments == judgments(direct_case)
+        runtime_judgments = judgments(case_dir)
+        assert [(row[0], row[1]) for row in runtime_judgments[0]] == [("TEST.EXE", 2)]
+        assert runtime_judgments[1], "synthetic Prefetch produced no findings"
+        assert runtime_judgments == judgments(direct_case)
 
-            alternates = sorted(
-                path
-                for path in source_prefetch.parent.rglob("*.pf")
-                if path.resolve() != source_prefetch.resolve()
-            )
-            if alternates:
-                with CaseDB(Case.open(case_dir), read_only=True) as db:
-                    before_source = db.execute(
-                        "SELECT sha256, path FROM ingested_files "
-                        "WHERE source_kind = 'prefetch' ORDER BY path, sha256 LIMIT 1"
-                    ).fetchone()
-                assert before_source is not None
-                shutil.copy2(alternates[0], input_dir / source_prefetch.name)
-                replace = client.request(
-                    {
-                        "type": "command",
-                        "command_id": "public-add-prefetch-replacement",
-                        "operation": "add",
-                        "payload": {"input_dir": str(input_dir)},
-                    }
-                )
-                assert replace["status"] == "accepted"
-                replacement_receipt = _receipt(
-                    client,
-                    "public-add-prefetch-replacement",
-                    "add",
-                    {"input_dir": str(input_dir)},
-                )
-                assert replacement_receipt["status"] == "applied"
-                with CaseDB(Case.open(case_dir), read_only=True) as db:
-                    after_source = db.execute(
-                        "SELECT sha256, path FROM ingested_files "
-                        "WHERE source_kind = 'prefetch' ORDER BY path, sha256 LIMIT 1"
-                    ).fetchone()
-                    old_source_count = db.execute(
-                        "SELECT COUNT(*) FROM evidence_sources WHERE source_id = ?",
-                        [before_source[0]],
-                    ).fetchone()[0]
-                    old_evidence_count = db.execute(
-                        "SELECT COUNT(*) FROM prefetch_executions WHERE source_file = ?",
-                        [before_source[0]],
-                    ).fetchone()[0]
-                assert after_source is not None
-                assert after_source[1] == before_source[1]
-                assert after_source[0] != before_source[0]
-                assert old_source_count == 0
-                assert old_evidence_count == 0
+        with CaseDB(Case.open(case_dir), read_only=True) as db:
+            before_source = db.execute(
+                "SELECT sha256, path FROM ingested_files "
+                "WHERE source_kind = 'prefetch' ORDER BY path, sha256 LIMIT 1"
+            ).fetchone()
+        assert before_source is not None
+        prefetch_path.write_bytes(_synthetic_prefetch(run_count=3))
+        replace = client.request(
+            {
+                "type": "command",
+                "command_id": "public-add-prefetch-replacement",
+                "operation": "add",
+                "payload": {"input_dir": str(input_dir)},
+            }
+        )
+        assert replace["status"] == "accepted"
+        replacement_receipt = _receipt(
+            client,
+            "public-add-prefetch-replacement",
+            "add",
+            {"input_dir": str(input_dir)},
+        )
+        assert replacement_receipt["status"] == "applied"
+        with CaseDB(Case.open(case_dir), read_only=True) as db:
+            after_source = db.execute(
+                "SELECT sha256, path FROM ingested_files "
+                "WHERE source_kind = 'prefetch' ORDER BY path, sha256 LIMIT 1"
+            ).fetchone()
+            new_executions = db.execute(
+                "SELECT executable_name, exec_count FROM prefetch_executions "
+                "WHERE source_file = ? ORDER BY executable_name",
+                [after_source[0] if after_source is not None else None],
+            ).fetchall()
+            old_source_count = db.execute(
+                "SELECT COUNT(*) FROM evidence_sources WHERE source_id = ?",
+                [before_source[0]],
+            ).fetchone()[0]
+            old_evidence_count = db.execute(
+                "SELECT COUNT(*) FROM prefetch_executions WHERE source_file = ?",
+                [before_source[0]],
+            ).fetchone()[0]
+            coverage_state, coverage_sources = db.execute(
+                "SELECT state, source_ids FROM evidence_coverage "
+                "WHERE source_family = 'prefetch' AND capability = 'process_execution'"
+            ).fetchone()
+        assert after_source is not None
+        assert after_source[1] == before_source[1]
+        assert after_source[0] != before_source[0]
+        assert new_executions == [("TEST.EXE", 3)]
+        assert old_source_count == 0
+        assert old_evidence_count == 0
+        assert coverage_state in {"available", "partial"}
+        assert json.loads(coverage_sources) == [after_source[0]]
 
         # A repeated idle stop records a receipt but does not create a session.
         assert _receipt(client, "public-stop-2", "stop")["status"] == "applied"
@@ -410,7 +441,7 @@ run_investigation(
         )
         assert overwritten.returncode == 0, overwritten.stdout + overwritten.stderr
         assert not (case_dir / "overwrite-sentinel").exists()
-        replacement = RuntimeClient(case_dir, timeout=2)
+        replacement = RuntimeClient(case_dir)
         assert (
             replacement.request({"type": "status"})["startup_id"]
             != first_status["startup_id"]
@@ -418,21 +449,62 @@ run_investigation(
         client = replacement
     finally:
         provider.release_request.set()
-        if client is not None:
-            try:
-                receipt = _receipt(client, "public-cleanup-stop", "stop")
-                assert receipt["status"] == "applied"
-                client.request({"type": "retire"})
-            except OSError, RuntimeError, TimeoutError, ValueError, AssertionError:
-                pass
-        provider.close()
+        try:
+            if client is not None:
+                try:
+                    receipt = _receipt(client, "public-cleanup-stop", "stop")
+                    assert receipt["status"] == "applied"
+                finally:
+                    deadline = time.monotonic() + 10
+                    while not client.request({"type": "retire"})["retired"]:
+                        assert time.monotonic() < deadline, (
+                            "test Runtime did not retire"
+                        )
+                        time.sleep(0.05)
+        except OSError:
+            pass
+        finally:
+            provider.close()
 
 
 def test_runtime_process_crash_recovers_receipts_and_session_lease(tmp_path):
     provider = _FixedProvider()
     case = Case.init(tmp_path / "case")
-    with CaseDB(case):
-        pass
+    with CaseDB(case) as db:
+        register_evidence_source(
+            db,
+            source_id="runtime-test",
+            artifact_family="prefetch",
+            display_path="runtime-test.pf",
+            ingest_status="normalized",
+            row_count=1,
+        )
+        db.execute(
+            "INSERT INTO prefetch_executions "
+            "(evidence_id, source_file, executable_name, exec_count, last_exec_time) "
+            "VALUES ('prefetch-runtime-test', 'runtime-test', 'TEST.EXE', 1, "
+            "'2026-01-01 00:00:00')"
+        )
+        _upsert_hypothesis(
+            db,
+            Hypothesis(
+                id="H-001",
+                description="TEST.EXE was executed.",
+                verification_spec=VerificationSpec(
+                    support_conditions={
+                        "observation": {
+                            "family": "prefetch",
+                            "capability": "process_execution",
+                            "field": "executable_name",
+                            "operator": "equals",
+                            "value": "TEST.EXE",
+                        }
+                    }
+                ),
+            ),
+            origin="test",
+            session_id="setup",
+        )
     env = os.environ.copy()
     env.update(
         {
@@ -500,9 +572,19 @@ def test_runtime_process_crash_recovers_receipts_and_session_lease(tmp_path):
         provider.release_request.set()
         if replacement is not None:
             try:
-                _receipt(replacement, "recovery-cleanup-stop", "stop")
-                replacement.request({"type": "retire"})
-            except OSError, RuntimeError, TimeoutError, ValueError, AssertionError:
+                receipt = _receipt(replacement, "recovery-cleanup-stop", "stop")
+                assert receipt["status"] == "applied"
+                assert replacement.request({"type": "retire"})["retired"]
+                assert replacement._process is not None
+                replacement._process.wait(timeout=3)
+            except (
+                OSError,
+                RuntimeError,
+                TimeoutError,
+                ValueError,
+                AssertionError,
+                subprocess.TimeoutExpired,
+            ):
                 process = replacement._process
                 if process is not None and process.poll() is None:
                     process.terminate()

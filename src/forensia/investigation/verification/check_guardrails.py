@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from collections import Counter
 from collections.abc import Callable, Mapping
@@ -164,21 +165,37 @@ def annotate_benign_context(
     return result
 
 
-def _co_observation_satisfied(
+def _co_observation_evaluation(
     confirm_when: dict, rows: list[dict[str, Any]]
-) -> tuple[bool, str]:
-    """Check if co-observed event IDs satisfy correlation constraints.
+) -> tuple[bool, str, list[list[int]]]:
+    """Evaluate co-observation conditions and return row-index witness groups.
 
     Field constraints filter eligible rows before host/entity grouping and the
-    window search, so all conditions use the same witnesses.
-    Returns (satisfied, reason_string).
+    window search, so every returned witness satisfies the same conditions.
+    Correlated rows share a group; a plain single-event condition keeps each
+    event as its own group so independent observations can still count.
     """
+    original_indices = {id(row): index for index, row in enumerate(rows)}
+    identified_rows: dict[str, dict[str, Any]] = {}
+    anonymous_rows: list[dict[str, Any]] = []
+    for row in rows:
+        evidence_id = str(
+            row.get("evidence_id") or row.get("artifact_id") or ""
+        ).strip()
+        if evidence_id:
+            previous = identified_rows.get(evidence_id)
+            if previous is None or _stable_row_key(row) < _stable_row_key(previous):
+                identified_rows[evidence_id] = row
+        else:
+            anonymous_rows.append(row)
+    rows = [*identified_rows.values(), *anonymous_rows]
     rows = _context_qualified_rows(confirm_when, rows)
     rows, constraint_reason = _event_constraint_rows(
         confirm_when.get("event_constraints"), rows
     )
     if constraint_reason:
-        return False, constraint_reason
+        return False, constraint_reason, []
+    rows.sort(key=_stable_row_key)
     co_ids = confirm_when.get("co_observed_event_ids") or []
     required_ids: set[int] = set()
     for eid in co_ids:
@@ -187,7 +204,7 @@ def _co_observation_satisfied(
         except TypeError, ValueError:
             continue
     if not required_ids:
-        return (True, "no co_observed_event_ids to verify")
+        return (True, "no co_observed_event_ids to verify", [])
 
     same_host = bool(confirm_when.get("same_host", False))
     within_minutes: int | None = confirm_when.get("within_minutes")
@@ -198,7 +215,7 @@ def _co_observation_satisfied(
     ]
     min_count = confirm_when.get("min_count", 1)
     if not isinstance(min_count, int) or isinstance(min_count, bool) or min_count < 1:
-        return (False, "min_count must be a positive integer")
+        return (False, "min_count must be a positive integer", [])
 
     # Simple presence check when no correlation constraints
     if (
@@ -216,13 +233,27 @@ def _co_observation_satisfied(
                 except TypeError, ValueError:
                     pass
         if required_ids.issubset(observed_ids):
+            matched_rows = [
+                row
+                for row in rows
+                if str(row.get("event_id") or "").strip().isdigit()
+                and int(row["event_id"]) in required_ids
+            ]
+            indices = list(
+                dict.fromkeys(original_indices[id(row)] for row in matched_rows)
+            )
+            groups = (
+                [indices] if len(required_ids) > 1 else [[index] for index in indices]
+            )
             return (
                 True,
                 f"all co_observed_event_ids {sorted(required_ids)} present in rows",
+                groups,
             )
         return (
             False,
             f"not all co_observed_event_ids found: missing {sorted(required_ids - observed_ids)}",
+            [],
         )
 
     grouping_fields = (["computer"] if same_host else []) + same_entities
@@ -240,11 +271,13 @@ def _co_observation_satisfied(
             return (
                 False,
                 f"correlation fields missing from rows: {grouping_fields}",
+                [],
             )
     else:
         host_groups = {"_all": rows}
 
-    for host, host_rows in host_groups.items():
+    for host in sorted(host_groups):
+        host_rows = host_groups[host]
         host_event_ids: set[int] = set()
         for row in host_rows:
             eid = row.get("event_id")
@@ -272,7 +305,7 @@ def _co_observation_satisfied(
             # every required event ID. A global min/max span check would fail
             # whenever the result set spans days even though a valid co-observed
             # pair exists somewhere inside it.
-            events: list[tuple[float, int]] = []
+            events: list[tuple[float, int, tuple[str, str], int]] = []
             for row in host_rows:
                 eid = row.get("event_id")
                 if eid is not None:
@@ -281,14 +314,21 @@ def _co_observation_satisfied(
                         if eid_int in required_ids:
                             ts = _parse_timestamp(row.get("timestamp"))
                             if ts is not None:
-                                events.append((ts, eid_int))
+                                events.append(
+                                    (
+                                        ts,
+                                        eid_int,
+                                        _stable_row_key(row),
+                                        original_indices[id(row)],
+                                    )
+                                )
                     except TypeError, ValueError:
                         pass
 
             if not events:
                 continue
 
-            events.sort()
+            events.sort(key=lambda event: (event[0], event[1], event[2]))
             window_seconds = within_minutes * 60
             window_counts: Counter[int] = Counter()
             left = 0
@@ -307,16 +347,30 @@ def _co_observation_satisfied(
                     found = True
                     break
             if found:
+                witness_indices = list(
+                    dict.fromkeys(event[3] for event in events[left : right + 1])
+                )
                 host_label = f" in group={host}" if grouping_fields else ""
                 return (
                     True,
                     f"co-observed event_ids {sorted(required_ids)} within {within_minutes}min with min_count={min_count}{host_label}",
+                    [witness_indices],
                 )
         else:
+            witness_rows = [
+                row
+                for row in host_rows
+                if str(row.get("event_id") or "").strip().isdigit()
+                and int(row["event_id"]) in required_ids
+            ]
+            witness_indices = list(
+                dict.fromkeys(original_indices[id(row)] for row in witness_rows)
+            )
             host_label = f" in group={host}" if grouping_fields else ""
             return (
                 True,
                 f"co-observed event_ids {sorted(required_ids)} present with min_count={min_count}{host_label}",
+                [witness_indices],
             )
 
     parts = [f"co-observation not satisfied: required={sorted(required_ids)}"]
@@ -328,7 +382,24 @@ def _co_observation_satisfied(
         parts.append(f"within_{within_minutes}min")
     if min_count > 1:
         parts.append(f"min_count={min_count}")
-    return (False, "; ".join(parts))
+    return (False, "; ".join(parts), [])
+
+
+def _stable_row_key(row: dict[str, Any]) -> tuple[str, str]:
+    """Provide deterministic row ordering independent of SQL result order."""
+    evidence_id = str(row.get("evidence_id") or row.get("artifact_id") or "").strip()
+    payload = json.dumps(
+        row, ensure_ascii=False, sort_keys=True, default=str, separators=(",", ":")
+    )
+    return evidence_id, payload
+
+
+def _co_observation_satisfied(
+    confirm_when: dict, rows: list[dict[str, Any]]
+) -> tuple[bool, str]:
+    """Keep the existing two-value checker contract for callers."""
+    satisfied, reason, _groups = _co_observation_evaluation(confirm_when, rows)
+    return satisfied, reason
 
 
 def _event_constraint_rows(
@@ -498,7 +569,12 @@ def verify_verdict_consistency(
     # -- Check 3: co-observation correlation constraints (same_host / within_minutes) --
     if hypothesis and hypothesis.verification_spec.support_conditions:
         cw = hypothesis.verification_spec.support_conditions
-        if cw.get("same_host") or cw.get("within_minutes"):
+        if (
+            cw.get("same_host")
+            or cw.get("within_minutes") is not None
+            or type(cw.get("min_count", 1)) is not int
+            or cw.get("min_count", 1) != 1
+        ):
             sample_rows = result_summary.get("sample_rows") or []
             satisfied, veto_reason = _co_observation_satisfied(cw, sample_rows)
             if not satisfied:

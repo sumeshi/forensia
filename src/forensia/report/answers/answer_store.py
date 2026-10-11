@@ -136,23 +136,6 @@ def _normalize_structured_answer(
     return normalized
 
 
-def _structured_answers_path(case: Case) -> Path:
-    return case.reports_dir / "structured" / "answers.json"
-
-
-def _load_structured_answers(case: Case) -> list[dict[str, Any]]:
-    path = _structured_answers_path(case)
-    if not path.exists():
-        return []
-    try:
-        parsed = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return []
-    if not isinstance(parsed, list):
-        return []
-    return [item for item in parsed if isinstance(item, dict)]
-
-
 def _safe_answer_filename(answer_id: str) -> str:
     safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(answer_id or "answer")).strip("._")
     return safe or "answer"
@@ -190,23 +173,19 @@ def _write_structured_answer_csv(case: Case, answer: dict[str, Any]) -> str:
     return f"structured/{path.name}"
 
 
-def _persist_structured_answer(case: Case, answer: dict[str, Any]) -> None:
-    path = _structured_answers_path(case)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    answer["json_path"] = "structured/answers.json"
+def _write_structured_answer_export(case: Case, answer: dict[str, Any]) -> None:
+    """Write reproducible exports from the current database-derived answer."""
+    answer_id = _safe_answer_filename(str(answer.get("id") or "answer"))
+    directory = case.reports_dir / "structured"
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{answer_id}.json"
+    answer["json_path"] = f"structured/{path.name}"
     csv_path = _write_structured_answer_csv(case, answer)
     if csv_path:
         answer["csv_path"] = csv_path
-    answers = _load_structured_answers(case)
-    answers = [
-        item
-        for item in answers
-        if str(item.get("id") or "") != str(answer.get("id") or "")
-    ]
-    answers.append(answer)
-    answers.sort(key=lambda item: str(item.get("id") or ""))
     path.write_text(
-        json.dumps(answers, ensure_ascii=False, default=str, indent=2), encoding="utf-8"
+        json.dumps(answer, ensure_ascii=False, default=str, indent=2),
+        encoding="utf-8",
     )
 
 
@@ -573,7 +552,7 @@ def _structured_answer(
         block_heading=block_heading,
         status=resolved_status,
     )
-    _persist_structured_answer(case, answer)
+    _write_structured_answer_export(case, answer)
     return answer
 
 

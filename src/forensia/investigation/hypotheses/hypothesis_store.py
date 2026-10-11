@@ -29,6 +29,124 @@ def _recent_reasoning_rows(
     )
 
 
+def _json_object(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except TypeError, ValueError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def load_hypothesis_attempts(db: CaseDB, hypothesis_id: str) -> list[dict[str, Any]]:
+    """Project durable query receipts and their checks in chronological order.
+
+    Receipt IDs are the attempt identity. Short planner query IDs are labels
+    and may repeat after a resumed investigation.
+    """
+    rows = fetch_records(
+        db,
+        """
+        SELECT step_id, iteration, phase, input_json, output_json, created_at
+        FROM trace.investigation_steps
+        WHERE hypothesis_id = ? AND phase IN ('do', 'check')
+        ORDER BY created_at, step_id
+        """,
+        (hypothesis_id,),
+    )
+    attempts_by_ref: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for row in rows:
+        output = _json_object(row.get("output_json"))
+        step_input = _json_object(row.get("input_json"))
+        if row.get("phase") == "do":
+            repeat_gate = output.get("repeat_gate")
+            receipt = _json_object(output.get("tool_receipt"))
+            attempt = _json_object(output.get("attempt"))
+            query = _json_object(step_input.get("planned_query"))
+            attempt_ref = str(
+                attempt.get("attempt_ref")
+                or receipt.get("receipt_id")
+                or (row.get("step_id") if repeat_gate else "")
+            ).strip()
+            if not attempt_ref:
+                continue
+            projected = {
+                "attempt_ref": attempt_ref,
+                "iteration": row.get("iteration"),
+                "query_id": str(receipt.get("call_id") or query.get("query_id") or ""),
+                "query_fingerprint": str(
+                    attempt.get("query_fingerprint") or receipt.get("query_hash") or ""
+                ),
+                "verification_spec_fingerprint": str(
+                    attempt.get("verification_spec_fingerprint") or ""
+                ),
+                "evidence_scope_fingerprint": str(
+                    attempt.get("evidence_scope_fingerprint") or ""
+                ),
+                "status": str(
+                    attempt.get("status") or receipt.get("status") or "skipped"
+                ),
+                "retrieval_outcome": str(
+                    attempt.get("retrieval_outcome")
+                    or _json_object(output.get("retrieval_evaluation")).get("outcome")
+                    or ""
+                ),
+                "returned_count": attempt.get(
+                    "returned_count", receipt.get("returned_count")
+                ),
+                "evidence_ids": attempt.get("evidence_ids")
+                or _json_object(receipt.get("result_refs")).get("evidence_ids")
+                or output.get("evidence_ids")
+                or [],
+                "purpose": str(query.get("purpose") or ""),
+                "normalized_sql": str(
+                    query.get("sql")
+                    or _json_object(receipt.get("arguments")).get("normalized_sql")
+                    or ""
+                ),
+                "template_id": query.get("template_id"),
+                "params": query.get("params") or {},
+                "reason": str(
+                    attempt.get("reason")
+                    or receipt.get("reason")
+                    or (repeat_gate or {}).get("reason_code")
+                    or ""
+                ),
+                "error": str(attempt.get("error") or receipt.get("reason") or ""),
+                "retryable": bool(attempt.get("retryable")),
+                "repeat_gate": repeat_gate or attempt.get("repeat_gate") or {},
+                "check_verdict": "",
+                "check_summary": "",
+                "assessment": {},
+                "created_at": row.get("created_at"),
+            }
+            attempts_by_ref[attempt_ref] = projected
+            order.append(attempt_ref)
+            continue
+
+        attempt_ref = str(output.get("attempt_ref") or "").strip()
+        if not attempt_ref or attempt_ref not in attempts_by_ref:
+            continue
+        attempt = attempts_by_ref[attempt_ref]
+        attempt["check_verdict"] = str(
+            output.get("check_verdict") or output.get("verdict") or ""
+        )
+        attempt["check_summary"] = str(
+            output.get("check_summary")
+            or output.get("report_text")
+            or output.get("rationale")
+            or ""
+        )[:500]
+        attempt["assessment"] = _json_object(output.get("assessment"))
+        attempt["missing_questions"] = output.get("missing_questions") or []
+
+    return [attempts_by_ref[attempt_ref] for attempt_ref in order]
+
+
 def _next_hypothesis_id(db: CaseDB) -> str:
     """Generate the next sequential hypothesis ID in H-NNN format."""
     row = db.execute(

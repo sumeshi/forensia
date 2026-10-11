@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import io
+from contextlib import redirect_stdout
 from unittest.mock import patch
 
 import pytest
@@ -32,3 +34,26 @@ def test_log_uppercases_display_tag_and_keeps_message_plain() -> None:
     with patch("builtins.print") as output:
         log("review", "[rewrite] needs attention", level="warning")
     assert output.call_args.args[0] == "[REVIEW] [WARNING] [REWRITE] needs attention"
+
+
+def test_log_keeps_unicode_on_utf8_redirected_stdout() -> None:
+    buffer = io.BytesIO()
+    stream = io.TextIOWrapper(buffer, encoding="utf-8")
+    with redirect_stdout(stream):
+        log("investigation", "調査 — complete")
+    stream.flush()
+
+    assert (
+        buffer.getvalue().decode("utf-8") == "[INVESTIGATION] [INFO] 調査 — complete\n"
+    )
+
+
+def test_log_escapes_only_unencodable_text_for_cp932_stdout() -> None:
+    buffer = io.BytesIO()
+    stream = io.TextIOWrapper(buffer, encoding="cp932")
+    with redirect_stdout(stream):
+        log("investigation", "調査 — complete")
+    stream.flush()
+
+    output = buffer.getvalue().decode("cp932")
+    assert output == r"[INVESTIGATION] [INFO] 調査 \u2014 complete" + "\n"

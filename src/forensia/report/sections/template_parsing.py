@@ -31,7 +31,6 @@ BLOCK_HINT_PATTERN = re.compile(
 QUESTION_HINT_PATTERN = re.compile(
     r"<!--\s*question(?:\s*:\s*(?P<value>.*?))?\s*-->", re.IGNORECASE
 )
-RAW_EVIDENCE_HEADING_PATTERN = re.compile(r"^#{2,6}\s*Raw Evidence\s*$", re.IGNORECASE)
 
 
 def build_template_meta(meta: dict[str, Any]) -> TemplateMeta:

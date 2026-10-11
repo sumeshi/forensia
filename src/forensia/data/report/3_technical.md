@@ -1,34 +1,27 @@
 ---
 type: report-section-template
-title: Technical Analysis
-description: Evidence-based technical reconstruction of systems, accounts, activity, and artifacts.
-tags: [incident-response, technical-analysis, systems, artifacts]
+title: Findings
+description: Technical observations and interpretations grounded in evidence.
+tags: [report, findings, evidence]
 timestamp: 2026-07-12
 instructions: |
-  Explain how the evidence fits together technically, not as a raw artifact dump.
-  Identify affected systems and accounts, relevant techniques, and indicators with
-  traceable evidence. Distinguish observed behavior from interpretation, address
-  plausible benign explanations, and avoid unsupported attribution.
+  Explain relevant evidence and how it supports each finding. Identify affected
+  systems, accounts, and artifacts when known. Distinguish direct observations
+  from interpretation and retain plausible alternatives.
 ---
-# Technical Analysis
+# Findings
 
-## Initial Access and Incident Progression
-<!-- mode: narrative; Explain the earliest supported activity, likely entry or triggering event, and progression through the environment. Separate observed facts, analytical assessments, and unsupported possibilities. -->
+## Evidence and Interpretation
+<!-- mode: narrative; Correlate relevant observations, cite their evidence, and distinguish what the records show from what they may mean. -->
 
 ## Systems and Accounts
 <!-- mode: table; builder: technical_accounts -->
 
-## Execution and Persistence
+## Execution Records
 <!-- mode: table; builder: technical_execution -->
 
-## Network Activity
+## Network Records
 <!-- mode: table; builder: technical_network -->
 
-## Files, Data Access, and User Artifacts
+## Relevant Files
 <!-- mode: table; builder: technical_files -->
-
-## Antiforensic Indicators
-<!-- mode: table; builder: technical_antiforensic -->
-
-## Technical Assessment
-<!-- mode: narrative; Correlate the technical evidence into the supported attack or activity sequence, affected assets and accounts, indicators of compromise, and confidence. Identify where attribution or causation cannot be established. -->

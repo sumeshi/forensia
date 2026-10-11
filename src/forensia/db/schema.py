@@ -1,22 +1,33 @@
-# Version 6: primary Evidence IDs include full source-content identity.
-# Version 5: hypothesis_evidence gained assessment_reason/matched_conditions —
-# the judgment grounds of the deterministic Assessment that admitted the link.
-# Re-evaluation writes a new link with a new assessment id; grounds stay
-# readable per link without re-running the matcher over vanished rows.
-# Version 4: hypothesis_evidence gained verification_spec_fingerprint — the
-# canonical Spec in force when its assessment was admitted.
-# Version 3: hypothesis_evidence gained content_fingerprint — the canonical
-# content identity of the row backing a link at assessment time (R03/T04).
-# Read-time currentness compares it with the live row so an in-place content
-# change of the same evidence_id is not silently refilled as support.
-# Version 8: Case and Trace share one database, with Trace tables in the trace schema.
-# Version 2: hypotheses dropped the parallel declaration columns
-# (confirm_when/refute_when/evidence_requirements); the canonical
-# verification_spec JSON is the only stored condition representation.
-# Case databases with a different version are rejected before any
-# persistent DDL/DML (see db/database._check_schema_version); existing
-# cases are preserved and their artifacts are re-ingested into new cases.
-SCHEMA_VERSION = 9
+from functools import lru_cache
+from typing import Any
+
+import duckdb
+
+# Case and Trace share one database. Different versions are rejected before
+# persistent writes; re-ingest original artifacts into a new case instead.
+SCHEMA_VERSION = 10
+
+
+def load_live_schema(db: Any) -> dict[str, tuple[str, ...]]:
+    rows = db.execute("""
+        SELECT table_name, column_name
+        FROM information_schema.columns
+        WHERE table_schema = 'main'
+        ORDER BY table_name, ordinal_position
+    """).fetchall()
+    result: dict[str, list[str]] = {}
+    for table, column in rows:
+        result.setdefault(str(table), []).append(str(column))
+    return {key: tuple(value) for key, value in result.items()}
+
+
+@lru_cache(maxsize=1)
+def declared_schema() -> dict[str, tuple[str, ...]]:
+    """Derive schema guidance from the authoritative DDL without a case."""
+    with duckdb.connect() as conn:
+        conn.execute(CORE_SCHEMA_SQL)
+        return load_live_schema(conn)
+
 
 CORE_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS evtx_events (
@@ -182,21 +193,7 @@ CREATE TABLE IF NOT EXISTS claims (
 
 CREATE INDEX IF NOT EXISTS claims_by_section ON claims(section_key, updated_at);
 
-CREATE TABLE IF NOT EXISTS section_facts (
-    fact_id VARCHAR PRIMARY KEY,
-    fact_type VARCHAR NOT NULL,
-    fact_key VARCHAR,
-    fact_value JSON,
-    evidence_ids JSON NOT NULL,
-    source_query VARCHAR,
-    source_section VARCHAR,
-    confidence DOUBLE,
-    created_at TIMESTAMP,
-    updated_at TIMESTAMP
-);
 
-CREATE INDEX IF NOT EXISTS idx_section_facts_type ON section_facts(fact_type);
-CREATE INDEX IF NOT EXISTS idx_section_facts_section ON section_facts(source_section, fact_type);
 
 CREATE TABLE IF NOT EXISTS section_evidence (
     section_key VARCHAR,
@@ -211,12 +208,6 @@ CREATE TABLE IF NOT EXISTS section_evidence (
 CREATE INDEX IF NOT EXISTS idx_section_evidence_section ON section_evidence(section_key, block_heading);
 CREATE INDEX IF NOT EXISTS idx_section_evidence_id ON section_evidence(evidence_id);
 
-CREATE TABLE IF NOT EXISTS query_cache (
-    sql_hash VARCHAR PRIMARY KEY,
-    sql_text VARCHAR,
-    result_json JSON,
-    executed_at TIMESTAMP
-);
 
 CREATE TABLE IF NOT EXISTS section_runs (
     run_id VARCHAR PRIMARY KEY,
@@ -231,21 +222,6 @@ CREATE TABLE IF NOT EXISTS section_runs (
 
 CREATE INDEX IF NOT EXISTS idx_section_runs_section ON section_runs(section_key, block_heading, created_at);
 
-CREATE TABLE IF NOT EXISTS section_questions (
-    question_id VARCHAR PRIMARY KEY,
-    section_key VARCHAR,
-    block_heading VARCHAR,
-    question_text VARCHAR,
-    question_type VARCHAR,
-    answer_spec VARCHAR,
-    intent VARCHAR,
-    confidence DOUBLE,
-    matched_rule VARCHAR,
-    required_evidence JSON,
-    status VARCHAR,
-    created_at TIMESTAMP,
-    updated_at TIMESTAMP
-);
 
 CREATE OR REPLACE VIEW section_run_coverage AS
 SELECT

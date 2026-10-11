@@ -2,19 +2,19 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 from dataclasses import dataclass
 from typing import Any
 
 from forensia.db.database import CaseDB
-from forensia.db.evidence_lookup import (
-    lookup_evidence_record,
-    routed_family,
-)
-from forensia.evidence.content_identity import (
-    fingerprint_from_record,
+from forensia.db.evidence_lookup import lookup_evidence_record, routed_family
+from forensia.evidence.content_identity import fingerprint_from_record
+from forensia.evidence.links import (
+    EvidenceLink,
+    evidence_link_currentness,
+    load_evidence_links,
+    verification_spec_fingerprint,
 )
 from forensia.knowledge.coverage import (
     derive_required_capabilities,
@@ -23,39 +23,6 @@ from forensia.knowledge.coverage import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class EvidenceLink:
-    link_id: str
-    hypothesis_id: str
-    evidence_id: str
-    finding_id: str
-    query_id: str
-    assessment_id: str
-    role: str  # supporting, corroborating, contradictory, duplicate
-    source_family: str
-    source_file: str
-    derivation_group: str
-    strength: str
-    # Canonical content identity of the backing evidence row at assessment
-    # time (evidence/content_identity.py).  Empty means the identity could
-    # not be established when the link was written; such links are never
-    # counted as current support.
-    content_fingerprint: str = ""
-    verification_spec_fingerprint: str = ""
-    # Judgment grounds of the one deterministic Assessment (V2-04):
-    # ``assessment_reason`` is the stored reason; ``matched_conditions`` are
-    # the declared condition keys that assessment matched.
-    assessment_reason: str = ""
-    matched_conditions: tuple[str, ...] = ()
-
-
-def verification_spec_fingerprint(spec: Any) -> str:
-    """Return a stable identity for a canonical VerificationSpec."""
-    payload = spec.model_dump(mode="json")
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 @dataclass
@@ -169,139 +136,6 @@ def _load_scoring_weights() -> dict[str, float]:
             "contradictory_penalty_per_group", 0.3
         ),
     }
-
-
-def evidence_link_currentness(
-    db: CaseDB, link: EvidenceLink
-) -> tuple[bool, str | None]:
-    """Return ``(True, None)`` when a link's judged material is verifiably current.
-
-    Currentness is derived at read time from stored identities only; the
-    hypothesis_evidence row is never mutated or deleted by this check.
-    Four verifications apply:
-
-    1. The referenced evidence row must still exist in the normalized table(s)
-       routed by the evidence_id prefix (db/evidence_lookup.py).  ``mft-``
-       resolves against mft_entries only — mft_timeline rows share the entry's
-       evidence_id and are derived from it, so no separate timeline branch is
-       needed; ``prefetch-`` already routes to both prefetch tables.
-    2. When both the link and the found row carry a non-empty ``source_file``
-       (the raw source SHA-256 for evtx/mft/prefetch), they must match.
-    3. The link's recorded ``content_fingerprint`` must match the fingerprint
-       of the row as it exists now (evidence/content_identity.py).  This
-       detects an in-place content change of the same evidence_id under the
-       same source identity — for example the same raw file re-normalized
-       with modified rows — which the source comparison cannot see.  Registry
-       rows are content-addressed (``artifact_id``) and skip the source-file
-       match; their content fingerprint covers identification.
-    4. The link's ``verification_spec_fingerprint`` must match the current
-       canonical Spec for its Hypothesis.
-
-    An empty stored or live fingerprint makes currentness undecidable; the
-    link is conservatively excluded from current support (``requires
-    re-evaluation``) and is never silently refilled. The sufficiency policy is
-    re-applied on every assessment.
-    """
-    evidence_id = str(link.evidence_id or "").strip()
-    if not evidence_id or routed_family(evidence_id) is None:
-        return False, "evidence_identity_unverifiable"
-    row = lookup_evidence_record(db, evidence_id)
-    if row is None:
-        return False, "evidence_row_missing"
-    if routed_family(evidence_id) != "registry":
-        link_source = str(link.source_file or "").strip()
-        row_source = str(row.get("source_file") or "").strip()
-        if not link_source or not row_source:
-            return False, "source_identity_unverifiable"
-        if link_source != row_source:
-            return False, "source_file_mismatch"
-    # Registry rows are content-addressed (artifact_id); every other family
-    # is addressed by the raw source SHA-256.  Either way the recorded
-    # content fingerprint identifies the judged material itself.
-    link_fingerprint = str(link.content_fingerprint or "").strip()
-    live_fingerprint = fingerprint_from_record(row)
-    if not link_fingerprint or not live_fingerprint:
-        return False, "content_unverifiable"
-    if link_fingerprint != live_fingerprint:
-        return False, "content_changed"
-    spec_row = db.execute(
-        "SELECT verification_spec FROM hypotheses WHERE hypothesis_id = ?",
-        [link.hypothesis_id],
-    ).fetchone()
-    if not spec_row or not spec_row[0]:
-        return False, "verification_spec_unverifiable"
-    raw_spec = spec_row[0]
-    if isinstance(raw_spec, str):
-        try:
-            raw_spec = json.loads(raw_spec)
-        except json.JSONDecodeError:
-            return False, "verification_spec_unverifiable"
-    try:
-        from forensia.core.verification import VerificationSpec
-
-        current_spec_fingerprint = verification_spec_fingerprint(
-            VerificationSpec.model_validate(raw_spec)
-        )
-    except Exception:
-        return False, "verification_spec_unverifiable"
-    if not link.verification_spec_fingerprint:
-        return False, "verification_spec_unverifiable"
-    if link.verification_spec_fingerprint != current_spec_fingerprint:
-        return False, "verification_spec_changed"
-    return True, None
-
-
-def load_evidence_links(
-    db: CaseDB, hypothesis_id: str, *, current_only: bool = False
-) -> list[EvidenceLink]:
-    """Load evidence links for a hypothesis.
-
-    With ``current_only=True`` links whose evidence row no longer exists or
-    whose recorded source identity no longer matches the materialized row are
-    excluded (see ``evidence_link_currentness``).  The excluded
-    hypothesis_evidence rows themselves are historical records and are never
-    deleted or mutated here.
-    """
-    rows = db.execute(
-        "SELECT link_id, hypothesis_id, evidence_id, finding_id, query_id, "
-        "assessment_id, role, source_family, source_file, derivation_group, "
-        "strength, content_fingerprint, verification_spec_fingerprint, "
-        "assessment_reason, matched_conditions "
-        "FROM hypothesis_evidence WHERE hypothesis_id = ?",
-        [hypothesis_id],
-    ).fetchall()
-    links: list[EvidenceLink] = []
-    for r in rows:
-        matched: tuple[str, ...] = ()
-        if isinstance(r[14], str) and r[14].strip():
-            try:
-                parsed = json.loads(r[14])
-                if isinstance(parsed, list):
-                    matched = tuple(str(key) for key in parsed if key)
-            except json.JSONDecodeError:
-                pass
-        links.append(
-            EvidenceLink(
-                link_id=r[0],
-                hypothesis_id=r[1],
-                evidence_id=r[2],
-                finding_id=r[3] or "",
-                query_id=r[4] or "",
-                assessment_id=r[5] or "",
-                role=r[6] or "supporting",
-                source_family=r[7] or "",
-                source_file=r[8] or "",
-                derivation_group=r[9] or "",
-                strength=r[10] or "moderate",
-                content_fingerprint=r[11] or "",
-                verification_spec_fingerprint=r[12] or "",
-                assessment_reason=r[13] or "",
-                matched_conditions=matched,
-            )
-        )
-    if current_only:
-        links = [link for link in links if evidence_link_currentness(db, link)[0]]
-    return links
 
 
 def derivation_root_key(link: EvidenceLink) -> str:
@@ -598,43 +432,6 @@ def reconcile_verdicts(
     return v, f"Using LLM verdict (machine={m})"
 
 
-def update_claim_support_for_hypothesis(
-    db: CaseDB,
-    *,
-    hypothesis_id: str,
-    result: SufficiencyResult,
-    final_verdict: str,
-) -> int:
-    """Project hypothesis sufficiency into Claims that cite the hypothesis."""
-    if result.status == "unobservable" or final_verdict == "untestable":
-        support_status = "unobservable"
-    elif result.status == "sufficient" and final_verdict == "confirmed":
-        support_status = "supported"
-    elif result.status == "partial":
-        support_status = "partially_supported"
-    else:
-        support_status = "needs_review"
-    updated = 0
-    for claim_id, raw_ids in db.execute(
-        "SELECT claim_id, hypothesis_ids FROM claims"
-    ).fetchall():
-        ids = raw_ids
-        if isinstance(ids, str):
-            try:
-                ids = json.loads(ids)
-            except TypeError, ValueError:
-                ids = []
-        if hypothesis_id not in (ids if isinstance(ids, list) else []):
-            continue
-        db.execute(
-            "UPDATE claims SET support_status = ?, updated_at = now() "
-            "WHERE claim_id = ?",
-            [support_status, claim_id],
-        )
-        updated += 1
-    return updated
-
-
 def assess_and_persist_sufficiency(
     db: CaseDB,
     *,
@@ -712,12 +509,6 @@ def assess_and_persist_sufficiency(
             result.human_review_required,
             hypothesis_id,
         ],
-    )
-    update_claim_support_for_hypothesis(
-        db,
-        hypothesis_id=hypothesis_id,
-        result=result,
-        final_verdict=final_verdict,
     )
     return result, final_verdict, reason, required_capabilities
 

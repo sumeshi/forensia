@@ -1,8 +1,8 @@
 schema_version: 2
 description: >
   Semantic QuestionSpec registry for reusable report questions. Report templates
-  may change wording, order, or language; section_agent resolves each block to
-  one of these stable contracts before gathering evidence.
+  may change wording, order, or language; the report renderer resolves each
+  explicit structured answer request to one of these stable contracts.
 
 question_types:
   - name: prefetch_recent

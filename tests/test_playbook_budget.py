@@ -111,37 +111,6 @@ def test_combined_filtering_reaches_budget(tmp_path: Any) -> None:
     assert len(playbook) <= budget, f"playbook {len(playbook)} > budget {budget}"
 
 
-def test_no_profile_playbook_truncates_events_instead_of_dropping_everything():
-    """Without a case profile the full Event ID Reference (~55 KB) exceeds the
-    default budget. The fix shrinks it to the declarative priority_events list
-    so the other guidance sections survive, instead of the serial drop loop
-    discarding every droppable section (the pre-fix behavior left only the
-    Priority Investigation Order)."""
-    from forensia.config import (
-        get_settings,
-        get_system_prompt_budget_chars,
-        settings_scope,
-    )
-    from forensia.context.playbook import _dfir_playbook as dfir_playbook
-
-    with settings_scope(
-        replace(
-            get_settings(),
-            forensia_system_prompt_budget_chars=0,
-            forensia_prompt_budget_tokens=0,
-        )
-    ):
-        playbook = dfir_playbook("report_section")
-
-        assert "priority events only" in playbook
-        assert "## False-Positive Reduction Guidance" in playbook
-        assert "## Application Catalog" in playbook
-        assert "## Logon Type Reference" in playbook
-        # Stays in the same order of magnitude as the budget (phase narrative is
-        # appended after enforcement, so allow headroom above the raw budget).
-        assert len(playbook) < get_system_prompt_budget_chars() * 1.5
-
-
 def testsections_for_hypothesis_auth_excludes_catalogs() -> None:
     """An auth-only hypothesis must not pull file/tool catalogs into context.
 
@@ -189,7 +158,7 @@ def testsections_for_hypothesis_exec_includes_catalogs() -> None:
 
 
 def testsections_for_hypothesis_no_signal_returns_none() -> None:
-    """No event IDs and no entities → None (full playbook, backward safe)."""
+    """No event IDs and no entities means there is no signal for narrowing."""
     from forensia.context.playbook import (
         _sections_for_hypothesis as sections_for_hypothesis,
     )

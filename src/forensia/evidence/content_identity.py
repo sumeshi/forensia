@@ -1,11 +1,11 @@
 """Content identification for normalized evidence rows (R03/T04).
 
 Hypothesis evidence links record a compact content fingerprint of the
-backing evidence row at assessment time.  Read-time currentness
-(``investigation/verification/sufficiency.evidence_link_currentness``) compares the stored
-fingerprint with the row as it exists now, so an in-place content change of
-the same evidence_id under the same source identity is detected instead of
-silently refilling stale support.
+backing evidence row at assessment time. Read-time currentness
+(``evidence.links.evidence_link_currentness``) compares the stored fingerprint
+with the row as it exists now, so an in-place content change of the same
+evidence_id under the same source identity is detected instead of silently
+refilling stale support.
 
 Top-level administrative keys are excluded from the canonicalized content so
 an idempotent re-normalization of unchanged source material cannot

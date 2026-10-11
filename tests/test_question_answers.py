@@ -15,12 +15,10 @@ from forensia.report.sections.quality_gates import (
     check_citation_token_no_finding_id,
     check_hedge_no_citation,
 )
-from forensia.report.sections.section_agent import run_section_block_agent
 from forensia.report.sections.section_finalize import (
     validate_section_evidence_ids,
 )
 from forensia.report.sections.section_quality import validate_body_evidence_ids
-from forensia.report.sections.section_store import dump_section_questions_json
 
 
 class QuestionAnswerTests(unittest.TestCase):
@@ -246,12 +244,11 @@ class QuestionAnswerTests(unittest.TestCase):
             self.assertEqual("informant", answer["answer"][0]["user_name"])
             self.assertIn("2015-03-22T14:34:28", answer["answer"][0]["logon_time"])
             self.assertTrue((case.reports_dir / "structured" / "Q8.csv").exists())
-            answers = json.loads(
-                (case.reports_dir / "structured" / "answers.json").read_text(
-                    encoding="utf-8"
-                )
+            answer_path = case.reports_dir / answer["json_path"]
+            self.assertTrue(answer_path.exists())
+            self.assertEqual(
+                "Q8", json.loads(answer_path.read_text(encoding="utf-8"))["id"]
             )
-            self.assertEqual("Q8", answers[0]["id"])
 
     def test_structured_benchmark_last_shutdown_ignores_overall_last_event(
         self,
@@ -289,86 +286,6 @@ class QuestionAnswerTests(unittest.TestCase):
             self.assertIsNotNone(answer)
             self.assertEqual(6006, answer["answer"][0]["event_id"])
             self.assertIn("2015-03-22T14:38:16", answer["answer"][0]["shutdown_time"])
-
-    def test_question_marker_structured_block_bypasses_llm_plan_loop(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(tmpdir)
-            with CaseDB(case) as db:
-                db.execute(
-                    "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer) VALUES (?, ?, ?, ?)",
-                    (
-                        "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-system-000000000001",
-                        6006,
-                        datetime(2015, 3, 22, 14, 38, 16),
-                        "informant-PC",
-                    ),
-                )
-                result = run_section_block_agent(
-                    case=case,
-                    db=db,
-                    section_key="6_appendix",
-                    title="Appendix",
-                    block_heading="Last shutdown time",
-                    template_body="<!-- question -->",
-                    context_sections={},
-                    current_section_outline=[],
-                    report_brief={},
-                    base_url="http://127.0.0.1:1",
-                    model="unused",
-                    question_mode=True,
-                    answer_id="Q9",
-                )
-
-            self.assertEqual("answered", result.status)
-            self.assertIn("2015-03-22T14:38:16", result.body)
-            self.assertTrue((case.reports_dir / "structured" / "Q9.csv").exists())
-
-    def test_section_question_resolution_is_persisted(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(tmpdir)
-            with CaseDB(case) as db:
-                db.execute(
-                    "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer) VALUES (?, ?, ?, ?)",
-                    (
-                        "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-system-000000000001",
-                        6006,
-                        datetime(2015, 3, 22, 14, 38, 16),
-                        "informant-PC",
-                    ),
-                )
-                run_section_block_agent(
-                    case=case,
-                    db=db,
-                    section_key="6_appendix",
-                    title="Appendix",
-                    block_heading="Most recent shutdown",
-                    template_body="<!-- question -->",
-                    context_sections={},
-                    current_section_outline=[],
-                    report_brief={},
-                    base_url="http://127.0.0.1:1",
-                    model="unused",
-                    question_mode=True,
-                    answer_id="Q9",
-                )
-                row = db.execute(
-                    """
-                    SELECT answer_spec, question_type, status
-                    FROM section_questions
-                    WHERE section_key = '6_appendix'
-                      AND block_heading = 'Most recent shutdown'
-                    LIMIT 1
-                    """
-                ).fetchone()
-                dump_section_questions_json(case, db, "6_appendix")
-
-            self.assertIsNotNone(row)
-            self.assertEqual(
-                ("last_shutdown_event", "investigation_window", "resolved"), tuple(row)
-            )
-            debug_path = case.reports_dir / "debug" / "6_appendix_questions.json"
-            self.assertTrue(debug_path.exists())
-            self.assertIn("last_shutdown_event", debug_path.read_text(encoding="utf-8"))
 
     def test_structured_benchmark_antiforensics_filters_noise_across_sources(
         self,

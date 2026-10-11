@@ -340,7 +340,6 @@ def _check_raw_evidence_dump(
         "#### raw evidence",
         "### raw evidence",
         "raw_evidence_rows",
-        "raw evidence moved to reports/evidence/",
     )
     lowered_body = body.casefold()
     if any(pattern in lowered_body for pattern in raw_evidence_patterns):
@@ -350,7 +349,7 @@ def _check_raw_evidence_dump(
         )
         if raw_row_dump:
             return (
-                "Raw evidence rows should be moved to the appendix evidence export or reports/evidence JSON, not copied into the narrative body.",
+                "Avoid copying raw evidence dumps into the narrative; summarize relevant observations with their evidence references.",
                 0.55,
             )
     return None, None

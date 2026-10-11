@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from forensia.config import get_llm_settings
+from forensia.context.prompt_context import fit_prompt_messages
 from forensia.llm.llm_client import (
     LLMContextWindowError,
     LLMOutputTruncatedError,
@@ -53,48 +54,25 @@ def _messages_for_truncation_retry(
     else:
         content = str(retried[target].get("content") or "")
         retried[target]["content"] = f"{content}\n\n{_TRUNCATION_RECOVERY}"
+    if hasattr(messages, "retrieval_event_ids"):
+        from forensia.context.prompt_context import PromptMessages
+
+        return PromptMessages(
+            retried,
+            messages.retrieval_event_ids,
+            getattr(messages, "omitted_optional_blocks", ()),
+        )
     return retried
 
 
 def _compact_messages_after_context_rejection(
-    messages: list[dict[str, str]], *, base_url: str, model: str
+    messages: list[dict[str, str]],
 ) -> list[dict[str, str]] | None:
-    """Create one bounded per-message reduction for an oversized request.
-
-    Contract (R10): this reduces request content to put it back inside the
-    context window; it does not claim to re-generate anything.  The block
-    produced by ``structured_compact`` keeps the most recent sections
-    verbatim, preserves event/evidence ids, paths and table names verbatim
-    inside the condensed part, and states that the reduction is one-way with
-    the surviving refs addressing the Case/Trace originals.
-    """
-    from forensia.llm.compaction import structured_compact
-
-    total_chars = sum(len(str(item.get("content") or "")) for item in messages)
-    if total_chars < 2048:
-        return None
-    target_total = max(2048, int(total_chars * 0.65))
-    users = [i for i, item in enumerate(messages) if item.get("role") != "system"]
-    if not users:
-        return None
-    per_message = max(1024, target_total // len(users))
-    compacted = [dict(item) for item in messages]
-    changed = False
-    for index in users:
-        content = str(compacted[index].get("content") or "")
-        if len(content) <= per_message:
-            continue
-        shortened = structured_compact(
-            content,
-            per_message,
-            base_url=base_url,
-            model=model,
-            preserve_recent_sections=3,
-        )
-        if shortened != content:
-            compacted[index]["content"] = shortened
-            changed = True
-    return compacted if changed else None
+    """After provider rejection, remove optional catalog blocks once; never replay unchanged context."""
+    return fit_prompt_messages(
+        messages,
+        force_optional_reduction=True,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -346,10 +324,8 @@ def request_llm_json(
         except LLMContextWindowError as exc:
             if not context_compaction_used:
                 try:
-                    compacted = _compact_messages_after_context_rejection(
-                        messages, base_url=base_url, model=model
-                    )
-                except LLMBudgetExceededError:
+                    compacted = _compact_messages_after_context_rejection(messages)
+                except Exception:
                     close_owned_call("failed")
                     raise
                 if compacted is not None:

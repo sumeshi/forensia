@@ -101,7 +101,6 @@ async def _run_report_phase(
     model: str,
     progress_callback: Callable[[dict[str, Any]], None] | None,
     focus_sections: list[str],
-    report_max_queries_per_section: int,
     state: SessionState,
 ) -> tuple[dict[str, Any], str]:
     """Run the report refresh phase.
@@ -131,7 +130,6 @@ async def _run_report_phase(
             sections=report_sections,
             progress_callback=progress_callback,
             focus_sections=focus_sections,
-            max_queries_per_section=report_max_queries_per_section,
         )
     except LLMServerUnavailableError, LLMBudgetExceededError, InvestigationStopped:
         raise
@@ -290,7 +288,6 @@ class _InvestigateEnv:
     max_queries_per_hypothesis: int
     report_every_n_cycles: int
     report_only: bool
-    report_max_queries_per_section: int
 
 
 def _prepare_case_profile(case: Case, db: CaseDB) -> CaseEvidenceProfile:
@@ -319,7 +316,8 @@ async def _run_investigation_loop(env: _InvestigateEnv) -> tuple[str, int, str]:
     stop_reason_code = ""
     for plan_cycle in range(1, env.max_iter + 1):
         env.state.iteration = plan_cycle
-        env.state.findings_snapshot = _finding_snapshot(env.db)
+        if not env.report_only:
+            env.state.findings_snapshot = _finding_snapshot(env.db)
         _log(
             "PLAN",
             f"Cycle {plan_cycle}/{env.max_iter} — broad planning (active={len(env.state.active_hypotheses)} resolved={len(env.state.resolved_hypotheses)})",
@@ -364,16 +362,13 @@ async def _run_investigation_loop(env: _InvestigateEnv) -> tuple[str, int, str]:
             model=env.model,
             progress_callback=env.progress_callback,
             focus_sections=focus_sections,
-            report_max_queries_per_section=env.report_max_queries_per_section,
             state=env.state,
         )
         if refresh_status.startswith("failed"):
             report_refresh_failures += 1
         env.ctx.report_status = report_after
-        refresh_evidence_coverage(env.db)
-        # Compare at the commit point: the cycle's own Coverage refresh and
-        # Gap/Task admissions are visible to the comparison in the same cycle
-        # (V2-03/R06).
+        # Compare at the commit point so this cycle's Gap/Task admissions are
+        # visible to the durable progress calculation (V2-03/R06).
         evaluation_after = evaluation_snapshot(env.db)
         cycle_progress = cycle_progress or report_cycle_progress(
             evaluation_before, evaluation_after
@@ -422,9 +417,8 @@ async def _run_investigation_loop(env: _InvestigateEnv) -> tuple[str, int, str]:
 async def _final_report_refresh(env: _InvestigateEnv) -> int:
     """Render every section once at the final DB state. Returns 1 on failure, else 0.
 
-    R5-03: run after loop termination so stale sections from late-cycle
-    resolutions reach the rendered report. R7-04: force_all=True bypasses the
-    update_count cap (it guards per-cycle loops, not the closing render).
+    Run after loop termination so stale sections from late-cycle resolutions
+    reach the rendered report.
     """
     try:
         await async_refresh_report_sections(
@@ -437,8 +431,6 @@ async def _final_report_refresh(env: _InvestigateEnv) -> int:
             sections=env.report_sections,
             progress_callback=env.progress_callback,
             focus_sections=[],
-            max_queries_per_section=env.report_max_queries_per_section,
-            force_all=True,
         )
         render_written_report(env.case, env.db)
         return 0
@@ -492,7 +484,6 @@ async def investigate(
     report_only: bool = False,
     template_root: Path | None = None,
     report_spec: str | Path | None = None,
-    report_max_queries_per_section: int = 3,
     max_llm_calls: int = 200,
     forensia_policy: CasePolicyInput | None = None,
     manual_resume: bool = False,
@@ -509,6 +500,9 @@ async def investigate(
     # by every report phase and the final refresh within this session.
     report_decision = decide_report_sources(case, db, template_root, report_spec)
     report_sections = report_decision.sections
+    # Coverage is a projection of normalized evidence and must be current
+    # before session initialization loads, seeds, or selects hypotheses.
+    refresh_evidence_coverage(db)
     case_profile = _prepare_case_profile(case, db)
 
     def publish_progress(payload: dict[str, Any]) -> None:
@@ -573,7 +567,6 @@ async def investigate(
         max_queries_per_hypothesis=max_queries_per_hypothesis,
         report_every_n_cycles=report_every_n_cycles,
         report_only=report_only,
-        report_max_queries_per_section=report_max_queries_per_section,
     )
     client_scope_id = session_id
     client_scope_token = set_llm_client_scope(client_scope_id)

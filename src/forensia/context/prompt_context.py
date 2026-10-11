@@ -4,18 +4,56 @@ from __future__ import annotations
 
 import logging
 import re
+from contextvars import ContextVar
 from dataclasses import dataclass
+from functools import wraps
 from typing import TYPE_CHECKING, Any
 
-from forensia.config import get_llm_settings
+from forensia.config import get_llm_settings, get_prompt_budget_tokens
 from forensia.context.sql_schema import schema_column_guidance
-from forensia.core.compaction import TRUNCATION_MARKER, mechanical_compact
 from forensia.knowledge.catalog import load_schema_hints
 
 if TYPE_CHECKING:
     from forensia.db.database import CaseDB
 
 logger = logging.getLogger(__name__)
+_PROMPT_RETRIEVAL_REFS: ContextVar[list[str] | None] = ContextVar(
+    "prompt_retrieval_refs", default=None
+)
+
+
+class PromptMessages(list[dict[str, str]]):
+    """Messages paired with the exact retrieval events used to build them."""
+
+    def __init__(
+        self,
+        messages: list[dict[str, str]],
+        retrieval_event_ids=(),
+        omitted_optional_blocks=(),
+    ) -> None:
+        super().__init__(messages)
+        self.retrieval_event_ids = tuple(retrieval_event_ids)
+        self.omitted_optional_blocks = tuple(omitted_optional_blocks)
+
+
+def capture_prompt_retrieval(builder):
+    """Attach retrieval rows emitted during one prompt build to its messages."""
+
+    @wraps(builder)
+    def wrapped(*args, **kwargs):
+        refs: list[str] = []
+        token = _PROMPT_RETRIEVAL_REFS.set(refs)
+        try:
+            result = builder(*args, **kwargs)
+        finally:
+            _PROMPT_RETRIEVAL_REFS.reset(token)
+        if isinstance(result, tuple) and result and isinstance(result[0], list):
+            return (PromptMessages(result[0], refs), *result[1:])
+        if isinstance(result, list):
+            return PromptMessages(result, refs)
+        return result
+
+    return wrapped
 
 
 # ---------------------------------------------------------------------------
@@ -83,16 +121,16 @@ def _instrument_retrieval(
 ) -> None:
     """Funnel one prompt build's section accounting into retrieval telemetry.
 
-    No-ops (without raising) when no ``db`` is available, so pure prompt-builder
-    callers that lack a case handle stay backward compatible. Never adds LLM
-    token accounting — only structural chars/IDs/source as required.
+    Does nothing when ``db`` is unavailable, allowing prompt construction
+    without a case handle. Never adds LLM token accounting — only structural
+    chars/IDs/source as required.
     """
     if db is None:
         return
     try:
         from forensia.context.retrieval import record_retrieval_event
 
-        record_retrieval_event(
+        event_id = record_retrieval_event(
             db,
             session_id=session_id,
             scope_kind=scope_kind,
@@ -106,59 +144,92 @@ def _instrument_retrieval(
             budget=int(budget),
             rejected_refs=list(rejected_refs) if rejected_refs else None,
         )
+        refs = _PROMPT_RETRIEVAL_REFS.get()
+        if refs is not None:
+            refs.append(event_id)
     except Exception:  # pragma: no cover - telemetry must never break a prompt
         logger.debug("prompt instrumentation skipped", exc_info=True)
 
 
 def _estimate_message_tokens(text: str) -> int:
     """Rough token estimation: ~4 chars per token for English+JSON."""
-    return len(text) // 4
+    return (len(text) + 3) // 4
 
 
-def _trim_dynamic_content(
+_OPTIONAL_PROMPT_BLOCKS = (
+    "ORG_KNOWLEDGE",
+    "TEMPLATE_CATALOG",
+    "ORG_KNOWLEDGE_INDEX",
+    "TEMPLATE_CONTEXT",
+)
+
+
+def fit_prompt_messages(
     messages: list[dict[str, str]],
     *,
-    max_total_tokens: int = 28000,
-) -> list[dict[str, str]]:
-    """Trim dynamic (user) message content if total estimated tokens exceed budget.
-
-    Strategy: keep system messages intact (they contain the playbook),
-    trim user message content progressively by descending size.
-    """
-    total_est = sum(_estimate_message_tokens(m.get("content", "")) for m in messages)
-    if total_est <= max_total_tokens:
-        return messages
-    # Copy both the list and message dicts; prompt builders are sometimes reused
-    # for retries and must not have their original content mutated in place.
-    trimmed = [dict(message) for message in messages]
-    non_system_indices = [i for i, m in enumerate(trimmed) if m.get("role") != "system"]
-    non_system_indices.sort(
-        key=lambda i: _estimate_message_tokens(trimmed[i].get("content", "")),
-        reverse=True,
-    )
-    for idx in non_system_indices:
-        content = trimmed[idx].get("content", "")
-        if not content:
-            continue
-        other_chars = sum(
-            len(message.get("content", ""))
-            for pos, message in enumerate(trimmed)
-            if pos != idx
+    max_output_tokens: int | None = None,
+    force_optional_reduction: bool = False,
+) -> list[dict[str, str]] | None:
+    """Fit optional context under the shared estimated input budget; keep task and evidence intact."""
+    settings = get_llm_settings()
+    budget = get_prompt_budget_tokens()
+    context_window = settings.get("llm_context_window_tokens")
+    if context_window:
+        output = max_output_tokens or int(settings["max_tokens"])
+        budget = min(
+            budget,
+            int(context_window)
+            - output
+            - int(settings.get("reasoning_reserve_tokens", 0)),
         )
-        allowed = max(max_total_tokens * 4 - other_chars, 0)
-        marker = f"\n{TRUNCATION_MARKER} [see full trace in db]\n"
-        if allowed <= len(marker):
-            compacted = mechanical_compact(content, allowed)
-        else:
-            payload_budget = allowed - len(marker)
-            head_len = int(payload_budget * 0.75)
-            tail_len = payload_budget - head_len
-            compacted = content[:head_len] + marker + content[-tail_len:]
-        trimmed[idx]["content"] = compacted
-        total_est = sum(_estimate_message_tokens(m.get("content", "")) for m in trimmed)
-        if total_est <= max_total_tokens:
+    if budget <= 0:
+        raise ValueError(
+            "Configured output and reasoning budgets leave no prompt input capacity"
+        )
+
+    fitted = [dict(message) for message in messages]
+    omissions = list(getattr(messages, "omitted_optional_blocks", ()))
+    total = lambda: sum(
+        _estimate_message_tokens(str(message.get("content") or ""))
+        for message in fitted
+    )
+    over_budget = total() > budget
+    if not force_optional_reduction and not over_budget:
+        return (
+            PromptMessages(fitted, messages.retrieval_event_ids, omissions)
+            if isinstance(messages, PromptMessages)
+            else fitted
+        )
+
+    changed = False
+    reason = (
+        "provider_context_rejection" if force_optional_reduction else "input_budget"
+    )
+    for tag in _OPTIONAL_PROMPT_BLOCKS:
+        pattern = re.compile(rf"<{tag}>.*?</{tag}>\s*", re.DOTALL)
+        removed = 0
+        for message in fitted:
+            content = str(message.get("content") or "")
+            reduced, count = pattern.subn("", content)
+            if reduced != content:
+                message["content"] = reduced
+                changed = True
+                removed += count
+        if removed:
+            omissions.append((tag, removed, reason))
+        if not force_optional_reduction and total() <= budget:
             break
-    return trimmed
+
+    if total() > budget:
+        raise ValueError(
+            f"Prompt needs about {total()} input tokens, above the configured {budget}-token budget; "
+            "required policy, work specification, task, and evidence references were kept"
+        )
+    if force_optional_reduction and not changed:
+        return None
+    if isinstance(messages, PromptMessages):
+        return PromptMessages(fitted, messages.retrieval_event_ids, omissions)
+    return fitted
 
 
 def _time_range_guidance(time_range: dict[str, str] | None = None) -> str:
@@ -188,18 +259,6 @@ def _case_profile_guidance(
     if not profile_str:
         return ""
     lines = [line for line in profile_str.splitlines() if line.strip()]
-    entries = [
-        ContextIndexEntry(
-            stable_id=f"prof-{i}",
-            title=line[:60],
-            purpose="case profile entry",
-            size_chars=len(line),
-            relevance_hint="case_scope",
-            continuation="in-scope (case profile)",
-        )
-        for i, line in enumerate(lines)
-    ]
-    index = render_context_index("CASE_PROFILE_INDEX", entries)
     _instrument_retrieval(
         db,
         session_id=session_id,
@@ -208,7 +267,7 @@ def _case_profile_guidance(
         phase="hypothesis_plan",
         source_kind="case_profile",
         query_terms=[line[:40] for line in lines],
-        candidate_count=len(entries),
+        candidate_count=len(lines),
         selected_refs=[],
         selected_chars=len(profile_str),
         budget=0,
@@ -222,7 +281,6 @@ def _case_profile_guidance(
         f"If the behavior you want to test has no available event source, design the hypothesis around mft_entries / mft_timeline / prefetch_executions instead.\n"
         f"Prefer hypotheses that name concrete observed entities (users, hosts, executables, file paths) from the case profile over generic patterns.\n"
         f"</RULES>\n"
-        f"{index}\n"
     )
 
 
@@ -300,125 +358,6 @@ def _org_knowledge_guidance(
 _load_schema_hints = load_schema_hints
 
 
-def _enforce_system_budget(
-    system_str: str,
-    budget_chars: int | None = None,
-    db: CaseDB | None = None,
-    session_id: str | None = None,
-) -> str:
-    """Trim system message to fit budget by removing lower-priority sections.
-
-    Applies after the playbook is already budget-constrained; drops additional
-    content (schema cards, cookbook, framework) that was appended after the
-    playbook. Uses section headers as markers for deterministic removal in
-    priority order (last = first to drop).
-
-    When a ``db`` is supplied, the build is instrumented: the kept (selected)
-    and dropped (rejected) section markers are recorded via retrieval telemetry.
-    """
-    if budget_chars is None:
-        from forensia.config import get_system_prompt_budget_chars
-
-        budget_chars = get_system_prompt_budget_chars()
-    if len(system_str) <= budget_chars:
-        return system_str
-
-    # Broad generic catalogs are dropped before the small retrieval-selected
-    # knowledge block. The latter is tailored to the current unresolved question
-    # and is therefore more useful to a weak model than another full catalog.
-    sections_to_drop = [
-        "<INVESTIGATION_FRAMEWORK>",
-        "<SCHEMA_GUIDANCE>",
-        "## IOC Catalog",
-        "## Artifact-to-Application",
-        "## Application Catalog",
-        "## Logon Type Reference",
-        "## Priority Investigation Order",
-        "## Event ID Reference",
-        "## False-Positive",
-        "## JSON Field Extractors",
-        "## Schema Notes",
-    ]
-
-    text = system_str
-    for marker in sections_to_drop:
-        if len(text) <= budget_chars:
-            break
-        # Try compacting this section before dropping it entirely.
-        # If compacting to half its size brings us within budget, do that.
-        pattern = re.compile(rf"\n{re.escape(marker)}.*?(?=\n##|\Z)", re.DOTALL)
-        m = pattern.search(text)
-        if m:
-            section_text = m.group()
-            excess = len(text) - budget_chars
-            target = max(len(section_text) // 2, len(section_text) - excess)
-            if target > 0 and target < len(section_text):
-                # XML-style sections must keep their closing tag so the
-                # prompt structure stays parseable after compaction.
-                closing_tag = ""
-                if marker.startswith("<"):
-                    tag = f"</{marker[1:-1]}>"
-                    if section_text.rstrip().endswith(tag):
-                        closing_tag = tag
-                compacted = mechanical_compact(
-                    section_text.strip(), target - len(closing_tag) - 1
-                )
-                if compacted and closing_tag and not compacted.endswith(closing_tag):
-                    compacted = compacted + "\n" + closing_tag
-                if (
-                    compacted
-                    and len(text) - len(section_text) + len(compacted) + 1
-                    <= budget_chars
-                ):
-                    text = text[: m.start()] + "\n" + compacted + text[m.end() :]
-                    text = re.sub(r"\n{3,}", "\n\n", text.strip())
-                    continue
-        # Fallback: remove the section entirely
-        text = pattern.sub("", text)
-        text = re.sub(r"\n{3,}", "\n\n", text.strip())
-
-    if len(text) <= budget_chars:
-        return text
-
-    if db is not None:
-        present_before = [m for m in sections_to_drop if m in system_str]
-        present_after = [m for m in sections_to_drop if m in text]
-        kept = [m for m in present_after if m in present_before]
-        dropped = [m for m in present_before if m not in present_after]
-        _instrument_retrieval(
-            db,
-            session_id=session_id,
-            scope_kind="system_budget",
-            scope_id="system",
-            phase="enforce_budget",
-            source_kind="playbook_sections",
-            query_terms=list(sections_to_drop),
-            candidate_count=len(present_before),
-            selected_refs=kept,
-            selected_chars=len(text),
-            budget=budget_chars,
-            rejected_refs=dropped,
-        )
-
-    # Some role prompts still exceed the budget after every optional section is
-    # removed. Preserve the task/schema at the front and final rules/language
-    # instruction at the tail instead of silently returning an oversized prompt.
-    marker = f"\n{TRUNCATION_MARKER} [system context compacted]\n"
-    if budget_chars <= len(marker):
-        return mechanical_compact(text, budget_chars)
-    payload_budget = budget_chars - len(marker)
-    head_budget = int(payload_budget * 0.75)
-    tail_budget = payload_budget - head_budget
-    head_end = text.rfind("\n", 0, head_budget + 1)
-    if head_end <= 0:
-        head_end = head_budget
-    tail_start = text.find("\n", max(len(text) - tail_budget, 0))
-    if tail_start < 0:
-        tail_start = len(text) - tail_budget
-    compacted = text[:head_end] + marker + text[tail_start:].lstrip("\n")
-    return compacted[:budget_chars]
-
-
 def _lang_instruction() -> str:
     output = str(get_llm_settings()["output_language"])
     return (
@@ -428,19 +367,6 @@ def _lang_instruction() -> str:
 
 
 _RULE_INSTANCE_SUFFIX = re.compile(r"-(\d{4,})$")
-
-
-def truncate_context_sections(
-    context_sections: dict[str, str], max_chars: int = 1500
-) -> dict[str, str]:
-    """Trim each section body to max_chars using line-boundary compaction."""
-    trimmed: dict[str, str] = {}
-    for section_key, body in context_sections.items():
-        text = str(body or "").strip()
-        if not text:
-            continue
-        trimmed[str(section_key)] = mechanical_compact(text, max_chars)
-    return trimmed
 
 
 def _format_schema_card(table_hints: dict[str, Any]) -> str:
@@ -506,7 +432,7 @@ def _build_schema_guidance(
         blocks.append("<SELECTED_SCHEMA_CARDS>")
         blocks.append("\n\n".join(selected_cards))
         blocks.append("</SELECTED_SCHEMA_CARDS>")
-    live = schema_column_guidance(db)
+    live = schema_column_guidance(db, tables=selected_tables)
     if live:
         blocks.append(live)
     blocks.append("</SCHEMA_GUIDANCE>")

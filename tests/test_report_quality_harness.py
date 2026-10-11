@@ -10,7 +10,6 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 
 from forensia.config import Settings, settings_scope
 from forensia.core.case import Case
@@ -245,6 +244,7 @@ class TestReportQualityContract(unittest.TestCase):
     def test_writer_emits_non_publishable_validation_artifact(self) -> None:
         """The writer must persist machine-readable fatal validation state."""
         from forensia.report.render.writer import render_written_report
+        from forensia.report.sections.section_store import _upsert_report_section
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -260,27 +260,21 @@ class TestReportQualityContract(unittest.TestCase):
                     )
                     """
                 )
-                html_path = case.reports_dir / "report.html"
-                with (
-                    patch(
-                        "forensia.report.render.writer.render_html_report",
-                        return_value=html_path,
-                    ),
-                    patch("forensia.report.render.evidence_map.write_evidence_map"),
-                ):
-                    render_written_report(
-                        case,
-                        db,
-                        filled_sections={"1_summary": "# Clean report"},
-                    )
+                _upsert_report_section(
+                    db, "1_summary", "Summary", "# Clean report", 1.0, []
+                )
+                markdown, html = render_written_report(case, db)
+                self.assertTrue(markdown.is_file() and html.is_file())
                 artifact = json.loads(
                     (case.reports_dir / "report_validation.json").read_text()
                 )
                 self.assertFalse(artifact["publishable"])
                 self.assertTrue(artifact["fatal_errors"])
 
-    def test_unconfirmed_rule_signals_are_reader_visible_as_incomplete(self) -> None:
-        """Generated prose cannot hide that no hypothesis loop was executed."""
+    def test_report_without_current_revision_is_reader_visible_as_incomplete(
+        self,
+    ) -> None:
+        """Generated prose cannot hide a missing current projection receipt."""
         from forensia.report.render.writer import build_report_markdown_from_db
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -301,10 +295,9 @@ class TestReportQualityContract(unittest.TestCase):
             assert state["publication_status"] == "needs_review"
             assert state["evidence_confidence"] == "not_established"
             assert "needs_review` / `incomplete" in report
-            assert "deterministic signals/review candidates" in report
-            assert "Scope constraint" in report
+            assert "Rule signal text." in report
 
-    def test_needs_review_notice_does_not_hide_confirmed_hypothesis(self) -> None:
+    def test_unverified_confirmation_is_not_established_by_report_prose(self) -> None:
         from forensia.report.render.writer import build_report_markdown_from_db
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -339,9 +332,12 @@ class TestReportQualityContract(unittest.TestCase):
 
                 with settings_scope(Settings(llm_output_language="en")):
                     report = build_report_markdown_from_db(db, case)
+                    state = derive_publication_state(db)
 
-            assert "1 confirmed hypothesis is available" in report
-            assert "No confirmed hypothesis is available" not in report
+            assert state["confirmed_hypothesis_count"] == 1
+            assert state["evidence_confidence"] == "not_established"
+            assert state["publication_status"] == "needs_review"
+            assert "Confirmed body." in report
 
     def test_table_validation_catches_empty_required_columns(self) -> None:
         """Table with all-empty required columns must be flagged."""

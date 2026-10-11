@@ -37,14 +37,20 @@ def _read(
 
 
 def _read_detail(
-    case: Case, client: RuntimeClient | None, kind: str, item_id: str
+    case: Case, client: RuntimeClient | None, kind: str, item_id: str, offset: int = 0
 ) -> Any:
     if client is not None:
         return client.request(
-            {"type": "detail", "kind": kind, "id": item_id, "limit": 50}
+            {
+                "type": "detail",
+                "kind": kind,
+                "id": item_id,
+                "limit": 50,
+                "offset": offset,
+            }
         )
     with CaseDB(case, read_only=True) as db:
-        return case_detail(db, kind, item_id, 50)
+        return case_detail(db, kind, item_id, 50, offset=offset)
 
 
 def _command(value: str) -> tuple[str, dict[str, Any]] | None:
@@ -63,7 +69,7 @@ def _command(value: str) -> tuple[str, dict[str, Any]] | None:
         return "detail", {"kind": parts[1], "id": parts[2]}
     if command == "/detail" and len(parts) == 1:
         return "detail_close", {}
-    if command in {"/older", "/newer"}:
+    if command in {"/older", "/newer", "/more"} and len(parts) == 1:
         return command[1:], {}
     if command in {"/stop", "/resume"} and stripped.lower() == command:
         return command[1:], {}
@@ -215,11 +221,19 @@ class CaseApp(App[None]):
             )
             if self._detail is not None:
                 detail = self.query_one("#detail", Static)
-                detail.update(
-                    json.dumps(self._detail, ensure_ascii=False, indent=2, default=str)[
-                        :4000
-                    ]
-                )
+                if isinstance(self._detail, dict) and "total_chars" in self._detail:
+                    text = self._detail["text"]
+                    if self._detail.get("next_offset") is not None:
+                        text += "\n\n/more to read the next page"
+                    detail.update(Text(text))
+                else:
+                    detail.update(
+                        Text(
+                            json.dumps(
+                                self._detail, ensure_ascii=False, indent=2, default=str
+                            )
+                        )
+                    )
                 detail.display = True
             if self._pending_commands and self.client:
                 for command_id in tuple(self._pending_commands):
@@ -263,7 +277,7 @@ class CaseApp(App[None]):
                 return
             operation, payload = parsed
             if operation == "help":
-                self._message = "Commands: /detail [KIND ID], /older, /newer, /stop, /resume, /add PATH, /report [--write], /detach"
+                self._message = "Commands: /detail [KIND ID], /more, /older, /newer, /stop, /resume, /add PATH, /report [--write], /detach"
             elif operation == "detach":
                 self.exit()
                 return
@@ -280,6 +294,22 @@ class CaseApp(App[None]):
                 self._detail = None
                 self.query_one("#detail", Static).display = False
                 self._message = "Detail closed"
+            elif operation == "more":
+                if (
+                    not isinstance(self._detail, dict)
+                    or self._detail.get("next_offset") is None
+                ):
+                    self._message = "No further detail page"
+                else:
+                    self._detail = await asyncio.to_thread(
+                        _read_detail,
+                        self.case,
+                        self.client,
+                        self._detail["kind"],
+                        self._detail["id"],
+                        self._detail["next_offset"],
+                    )
+                    self._message = "Next detail page loaded"
             elif operation == "older":
                 before = int(self._events[0]["event_index"]) if self._events else 1
                 self._cursor = max(0, before - _PAGE_SIZE - 1)

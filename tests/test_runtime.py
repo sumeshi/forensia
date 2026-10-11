@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import multiprocessing
+import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -26,8 +28,8 @@ class _Engine:
     def events(self, *, after_index, limit):
         return [after_index, limit]
 
-    def detail(self, kind, item_id, *, limit):
-        return [kind, item_id, limit]
+    def detail(self, kind, item_id, *, limit, offset=0):
+        return [kind, item_id, limit, offset]
 
     def command(self, command_id, operation, payload):
         return [command_id, operation, payload]
@@ -60,7 +62,15 @@ def test_public_runtime_start_rejects_symlink_overwrite_without_touching_target(
     marker = target.path / "manifest.yaml"
     before = marker.read_bytes()
     link = tmp_path / "case-link"
-    link.symlink_to(target.path, target_is_directory=True)
+    if sys.platform == "win32":
+        subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(link), str(target.path)],
+            check=True,
+            capture_output=True,
+        )
+        assert link.is_junction()
+    else:
+        link.symlink_to(target.path, target_is_directory=True)
     with pytest.raises(ValueError, match="symlinked case"):
         start_runtime(link, input_dir=tmp_path, overwrite=True)
     assert marker.read_bytes() == before
@@ -100,7 +110,15 @@ def test_runtime_ipc_and_lock_cross_process(tmp_path):
             "task",
             "t1",
             100,
+            0,
         ]
+        assert client.request(
+            {"type": "detail", "kind": "llm_attempt", "id": "pa-1", "offset": 16384}
+        ) == ["llm_attempt", "pa-1", 100, 16384]
+        with pytest.raises(RuntimeError, match="Invalid detail request"):
+            client.request(
+                {"type": "detail", "kind": "step", "id": "s-1", "offset": -1}
+            )
         assert client.request(
             {"type": "command", "command_id": "c1", "operation": "stop"}
         ) == ["c1", "stop", {}]
@@ -121,6 +139,15 @@ def test_runtime_ipc_and_lock_cross_process(tmp_path):
     assert process.exitcode is not None
     with case_lock(case):
         pass
+
+
+def test_probe_runtime_treats_endpoint_eof_as_disconnected(monkeypatch, tmp_path):
+    def endpoint_closed(_client, _request):
+        raise EOFError("Runtime pipe closed during authentication")
+
+    monkeypatch.setattr(RuntimeClient, "request", endpoint_closed)
+
+    assert not probe_runtime(tmp_path / "case")
 
 
 def test_command_receipt_is_durable_and_idempotent(tmp_path):
@@ -231,7 +258,9 @@ def test_steer_uses_adopted_settings_telemetry_budget_and_command_receipt(
         observed["telemetry"] = get_active_telemetry()
         return {
             "action": "update_policy",
-            "policy_body": "# Objective\n\nDetermine whether approved maintenance occurred.",
+            "policy_updates": {
+                "objective": "Determine whether approved maintenance occurred."
+            },
         }
 
     monkeypatch.setattr(intervention, "request_llm_json", classify)
@@ -348,6 +377,7 @@ def test_stop_interrupts_an_applying_command(tmp_path):
 
 
 def test_stop_queued_before_resume_starts_is_not_cleared(tmp_path, monkeypatch):
+    from forensia.config import Settings
     from forensia.core.control import InvestigationStopped
     from forensia.runtime.engine import RuntimeEngine
 
@@ -356,6 +386,7 @@ def test_stop_queued_before_resume_starts_is_not_cleared(tmp_path, monkeypatch):
         pass
     engine = RuntimeEngine(case.path)
     engine.prepare()
+    monkeypatch.setattr(engine, "_resume_settings", lambda: Settings(llm_model="test"))
     reached_investigation = threading.Event()
 
     def investigate(*_args, **_kwargs):

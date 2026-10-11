@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 from collections.abc import Callable
@@ -16,12 +17,14 @@ from forensia.context.prompt_context import (
     _case_profile_guidance,
     _org_knowledge_guidance,
     _time_range_guidance,
+    capture_prompt_retrieval,
 )
 from forensia.context.sql_templates import query_template_catalog_for_tables
 from forensia.core.session import Hypothesis
+from forensia.db.evidence_lookup import canonical_record_table, routed_family
 from forensia.investigation.case_policy import case_policy_block
 from forensia.knowledge.catalog import load_benign_context_rules
-from forensia.knowledge.coverage import disclosure_tables_for_spec
+from forensia.knowledge.coverage import disclosure_tables_for_spec, observation_catalog
 from forensia.knowledge.retrieval import knowledge_terms_for_hypothesis, select_snippets
 from forensia.llm.schemas import (
     FINDING_EXTRACTOR_SCHEMA,
@@ -116,52 +119,60 @@ def _org_knowledge_block(
     return _org_knowledge_guidance(snippets, db, session_id, phase=phase)
 
 
-def render_prior_attempts(recent_history: list[dict[str, Any]], limit: int = 5) -> str:
+def render_prior_attempts(recent_history: list[dict[str, Any]], limit: int = 10) -> str:
     """Render hypothesis attempt history as a compact structured block.
 
-    Accepts both HistoryEntry dumps (query_id / verdict / summary /
-    evidence_ids / template_id / purpose) and trace.hypothesis_reasoning rows
-    (phase / verdict / query_id / body). Fields absent from a row are
-    omitted — nothing is fabricated. Free text is demoted to a
-    120-char note; the structured fields carry the signal.
+    Each attempt is keyed by its durable receipt reference. Display query IDs
+    only as labels because they can repeat across resumed cycles.
     """
     entries = [item for item in (recent_history or []) if isinstance(item, dict)]
     if not entries:
         return "<PRIOR_ATTEMPTS>\n(none)\n</PRIOR_ATTEMPTS>\n"
     entries = entries[-limit:]
     lines: list[str] = []
-    tried_query_ids: list[str] = []
     for idx, item in enumerate(entries, 1):
         parts: list[str] = []
+        attempt_ref = str(item.get("attempt_ref") or "").strip()
+        if attempt_ref:
+            parts.append(f"attempt_ref={attempt_ref}")
         query_id = str(item.get("query_id") or "").strip()
         if query_id:
             parts.append(f"query_id={query_id}")
-            if query_id not in tried_query_ids:
-                tried_query_ids.append(query_id)
-        template_id = str(item.get("template_id") or "").strip()
-        if template_id:
-            parts.append(f"template={template_id}")
-        verdict = str(item.get("verdict") or "").strip()
-        if verdict:
-            parts.append(f"verdict={verdict}")
+        for field in (
+            "iteration",
+            "status",
+            "retrieval_outcome",
+            "returned_count",
+            "query_fingerprint",
+            "verification_spec_fingerprint",
+            "evidence_scope_fingerprint",
+        ):
+            value = item.get(field)
+            if value not in (None, ""):
+                parts.append(f"{field}={value}")
         evidence_ids = item.get("evidence_ids")
         if isinstance(evidence_ids, list):
-            parts.append(f"evidence_count={len(evidence_ids)}")
+            parts.append(
+                f"evidence_ids=[{','.join(str(value) for value in evidence_ids[:8])}]"
+            )
         purpose = str(item.get("purpose") or "").strip().replace("\n", " ")
         if purpose:
-            parts.append(f"purpose={purpose[:80]}")
-        note = (
-            str(item.get("summary") or item.get("body") or "")
-            .strip()
-            .replace("\n", " ")
+            parts.append(f"purpose={purpose[:120]}")
+        normalized_sql = (
+            str(item.get("normalized_sql") or "").strip().replace("\n", " ")
         )
-        if note:
-            parts.append(f"note={note[:120]}")
+        if normalized_sql:
+            parts.append(f"sql={normalized_sql[:240]}")
+        reason = str(item.get("reason") or "").strip().replace("\n", " ")
+        if reason:
+            parts.append(f"reason={reason[:120]}")
         lines.append(f"- attempt {idx}: " + ", ".join(parts))
-    block = "<PRIOR_ATTEMPTS>\n" + "\n".join(lines)
-    if tried_query_ids:
-        block += "\ndo_not_repeat_query_ids: " + ", ".join(tried_query_ids)
-    return block + "\n</PRIOR_ATTEMPTS>\n"
+    return (
+        "<PRIOR_ATTEMPTS>\n"
+        "Attempts are ordered oldest to newest. Query IDs may repeat after resume; compare receipt, query, spec, and evidence-scope fingerprints.\n"
+        + "\n".join(lines)
+        + "\n</PRIOR_ATTEMPTS>\n"
+    )
 
 
 _load_benign_context_rules = load_benign_context_rules
@@ -190,11 +201,18 @@ _PROMPT_ROW_NOISE_FIELDS = {
     "provider_guid",
     "source_file",
     "source_path",
+    "_source",
+    "raw",
+    "raw_json",
 }
+
+_RAW_EVENT_CONTEXT_CHARS = 1800
+_RAW_EVENT_CONTEXT_FIELD_CHARS = 320
+_RAW_EVENT_CONTEXT_FIELDS = 20
 
 
 def _raw_event_context(value: Any) -> dict[str, Any]:
-    """Keep event semantics from raw JSON without transport/path boilerplate."""
+    """Keep whole bounded event fields and identify fields omitted for size."""
     if isinstance(value, str):
         try:
             raw = json.loads(value)
@@ -211,15 +229,70 @@ def _raw_event_context(value: Any) -> dict[str, Any]:
     winlog = raw.get("winlog") if isinstance(raw.get("winlog"), dict) else {}
     provider = winlog.get("provider")
     provider_name = provider.get("name") if isinstance(provider, dict) else provider
-    context = {
-        "channel": winlog.get("channel") or raw.get("channel"),
-        "provider": provider_name or event.get("provider"),
-        "event_id": winlog.get("event_id") or event.get("code"),
-        "event_data": winlog.get("event_data"),
-        "user_data": winlog.get("user_data"),
-        "message": raw.get("message"),
-    }
-    return {key: value for key, value in context.items() if value not in (None, "", {})}
+    candidates: list[tuple[str, str, str | None, Any]] = [
+        ("channel", "channel", None, winlog.get("channel") or raw.get("channel")),
+        ("provider", "provider", None, provider_name or event.get("provider")),
+        (
+            "event_id",
+            "event_id",
+            None,
+            winlog.get("event_id") or event.get("code"),
+        ),
+    ]
+    for group_name in ("event_data", "user_data"):
+        group = winlog.get(group_name)
+        if isinstance(group, dict):
+            candidates.extend(
+                (f"{group_name}.{key}", group_name, str(key), item)
+                for key, item in group.items()
+            )
+        elif group not in (None, "", {}):
+            candidates.append((group_name, group_name, None, group))
+    if raw.get("message") not in (None, "", {}):
+        candidates.append(("message", "message", None, raw["message"]))
+
+    context: dict[str, Any] = {}
+    omitted: list[str] = []
+    used_chars = 0
+    selected_fields = 0
+    for field_id, group_name, key, item in candidates:
+        if item in (None, "", {}):
+            continue
+        item_chars = len(
+            json.dumps(
+                {key: item} if key is not None else {group_name: item},
+                ensure_ascii=False,
+                default=str,
+            )
+        )
+        if (
+            item_chars > _RAW_EVENT_CONTEXT_FIELD_CHARS
+            or used_chars + item_chars > _RAW_EVENT_CONTEXT_CHARS
+            or selected_fields >= _RAW_EVENT_CONTEXT_FIELDS
+        ):
+            omitted.append(field_id)
+            continue
+        if key is None:
+            context[group_name] = item
+        else:
+            context.setdefault(group_name, {})[key] = item
+        used_chars += item_chars
+        selected_fields += 1
+    if omitted:
+        omitted_field_ids: list[str] = []
+        omitted_ids_chars = 0
+        for field_id in omitted:
+            field_id_chars = len(json.dumps(field_id, ensure_ascii=False))
+            if (
+                len(omitted_field_ids) >= _RAW_EVENT_CONTEXT_FIELDS
+                or omitted_ids_chars + field_id_chars > 512
+            ):
+                continue
+            omitted_field_ids.append(field_id)
+            omitted_ids_chars += field_id_chars
+        context["omitted_field_count"] = len(omitted)
+        context["omitted_field_ids"] = omitted_field_ids
+    return context
 
 
 def _result_summary_prompt_projection(
@@ -240,9 +313,11 @@ def _result_summary_prompt_projection(
         row = {
             key: value
             for key, value in source_row.items()
-            if key != "raw_json" and key not in _PROMPT_ROW_NOISE_FIELDS
+            if key not in _PROMPT_ROW_NOISE_FIELDS
         }
-        raw_context = _raw_event_context(source_row.get("raw_json"))
+        raw_context = _raw_event_context(
+            source_row.get("raw") or source_row.get("raw_json")
+        )
         group = (
             str(row.get("channel") or raw_context.get("channel") or ""),
             str(row.get("provider") or raw_context.get("provider") or ""),
@@ -256,6 +331,7 @@ def _result_summary_prompt_projection(
     return projected
 
 
+@capture_prompt_retrieval
 def build_query_intent_messages(
     hypothesis,
     recent_history: list[dict],
@@ -305,8 +381,8 @@ def build_query_intent_messages(
         hypothesis_event_ids.update(int(e) for e in extra if e is not None)
     _pb_ids: set[int] | None = hypothesis_event_ids or profile_event_ids
 
-    # --- CONFIRMED_FINDINGS block (top 5 by severity) ---
-    confirmed_findings_block = ""
+    # Rule matches help choose work; they do not establish activity.
+    rule_match_leads_block = ""
     if findings_snapshot:
         severity_rank = {"critical": 0, "high": 1, "medium": 2, "low": 3}
         sorted_findings = sorted(
@@ -316,7 +392,7 @@ def build_query_intent_messages(
         top5 = sorted_findings[:5]
         lines = []
         for f in top5:
-            title = str(f.get("title") or "").strip()[:80]
+            title = str(f.get("title") or "").strip().replace("\n", " ")[:80]
             hypothesis_id = str(f.get("hypothesis_id") or "").strip()
             finding_id = str(f.get("finding_id") or "").strip()
             evidence_ids = f.get("evidence_ids") or []
@@ -325,27 +401,29 @@ def build_query_intent_messages(
                     evidence_ids = json.loads(evidence_ids)
                 except json.JSONDecodeError, TypeError:
                     evidence_ids = [evidence_ids] if evidence_ids else []
-            evidence_str = ",".join(str(e) for e in (evidence_ids or [])[:3])
+            evidence_ids = [str(e) for e in evidence_ids if e]
+            evidence_str = ",".join(evidence_ids[:3])
             severity = str(f.get("severity") or "unknown").lower()
-            line = f"  - [{severity}] {title}"
+            line = f"  - [{severity}] {title or 'Rule match'}"
             if hypothesis_id or finding_id:
                 line += " ("
                 if hypothesis_id:
                     line += hypothesis_id
                 if finding_id:
-                    line += f", finding_id: {finding_id}"
+                    line += f"; finding_id={finding_id}"
                 line += ")"
             if evidence_str:
-                line += f" (evidence: {evidence_str})"
-            # Truncate to 160 chars per line
-            if len(line) > 160:
-                line = line[:157] + "..."
+                line += f" evidence_ids=[{evidence_str}]"
+                omitted = len(evidence_ids) - len(evidence_ids[:3])
+                if omitted:
+                    line += f" (+{omitted} omitted)"
             lines.append(line)
         if lines:
-            confirmed_findings_block = (
-                "\n<CONFIRMED_FINDINGS>\n"
+            rule_match_leads_block = (
+                "\n<RULE_MATCH_LEADS status=unverified>\n"
+                "Rule matches are leads, not confirmed activity. Verify against evidence.\n"
                 + "\n".join(lines)
-                + "\n</CONFIRMED_FINDINGS>\n"
+                + "\n</RULE_MATCH_LEADS>\n"
             )
 
     knowledge_extra = list(getattr(hypothesis, "required_entities", []) or [])
@@ -396,11 +474,12 @@ def build_query_intent_messages(
         f"host_feedback:\n{host_feedback}\n"
         f"prior_check_feedback:\n{prior_check_feedback or '(no prior checks)'}\n"
     )
-    if confirmed_findings_block:
-        system += confirmed_findings_block
+    if rule_match_leads_block:
+        system += rule_match_leads_block
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
+@capture_prompt_retrieval
 def build_verdict_review_messages(
     hypothesis,
     planned_query,
@@ -413,8 +492,8 @@ def build_verdict_review_messages(
     session_id: str | None = None,
 ) -> tuple[list[dict[str, str]], dict]:
     """role: verdict_reviewer.
-    Goal: classify the SQL result vs hypothesis as confirmed/refuted/inconclusive.
-    Output JSON: {verdict, rationale, confidence}
+    Classify the SQL result as confirmed/refuted/inconclusive/newlead.
+    Inconclusive responses identify missing evidence; newlead may add follow-ups.
     """
     fallback_notice = ""
     if fallback_info:
@@ -468,6 +547,7 @@ def build_verdict_review_messages(
         except TypeError, ValueError:
             pass
     prompt_result_summary = _result_summary_prompt_projection(result_summary)
+    prompt_hypothesis = _hypothesis_prompt_projection(hypothesis)
 
     # V2-08: the check prompt is disclosed from the same spec/capability
     # correspondence as the plan prompt: artifact catalogs gate to the work's
@@ -482,21 +562,22 @@ def build_verdict_review_messages(
         "<TASK>You are a verdict_reviewer. Classify the SQL result as confirmed, refuted, inconclusive, or newlead.</TASK>\n"
         "<OUTPUT_SCHEMA>\n"
         "{\n"
-        '  "verdict": "confirmed | refuted | inconclusive",\n'
+        '  "verdict": "confirmed | refuted | inconclusive | newlead",\n'
         '  "rationale": "string — concise reason (< 200 chars)",\n'
         '  "confidence": 0.0-1.0,\n'
-        '  "missing_questions": ["specific event_id, table, or evidence type that would resolve the hypothesis (required when verdict=inconclusive, MUST be non-empty in that case)"],\n'
+        '  "missing_questions": ["specific missing evidence; non-empty only when verdict=inconclusive"],\n'
         '  "new_hypotheses": [{"description": "...", "required_entities": ["..."], "confirm_when": {}, "refute_when": {}, "source_rule_ids": ["..."]}] (up to 3; id optional)\n'
         "}\n"
         "</OUTPUT_SCHEMA>\n"
         "<RULES>\n"
         f"{fallback_notice}"
         "When verdict=inconclusive, missing_questions MUST contain at least 1 specific item naming the missing evidence (e.g. 'event_id 4663', 'mft_entries WHERE file_path LIKE %.docx%', 'browser executable in prefetch_executions'). Do NOT leave it empty.\n"
+        "For confirmed, refuted, or newlead, return an empty missing_questions array.\n"
         "When verdict=newlead, include at most 3 concrete follow-up hypotheses with testable confirm_when conditions and useful refute_when conditions. Omit id unless you have a valid H-NNN id; otherwise the host assigns one. Otherwise omit new_hypotheses.\n"
         "</RULES>"
     )
     user = (
-        f"hypothesis: {hypothesis.description if hasattr(hypothesis, 'description') else hypothesis}\n"
+        f"hypothesis: {json.dumps(prompt_hypothesis, ensure_ascii=False, default=str)}\n"
         f"query: {planned_query.sql if hasattr(planned_query, 'sql') else planned_query}\n"
         f"result_summary: {json.dumps(prompt_result_summary, ensure_ascii=False, default=str)}\n"
         f"{strictness_note}"
@@ -508,6 +589,7 @@ def build_verdict_review_messages(
     ], VERDICT_REVIEW_SCHEMA
 
 
+@capture_prompt_retrieval
 def build_finding_extractor_messages(
     hypothesis,
     result_rows: list[dict],
@@ -544,6 +626,7 @@ def build_finding_extractor_messages(
     ], FINDING_EXTRACTOR_SCHEMA
 
 
+@capture_prompt_retrieval
 def build_gap_identifier_messages(
     observed_keypoints: list[dict],
     uncovered_keypoints: list[dict],
@@ -617,6 +700,7 @@ def build_gap_identifier_messages(
     return messages, schema
 
 
+@capture_prompt_retrieval
 def build_hypothesis_drafter_messages(
     gap_area: dict,
     available_rules: list[dict],
@@ -629,6 +713,124 @@ def build_hypothesis_drafter_messages(
 ) -> tuple[list[dict[str, str]], dict]:
     """Draft one testable hypothesis from a real observation or existing gap."""
     schema = hypothesis_drafter_schema()
+    typed_catalog = observation_catalog()
+    evidence_fields = (
+        "evidence_id",
+        "_source",
+        "source_file",
+        "timestamp",
+        "timestamp_kind",
+        "channel",
+        "provider",
+        "event_id",
+        "command_line",
+        "computer",
+        "host",
+        "service_name",
+        "logon_type",
+        "subject_user",
+        "target_user",
+        "target_group",
+        "target_server",
+        "src_ip",
+        "dst_ip",
+        "file_path",
+        "si_created",
+        "si_modified",
+        "fn_created",
+        "fn_modified",
+        "is_directory",
+        "is_deleted",
+        "process_name",
+        "executable_name",
+        "last_exec_time",
+        "exec_times",
+        "exec_count",
+        "filenames",
+        "volumes",
+        "plugin",
+        "hive",
+        "key_path",
+        "value_name",
+        "value_data",
+        "object_dn",
+    )
+    typed_observations: dict[str, dict[str, Any]] = {}
+    for row in (observed_candidate or {}).get("evidence", [])[:3]:
+        if not isinstance(row, dict):
+            continue
+        family = routed_family(str(row.get("evidence_id") or ""))
+        if (
+            family is None
+            or family == "evtx"
+            or row.get("_source") != canonical_record_table(family)
+            or family not in typed_catalog
+        ):
+            continue
+        fields = [
+            field
+            for field in typed_catalog[family]["fields"]
+            if field in evidence_fields
+            and row.get(field) is not None
+            and row.get(field) != ""
+            and row.get(field) != []
+        ]
+        if fields:
+            definition = typed_observations.setdefault(
+                family,
+                {
+                    "capabilities": typed_catalog[family]["capabilities"],
+                    "fields": [],
+                    "boolean_fields": [],
+                },
+            )
+            boolean_fields = set(typed_catalog[family]["boolean_fields"])
+            for field in fields:
+                target = "boolean_fields" if field in boolean_fields else "fields"
+                definition[target] = sorted(set(definition[target] + [field]))
+    typed_observation_entries = [
+        {
+            "family": family,
+            **definition,
+            "operators": ["equals", "contains", "greater_than"],
+            **(
+                {"boolean_operators": ["equals"]}
+                if definition["boolean_fields"]
+                else {}
+            ),
+        }
+        for family, definition in sorted(typed_observations.items())
+    ]
+    confirm_properties = schema["properties"]["hypothesis"]["properties"][
+        "confirm_when"
+    ]["properties"]
+    observation_variants = []
+    base_observation_schema = confirm_properties["observation"]
+    for family, definition in sorted(typed_observations.items()):
+        if definition["fields"]:
+            variant = copy.deepcopy(base_observation_schema)
+            variant["properties"]["family"]["enum"] = [family]
+            variant["properties"]["capability"]["enum"] = definition["capabilities"]
+            variant["properties"]["field"]["enum"] = definition["fields"]
+            variant["properties"]["value"] = {
+                "anyOf": [
+                    {"type": "string", "minLength": 1},
+                    {"type": "number"},
+                ]
+            }
+            observation_variants.append(variant)
+        if definition["boolean_fields"]:
+            variant = copy.deepcopy(base_observation_schema)
+            variant["properties"]["family"]["enum"] = [family]
+            variant["properties"]["capability"]["enum"] = definition["capabilities"]
+            variant["properties"]["field"]["enum"] = definition["boolean_fields"]
+            variant["properties"]["operator"]["enum"] = ["equals"]
+            variant["properties"]["value"] = {"type": "boolean"}
+            observation_variants.append(variant)
+    if observation_variants:
+        confirm_properties["observation"] = {"anyOf": observation_variants}
+    else:
+        confirm_properties.pop("observation", None)
     eligible_event_contexts: list[dict[str, Any]] = []
     if (
         case_profile is not None
@@ -674,64 +876,32 @@ def build_hypothesis_drafter_messages(
     ]
     observed_block = ""
     if observed_candidate:
-        evidence_fields = (
-            "evidence_id",
-            "_source",
-            "source_file",
-            "timestamp",
-            "timestamp_kind",
-            "channel",
-            "provider",
-            "event_id",
-            "command_line",
-            "computer",
-            "host",
-            "service_name",
-            "logon_type",
-            "subject_user",
-            "target_user",
-            "target_group",
-            "target_server",
-            "src_ip",
-            "dst_ip",
-            "file_path",
-            "si_created",
-            "si_modified",
-            "fn_created",
-            "fn_modified",
-            "process_name",
-            "executable_name",
-            "last_exec_time",
-            "exec_time",
-            "plugin",
-            "hive",
-            "key_path",
-            "value_name",
-            "value_data",
-            "object_dn",
-        )
-        observations = [
-            {
-                **{
-                    key: row[key] for key in evidence_fields if row.get(key) is not None
-                },
-                **(
-                    {
-                        "provider": row["raw"]
-                        .get("winlog", {})
-                        .get("provider", {})
-                        .get("name")
-                    }
-                    if isinstance(row.get("raw"), dict)
-                    and isinstance(row["raw"].get("winlog"), dict)
-                    and isinstance(row["raw"]["winlog"].get("provider"), dict)
-                    and row["raw"]["winlog"]["provider"].get("name") is not None
-                    else {}
-                ),
+        observations = []
+        for row in (observed_candidate.get("evidence") or [])[:3]:
+            if not isinstance(row, dict):
+                continue
+            family = routed_family(str(row.get("evidence_id") or ""))
+            canonical_record = family is not None and row.get(
+                "_source"
+            ) == canonical_record_table(family)
+            canonical_fields = typed_catalog.get(family or "", {}).get("fields", [])
+            displayed_fields = {
+                key: row[key]
+                for key in evidence_fields
+                if row.get(key) is not None
+                and (
+                    not canonical_record
+                    or key in canonical_fields
+                    or key in {"evidence_id", "_source", "source_file"}
+                )
             }
-            for row in (observed_candidate.get("evidence") or [])[:3]
-            if isinstance(row, dict)
-        ]
+            raw = row.get("raw")
+            winlog = raw.get("winlog") if isinstance(raw, dict) else None
+            provider = winlog.get("provider") if isinstance(winlog, dict) else None
+            provider_name = provider.get("name") if isinstance(provider, dict) else None
+            if provider_name is not None:
+                displayed_fields["provider"] = provider_name
+            observations.append(displayed_fields)
         projection = {
             "candidate_ref": observed_candidate.get("candidate_ref"),
             "title": observed_candidate.get("title"),
@@ -769,6 +939,32 @@ def build_hypothesis_drafter_messages(
                     for tag in tags[:10]
                     if isinstance(tag, str) and tag.strip()
                 )
+    typed_observations_block = (
+        "<AVAILABLE_TYPED_OBSERVATIONS>\n"
+        + json.dumps(typed_observation_entries, ensure_ascii=False)
+        + "\nUse only the listed family, capability, and field combinations. Choose values "
+        "from that field in OBSERVED_CANDIDATE. `contains` requires a string value; "
+        "`greater_than` requires a number or ISO datetime. Boolean fields require a "
+        "JSON boolean and support only `equals`.\n"
+        "</AVAILABLE_TYPED_OBSERVATIONS>\n"
+        if typed_observation_entries
+        else ""
+    )
+    observation_schema_hint = (
+        '"observation": {"family": "listed family", "capability": "listed capability", '
+        '"field": "listed field", "operator": "equals|contains|greater_than", '
+        '"value": str|number}, '
+        if typed_observation_entries
+        else ""
+    )
+    confirm_when_schema_hint = (
+        '    "confirm_when": {'
+        + observation_schema_hint
+        + '"min_count": optional positive int, "co_observed_event_ids": [int, ...], '
+        + '"event_contexts": [{"event_id": int, "channel": str, "provider": str}], '
+        + '"same_host": bool, "within_minutes": int, '
+        + '"same_entities": ["src_ip", "target_user"]},\n'
+    )
     system = (
         (f"{case_policy_block(case_policy)}" if case_policy is not None else "")
         + "<TASK>You are a hypothesis_drafter. Draft ONE falsifiable, SQL-testable hypothesis from the supplied observation or existing gap.</TASK>\n"
@@ -780,8 +976,8 @@ def build_hypothesis_drafter_messages(
         '    "description": "str (one investigative claim that can be confirmed or refuted by SQL evidence)",\n'
         '    "required_entities": ["snake_case column names such as src_ip, target_user, computer, logon_type, process_name, file_path"],\n'
         '    "source_rule_ids": ["an id from the host-supplied matched_rule_ids, or empty list"],\n'
-        '    "confirm_when": {"co_observed_event_ids": [int, ...], "event_contexts": [{"event_id": int, "channel": str, "provider": str}], "same_host": bool, "within_minutes": int, "same_entities": ["src_ip", "target_user"], "min_count": int},\n'
-        '    "refute_when": {"zero_rows": true}\n'
+        + confirm_when_schema_hint
+        + '    "refute_when": {"zero_rows": true}\n'
         "  }\n"
         "}\n"
         "</OUTPUT_SCHEMA>\n"
@@ -794,11 +990,14 @@ def build_hypothesis_drafter_messages(
             if case_profile is not None and case_profile.event_ids is not None
             else ""
         )
+        + typed_observations_block
         + "<RULES>\n"
         "Treat supplied observations as leads, not proof. For an observed candidate, describe a question that tests that candidate and use only fields/ref IDs shown there. Do not infer facts from match counts, severity, titles, or rule names.\n"
         "Use source_rule_ids only from the host-supplied matched_rule_ids. They identify observed matches and are not evidence support.\n"
         "For a gap without an observed candidate, stay within its stated objective, gap, keypoint, and available evidence. Do not invent an event, entity, or source.\n"
         "required_entities must be valid snake_case evidence column names. Keep verification conditions explicit and use only event ID/context combinations supplied by the host.\n"
+        "Typed observations use fields from canonical evidence records, not derived timeline projections such as prefetch_timeline.exec_time or mft_timeline.timestamp.\n"
+        "If confirm_when uses observation, do not mix it with event or correlation conditions. Set description exactly to the canonical form `At least <count> <family> observation(s) has/have <field> <operator phrase> <JSON value>.` It asserts only that observation; min_count defaults to 1 and, when supplied, counts distinct canonical evidence IDs. Do not add causal or broader prose.\n"
         "confirm_when and refute_when must be JSON objects. Output JSON only.\n"
         "</RULES>\n"
     )

@@ -5,10 +5,9 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import TYPE_CHECKING
 
-import duckdb
 import yaml
 
-from forensia.db.schema import CORE_SCHEMA_SQL
+from forensia.db.schema import declared_schema, load_live_schema
 from forensia.knowledge.resources import schema_dir
 
 if TYPE_CHECKING:
@@ -51,32 +50,16 @@ def get_allowed_tables(db: CaseDB | None = None) -> set[str]:
     }
 
 
-@lru_cache(maxsize=1)
-def _declared_schema() -> dict[str, tuple[str, ...]]:
-    """Derive no-case prompt guidance from the current schema, never a second column list."""
-    with duckdb.connect() as conn:
-        conn.execute(CORE_SCHEMA_SQL)
-        return load_live_schema(conn)
-
-
-def load_live_schema(db: CaseDB) -> dict[str, tuple[str, ...]]:
-    rows = db.execute("""
-        SELECT table_name, column_name
-        FROM information_schema.columns
-        WHERE table_schema = 'main'
-        ORDER BY table_name, ordinal_position
-    """).fetchall()
-    result: dict[str, list[str]] = {}
-    for tbl, col in rows:
-        result.setdefault(str(tbl), []).append(str(col))
-    return {k: tuple(v) for k, v in result.items()}
-
-
-def schema_column_guidance(db: CaseDB | None = None) -> str:
-    schema = load_live_schema(db) if db is not None else _declared_schema()
+def schema_column_guidance(
+    db: CaseDB | None = None, *, tables: list[str] | tuple[str, ...] | None = None
+) -> str:
+    schema = load_live_schema(db) if db is not None else declared_schema()
     allowed = get_allowed_tables(db)
+    selected = allowed.intersection(tables) if tables is not None else allowed
     return "tables:\n" + "\n".join(
-        f"  {table} columns: {', '.join(schema[table])}" for table in sorted(allowed)
+        f"  {table} columns: {', '.join(schema[table])}"
+        for table in sorted(selected)
+        if table in schema
     )
 
 
@@ -127,7 +110,6 @@ def build_investigation_framework(
     db: CaseDB | None = None,
     *,
     event_ids: set[int] | None = None,
-    include_event_guidance: bool = True,
 ) -> str:
     """Build investigation framework from schema declarations.
 
@@ -136,17 +118,13 @@ def build_investigation_framework(
     logon_schema = load_logon_type_schema()
     app_catalog = load_app_catalog()
 
-    # Logon type reference. Neutral section-plan blocks opt out so they do not
-    # receive the case-wide event catalog while choosing a writing action.
+    # Logon type and priority-event guidance comes from repository YAML.
     logontype_lines = []
-    if include_event_guidance:
-        for lt in sorted(
-            logon_schema.get("types", {}).items(), key=lambda x: int(x[0])
-        ):
-            lt_id, lt_def = lt
-            logontype_lines.append(
-                f"  {lt_id}  = {lt_def.get('name', '?')} ({lt_def.get('description', '')})"
-            )
+    for lt in sorted(logon_schema.get("types", {}).items(), key=lambda x: int(x[0])):
+        lt_id, lt_def = lt
+        logontype_lines.append(
+            f"  {lt_id}  = {lt_def.get('name', '?')} ({lt_def.get('description', '')})"
+        )
 
     # Priority events
     priority_lines = [
@@ -164,7 +142,7 @@ def build_investigation_framework(
                 if str(eid).isdigit()
             )
         ]
-    for i, pe in enumerate(priority_entries if include_event_guidance else [], 1):
+    for i, pe in enumerate(priority_entries, 1):
         eids = pe.get("event_ids", [])
         lts = pe.get("logon_types", [])
         suffix = f" with logon_type IN ({lts})" if lts else ""
@@ -193,8 +171,6 @@ def build_investigation_framework(
             + "\n\n"
             + "\n".join(priority_lines)
             + "\n\n"
-            if include_event_guidance
-            else ""
         )
         + _fmt_table_notes("evtx_events")
         + "\n"
@@ -206,13 +182,11 @@ def build_investigation_framework(
         + "\n"
         + _fmt_table_notes("registry_timeline")
         + "\n"
-        "Section-agent state tables:\n"
-        "  section_facts stores reusable evidence-backed facts extracted during prior report-generation runs.\n"
-        "  section_evidence links report sections/blocks to evidence_id values already judged relevant.\n"
-        "  query_cache stores prior read-only query results by SQL hash.\n"
-        "  section_runs stores the plan/query/check/write history for each report block.\n"
-        "  section_questions stores the semantic QuestionSpec resolved for each report block.\n"
-        "  Prefer reusing section_facts before issuing new SQL when the fact already answers the block question.\n\n"
+        "Report state tables:\n"
+        "  report_sections stores generated section bodies and their status.\n"
+        "  section_evidence links report sections to evidence_id values.\n"
+        "  section_runs stores report-section execution history.\n"
+        "  claims stores report claims and their evidence links.\n\n"
         + table_section
         + "Only propose SELECT or WITH-prefixed read-only SQL compatible with DuckDB.\n"
     )

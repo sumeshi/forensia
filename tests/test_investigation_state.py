@@ -77,6 +77,11 @@ class InvestigationStateTests(unittest.TestCase):
             expand_investigation_candidate,
             expand_investigation_candidate_rules,
         )
+        from forensia.investigation.investigation_cycle import (
+            _BroadPlanContext,
+            _emit_broad_plan_result,
+            _select_candidate_drafts,
+        )
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -188,6 +193,27 @@ class InvestigationStateTests(unittest.TestCase):
                 projection = build_investigation_candidates(db, limit=5)
                 repeated = build_investigation_candidates(db, limit=5)
                 severity_diverse = build_investigation_candidates(db, limit=2)
+                emit = mock.Mock()
+                ctx = _BroadPlanContext(
+                    state=SessionState(session_id="test"),
+                    db=db,
+                    session_id="test",
+                    base_url="unused",
+                    model="unused",
+                    plan_cycle=1,
+                    observed_keypoints=[],
+                    observed_keypoint_labels=[],
+                    emit_fn=emit,
+                    llm_status_fn=lambda _: None,
+                    progress_callback=None,
+                    case_profile=None,
+                )
+                selected, plan_counts = _select_candidate_drafts(ctx, limit=1)
+                self.assertEqual(len(selected), 1)
+                self.assertIsNone(plan_counts["eligible_candidate_count"])
+                self.assertIsNone(plan_counts["draft_cap_omitted_count"])
+                _emit_broad_plan_result(ctx, [], False, plan_counts)
+                self.assertIn("unassessed=unknown", emit.call_args.args[1])
                 eligible_only = build_investigation_candidates(
                     db,
                     limit=1,
@@ -227,6 +253,8 @@ class InvestigationStateTests(unittest.TestCase):
                     "distinct_evidence_count": 31,
                     "candidate_count": 5,
                     "eligible_candidate_count": 5,
+                    "eligibility_evaluated_count": 5,
+                    "eligibility_complete": True,
                     "excluded_count": 0,
                     "presented_count": 5,
                     "unpresented_count": 0,
@@ -238,13 +266,20 @@ class InvestigationStateTests(unittest.TestCase):
             )
             self.assertEqual(severity_diverse["counts"]["presented_count"], 2)
             self.assertEqual(
+                severity_diverse["counts"]["eligibility_evaluated_count"], 2
+            )
+            self.assertFalse(severity_diverse["counts"]["eligibility_complete"])
+            self.assertIsNone(severity_diverse["counts"]["eligible_candidate_count"])
+            self.assertEqual(
                 [item["severity"] for item in severity_diverse["candidates"]],
                 ["high", "medium"],
             )
             self.assertEqual(severity_diverse["candidates"][1]["match_count"], 2)
             self.assertEqual(eligible_only["counts"]["candidate_count"], 5)
-            self.assertEqual(eligible_only["counts"]["eligible_candidate_count"], 1)
-            self.assertEqual(eligible_only["counts"]["excluded_count"], 4)
+            self.assertIsNone(eligible_only["counts"]["eligible_candidate_count"])
+            self.assertEqual(eligible_only["counts"]["eligibility_evaluated_count"], 2)
+            self.assertFalse(eligible_only["counts"]["eligibility_complete"])
+            self.assertEqual(eligible_only["counts"]["excluded_count"], 1)
             self.assertIn("rare-rule", eligible_only["candidates"][0]["rule_ids"])
             changed_flood = next(
                 item for item in changed["candidates"] if item["evidence_count"] == 26
@@ -254,9 +289,12 @@ class InvestigationStateTests(unittest.TestCase):
                 changed_flood["candidate_fingerprint"], flood["candidate_fingerprint"]
             )
             self.assertEqual(excluded_projection["counts"]["candidate_count"], 5)
+            self.assertIsNone(excluded_projection["counts"]["eligible_candidate_count"])
             self.assertEqual(
-                excluded_projection["counts"]["eligible_candidate_count"], 4
+                excluded_projection["counts"]["eligibility_evaluated_count"], 2
             )
+            self.assertFalse(excluded_projection["counts"]["eligibility_complete"])
+            self.assertEqual(excluded_projection["counts"]["excluded_count"], 1)
             self.assertEqual(excluded_projection["counts"]["presented_count"], 1)
             self.assertNotEqual(
                 excluded_projection["candidates"][0]["candidate_ref"],

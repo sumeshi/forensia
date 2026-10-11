@@ -6,15 +6,12 @@ import re
 import tempfile
 import unittest
 from datetime import datetime, timedelta
-from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
 from forensia.context.case_profile import CaseEvidenceProfile
 from forensia.context.prompt_context import (
     _build_schema_guidance,
-    _trim_dynamic_content,
-    truncate_context_sections,
+    fit_prompt_messages,
 )
 from forensia.core.case import Case
 from forensia.core.session import Hypothesis, PlannedQuery
@@ -24,50 +21,41 @@ from forensia.report.sections.evidence_projection import (
 )
 from forensia.report.sections.prompts import (
     build_paragraph_narrate_messages,
-    build_section_outline_messages,
-    build_structured_classify_messages,
 )
-from forensia.report.sections.section_exec import question_report_brief
 from forensia.report.sections.section_quality import validate_body_evidence_ids
 
 
 class PromptMessageTests(unittest.TestCase):
     """Prompt message content: truncation, guidance blocks, language handling."""
 
-    def test_truncate_context_sections_keeps_text_within_1500_chars(self) -> None:
-        sections = {"2_timeline": "x" * 1500, "3_technical": "y" * 1501}
-
-        trimmed = truncate_context_sections(sections)
-
-        self.assertEqual("x" * 1500, trimmed["2_timeline"])
-        self.assertLessEqual(len(trimmed["3_technical"]), 1500)
-        self.assertIn("…[truncated]", trimmed["3_technical"])
-
-    def test_benchmark_report_brief_strips_narrative_keys(self) -> None:
-        brief = question_report_brief(
+    def test_common_fitter_drops_whole_optional_template_context(self) -> None:
+        messages = [
+            {"role": "system", "content": "<TASK>Write the report.</TASK>"},
             {
-                "investigation_objective": "Narrative objective",
-                "top_findings": [{"finding_id": "F-1"}],
-                "active_hypotheses": [{"hypothesis_id": "H-1"}],
-                "confirmed_hypotheses": [{"hypothesis_id": "H-2"}],
-                "prior_sections": {"3_technical": "narrative"},
-                "existing_claims": [{"claim_text": "narrative"}],
-                "evidence_coverage": {"evtx_events": 12},
-                "source_timezone": "Asia/Tokyo",
-                "timezone_offset": "+09:00",
-                "time_range": "2026-05-01 to 2026-05-02",
-            }
-        )
-
-        self.assertEqual(
-            {
-                "evidence_coverage": {"evtx_events": 12},
-                "source_timezone": "Asia/Tokyo",
-                "timezone_offset": "+09:00",
-                "time_range": "2026-05-01 to 2026-05-02",
+                "role": "user",
+                "content": "Required evidence stays.\n<TEMPLATE_CONTEXT>"
+                + ("template detail " * 100)
+                + "</TEMPLATE_CONTEXT>",
             },
-            brief,
-        )
+        ]
+        with (
+            patch(
+                "forensia.context.prompt_context.get_llm_settings",
+                return_value={"max_tokens": 1, "llm_context_window_tokens": None},
+            ),
+            patch(
+                "forensia.context.prompt_context.get_prompt_budget_tokens",
+                return_value=20,
+            ),
+        ):
+            fitted = fit_prompt_messages(messages)
+
+        self.assertIsNotNone(fitted)
+        fitted_text = "\n".join(message["content"] for message in fitted or [])
+        self.assertIn("<TASK>Write the report.</TASK>", fitted_text)
+        self.assertIn("Required evidence stays.", fitted_text)
+        self.assertNotIn("TEMPLATE_CONTEXT", fitted_text)
+        self.assertNotIn("template detail", fitted_text)
 
     def test_observed_candidate_drafter_discloses_sigma_fields_and_retrieval_terms(
         self,
@@ -202,6 +190,11 @@ class PromptMessageTests(unittest.TestCase):
             )
 
         joined = "\n".join(message["content"] for message in messages)
+        self.assertNotIn("<AVAILABLE_TYPED_OBSERVATIONS>", joined)
+        self.assertNotIn('"observation":', joined)
+        self.assertIn(
+            "Typed observations use fields from canonical evidence records", joined
+        )
         self.assertIn(
             '[{"event_id": 104, "channel": "System", "provider": "Microsoft-Windows-Eventlog"}, '
             '{"event_id": 4104, "channel": "Microsoft-Windows-PowerShell/Operational", '
@@ -212,6 +205,11 @@ class PromptMessageTests(unittest.TestCase):
             "properties"
         ]["co_observed_event_ids"]
         self.assertEqual(ids_schema["items"]["enum"], [104, 4104])
+        confirm_properties = schema["properties"]["hypothesis"]["properties"][
+            "confirm_when"
+        ]["properties"]
+        self.assertNotIn("observation", confirm_properties)
+        self.assertEqual(confirm_properties["min_count"]["minimum"], 1)
         many_contexts = [
             {
                 "event_id": event_id,
@@ -253,6 +251,100 @@ class PromptMessageTests(unittest.TestCase):
         )
         db.close()
 
+    def test_hypothesis_drafter_typed_catalog_matches_candidate_and_schema(
+        self,
+    ) -> None:
+        from forensia.investigation import prompts
+
+        candidate = {
+            "evidence": [
+                {
+                    "evidence_id": "mft-m1",
+                    "_source": "mft_entries",
+                    "file_path": "C:/ProgramData/updater.exe",
+                    "is_deleted": False,
+                    "timestamp": "derived timeline value",
+                },
+                {
+                    "evidence_id": "prefetch-p1",
+                    "_source": "prefetch_executions",
+                    "executable_name": "cmd.exe",
+                    "exec_times": ["2025-01-02T03:04:05"],
+                    "exec_time": "derived timeline value",
+                },
+                {
+                    "evidence_id": "registry-r1",
+                    "_source": "registry_artifacts",
+                    "key_path": "HKCU/Software/Microsoft/Windows/CurrentVersion/Run",
+                },
+            ]
+        }
+
+        with patch.object(prompts, "_org_knowledge_block", return_value=""):
+            messages, schema = prompts.build_hypothesis_drafter_messages(
+                {"keypoint_id": "persistence"}, [], observed_candidate=candidate
+            )
+
+        joined = "\n".join(message["content"] for message in messages)
+        block = joined.split("<AVAILABLE_TYPED_OBSERVATIONS>\n", 1)[1].split(
+            "\nUse only the listed", 1
+        )[0]
+        entries = json.loads(block)
+        self.assertEqual(
+            [item["family"] for item in entries], ["mft", "prefetch", "registry"]
+        )
+        self.assertEqual(
+            entries[0]["capabilities"],
+            ["file_activity", "persistence", "process_execution"],
+        )
+        self.assertEqual(entries[0]["fields"], ["file_path"])
+        self.assertEqual(entries[0]["boolean_fields"], ["is_deleted"])
+        self.assertEqual(entries[0]["boolean_operators"], ["equals"])
+        self.assertEqual(entries[1]["capabilities"], ["process_execution"])
+        self.assertEqual(entries[1]["fields"], ["exec_times", "executable_name"])
+        self.assertEqual(entries[2]["capabilities"], ["registry_observation"])
+        self.assertEqual(entries[2]["fields"], ["key_path"])
+        self.assertTrue(
+            all(
+                item["operators"] == ["equals", "contains", "greater_than"]
+                for item in entries
+            )
+        )
+        self.assertIn('"exec_times": ["2025-01-02T03:04:05"]', joined)
+        self.assertIn('"is_deleted": false', joined)
+        self.assertNotIn('"exec_time":', joined)
+        self.assertNotIn('"timestamp": "derived timeline value"', joined)
+
+        observation_schema = schema["properties"]["hypothesis"]["properties"][
+            "confirm_when"
+        ]["properties"]["observation"]
+        allowed = set()
+        for variant in observation_schema["anyOf"]:
+            properties = variant["properties"]
+            allowed.update(
+                (family, capability, field, operator)
+                for family in properties["family"]["enum"]
+                for capability in properties["capability"]["enum"]
+                for field in properties["field"]["enum"]
+                for operator in properties["operator"]["enum"]
+            )
+        self.assertIn(
+            ("prefetch", "process_execution", "exec_times", "contains"), allowed
+        )
+        self.assertNotIn(
+            ("prefetch", "process_execution", "exec_time", "contains"), allowed
+        )
+        self.assertNotIn(("mft", "file_activity", "timestamp", "equals"), allowed)
+        self.assertIn(("mft", "file_activity", "is_deleted", "equals"), allowed)
+        self.assertNotIn(("mft", "file_activity", "is_deleted", "contains"), allowed)
+        boolean_variant = next(
+            variant
+            for variant in observation_schema["anyOf"]
+            if "is_deleted" in variant["properties"]["field"]["enum"]
+        )
+        self.assertEqual(boolean_variant["properties"]["value"], {"type": "boolean"})
+        self.assertEqual(boolean_variant["properties"]["operator"]["enum"], ["equals"])
+
     def test_hypothesis_drafter_discloses_empty_context_and_disallows_event_ids(
         self,
     ) -> None:
@@ -283,8 +375,8 @@ class PromptMessageTests(unittest.TestCase):
         db.close()
 
 
-class TestConfirmedFindingsBlock(unittest.TestCase):
-    """Tests for the <CONFIRMED_FINDINGS> block in build_query_intent_messages."""
+class TestRuleMatchLeadsBlock(unittest.TestCase):
+    """Rule matches stay labelled as leads and stable refs are never clipped."""
 
     def test_no_findings_omits_block(self) -> None:
         from forensia.investigation.prompts import build_query_intent_messages
@@ -297,7 +389,7 @@ class TestConfirmedFindingsBlock(unittest.TestCase):
             findings_snapshot=[],
         )
         system_content = msgs[0]["content"]
-        self.assertNotIn("<CONFIRMED_FINDINGS>", system_content)
+        self.assertNotIn("<RULE_MATCH_LEADS", system_content)
 
     def test_evidence_ids_string_parsed(self) -> None:
         from forensia.investigation.prompts import build_query_intent_messages
@@ -319,8 +411,30 @@ class TestConfirmedFindingsBlock(unittest.TestCase):
             findings_snapshot=findings,
         )
         system_content = msgs[0]["content"]
+        self.assertIn("<RULE_MATCH_LEADS status=unverified>", system_content)
+        self.assertIn("Rule matches are leads, not confirmed activity.", system_content)
         self.assertIn("evtx-001", system_content)
         self.assertIn("evtx-002", system_content)
+        self.assertNotIn("<CONFIRMED_FINDINGS>", system_content)
+
+    def test_long_evidence_reference_is_not_truncated(self) -> None:
+        from forensia.investigation.prompts import build_query_intent_messages
+
+        evidence_id = "evtx-" + "x" * 220
+        msgs = build_query_intent_messages(
+            hypothesis=Hypothesis(description="test", id="H-001"),
+            recent_history=[],
+            active_hypotheses=[],
+            findings_snapshot=[
+                {
+                    "severity": "high",
+                    "title": "long-reference",
+                    "evidence_ids": [evidence_id],
+                }
+            ],
+        )
+
+        self.assertIn(evidence_id, msgs[0]["content"])
 
 
 class PriorAttemptsBlockTests(unittest.TestCase):
@@ -338,15 +452,20 @@ class PriorAttemptsBlockTests(unittest.TestCase):
             [
                 {
                     "query_id": "q-001",
-                    "template_id": "t-logon",
-                    "verdict": "inconclusive",
+                    "attempt_ref": "attempt-1",
+                    "status": "inconclusive",
+                    "retrieval_outcome": "empty",
+                    "returned_count": 0,
                     "evidence_ids": [],
                     "purpose": "find 4720 account creation",
+                    "template_id": "t-logon",
                     "summary": "no rows returned for event 4720",
                 },
                 {
                     "query_id": "q-002",
-                    "verdict": "inconclusive",
+                    "attempt_ref": "attempt-2",
+                    "status": "partial",
+                    "returned_count": 2,
                     "evidence_ids": ["e-1", "e-2"],
                     "body": "partial overlap only",
                 },
@@ -354,11 +473,15 @@ class PriorAttemptsBlockTests(unittest.TestCase):
         )
         self.assertIn("<PRIOR_ATTEMPTS>", block)
         self.assertIn("query_id=q-001", block)
-        self.assertIn("template=t-logon", block)
-        self.assertIn("verdict=inconclusive", block)
-        self.assertIn("evidence_count=0", block)
-        self.assertIn("evidence_count=2", block)
-        self.assertIn("do_not_repeat_query_ids: q-001, q-002", block)
+        self.assertIn("attempt_ref=attempt-1", block)
+        self.assertIn("status=inconclusive", block)
+        self.assertIn("retrieval_outcome=empty", block)
+        self.assertIn("returned_count=0", block)
+        self.assertIn("attempt_ref=attempt-2", block)
+        self.assertIn("evidence_ids=[e-1,e-2]", block)
+        self.assertNotIn("template_id", block)
+        self.assertNotIn("summary", block)
+        self.assertNotIn("body", block)
 
     def test_intent_messages_carry_structured_attempts(self) -> None:
         from forensia.investigation.prompts import build_query_intent_messages
@@ -393,6 +516,7 @@ class PriorAttemptsBlockTests(unittest.TestCase):
         hypothesis = Hypothesis(
             id="H-001",
             description="UNIQUE-CURRENT-HYPOTHESIS",
+            required_entities=["computer", "logon_type"],
             confirm_when={"co_observed_event_ids": [4625]},
         )
         with patch(
@@ -428,13 +552,25 @@ class PriorAttemptsBlockTests(unittest.TestCase):
             "head_rows": [{"evidence_id": "ev-1", "raw_json": raw_json}],
             "tail_rows": [{"evidence_id": "ev-2", "raw_json": raw_json}],
             "sample_rows": [
-                {"evidence_id": "ev-1", "event_id": 4625, "raw_json": raw_json},
-                {"evidence_id": "ev-2", "event_id": 4625, "raw_json": raw_json},
+                {
+                    "evidence_id": "ev-1",
+                    "event_id": 4625,
+                    "_source": "canonical-evidence-lookup",
+                    "raw": json.loads(raw_json),
+                    "raw_json": raw_json,
+                },
+                {
+                    "evidence_id": "ev-2",
+                    "event_id": 4625,
+                    "_source": "canonical-evidence-lookup",
+                    "raw": json.loads(raw_json),
+                    "raw_json": raw_json,
+                },
             ],
             "event_id_set": [4625],
             "evidence_ids": ["ev-1", "ev-2"],
         }
-        verdict_messages, _ = build_verdict_review_messages(
+        verdict_messages, verdict_schema = build_verdict_review_messages(
             hypothesis,
             PlannedQuery(
                 query_id="Q-1", hypothesis_id="H-001", purpose="test", sql="SELECT 1"
@@ -442,14 +578,74 @@ class PriorAttemptsBlockTests(unittest.TestCase):
             summary,
         )
         verdict_user = verdict_messages[1]["content"]
+        verdict_system = verdict_messages[0]["content"]
+        self.assertEqual(
+            ["confirmed", "inconclusive", "refuted", "newlead"],
+            verdict_schema["properties"]["verdict"]["enum"],
+        )
+        self.assertIn(
+            '"verdict": "confirmed | refuted | inconclusive | newlead"', verdict_system
+        )
+        self.assertIn(
+            "For confirmed, refuted, or newlead, return an empty missing_questions array.",
+            verdict_system,
+        )
+        self.assertNotIn("minItems", verdict_schema["properties"]["missing_questions"])
         self.assertNotIn('"head_rows"', verdict_user)
         self.assertNotIn('"tail_rows"', verdict_user)
+        self.assertNotIn('"raw":', verdict_user)
+        self.assertNotIn('"raw_json":', verdict_user)
+        self.assertNotIn('"_source":', verdict_user)
         self.assertEqual(1, verdict_user.count("raw_event_context"))
+        self.assertIn('"required_entities": ["computer", "logon_type"]', verdict_user)
+        self.assertIn(
+            '"support_conditions": {"co_observed_event_ids": [4625]}', verdict_user
+        )
         self.assertIn("Application", verdict_user)
         self.assertIn("Microsoft-Windows-EventSystem", verdict_user)
         self.assertIn("param1", verdict_user)
+        self.assertNotIn('"guid"', verdict_user)
         self.assertNotIn("/private/sample.evtx", verdict_user)
         self.assertNotIn("discard-me", verdict_user)
+
+        from forensia.investigation.prompts import _result_summary_prompt_projection
+
+        preserved_id = "Activity-" + ("x" * 90)
+        bounded = _result_summary_prompt_projection(
+            {
+                "sample_rows": [
+                    {
+                        "evidence_id": "evtx-" + ("e" * 180),
+                        "raw": {
+                            "winlog": {
+                                "channel": "Security",
+                                "event_id": 4663,
+                                "event_data": {
+                                    "ActivityId": preserved_id,
+                                    "Items": [{"id": "item-a"}, {"id": "item-b"}],
+                                    "LargeValue": "x" * 500,
+                                },
+                            },
+                            "message": "m" * 700,
+                        },
+                    }
+                ]
+            }
+        )
+        bounded_row = bounded["sample_rows"][0]
+        bounded_context = bounded_row["raw_event_context"]
+        self.assertEqual("evtx-" + ("e" * 180), bounded_row["evidence_id"])
+        self.assertEqual(preserved_id, bounded_context["event_data"]["ActivityId"])
+        self.assertEqual(
+            [{"id": "item-a"}, {"id": "item-b"}],
+            bounded_context["event_data"]["Items"],
+        )
+        self.assertEqual(2, bounded_context["omitted_field_count"])
+        self.assertEqual(
+            ["event_data.LargeValue", "message"],
+            bounded_context["omitted_field_ids"],
+        )
+        self.assertLessEqual(len(json.dumps(bounded_context)), 2500)
 
     def test_intent_knowledge_terms_include_previous_check_feedback(self) -> None:
         from forensia.investigation.prompts import build_query_intent_messages
@@ -467,16 +663,6 @@ class PriorAttemptsBlockTests(unittest.TestCase):
         extra_words = knowledge_block.call_args.kwargs["extra_words"]
         self.assertIn("missing event_id 1102", extra_words)
         self.assertIn("prior answer about log clearing", extra_words)
-
-    def test_dynamic_context_trim_respects_effective_budget(self) -> None:
-        messages = [
-            {"role": "system", "content": "s" * 1000},
-            {"role": "user", "content": "u" * 20000},
-        ]
-        trimmed = _trim_dynamic_content(messages, max_total_tokens=1000)
-        self.assertLessEqual(sum(len(m["content"]) for m in trimmed), 4000)
-        self.assertIn("…[truncated]", trimmed[1]["content"])
-        self.assertEqual("u" * 20000, messages[1]["content"])
 
 
 class NarratePromptContractTests(unittest.TestCase):
@@ -552,26 +738,7 @@ class NarratePromptContractTests(unittest.TestCase):
                     report_context={"source_timezone": "UTC"},
                     db=db,
                 )
-                outline, _ = build_section_outline_messages(
-                    template_body="## Time Basis and Coverage",
-                    relevant_evidence=[aggregate],
-                    section_meta={"section": "2_timeline"},
-                    db=db,
-                )
-                structured, _ = build_structured_classify_messages(
-                    question="What period is covered?",
-                    block_heading="Time Basis and Coverage",
-                    evidence_rows=[aggregate],
-                    expected_shape={
-                        "fields": ["first_event", "last_event", "event_count"]
-                    },
-                    db=db,
-                )
-                prompt_texts = [
-                    narrative[1]["content"],
-                    outline[1]["content"],
-                    structured[1]["content"],
-                ]
+                prompt_texts = [narrative[1]["content"]]
                 raw_size = len(json.dumps([aggregate]))
                 for prompt_text in prompt_texts:
                     self.assertIn("evidence_count", prompt_text)
@@ -632,108 +799,6 @@ class NarratePromptContractTests(unittest.TestCase):
                 db.close()
 
 
-def test_section_knowledge_selection_uses_template_frontmatter_tags(
-    tmp_path: Path,
-) -> None:
-    from forensia.knowledge.external import scan_knowledge_dir, set_knowledge_docs
-    from forensia.report.sections.section_block_plan import _inject_org_knowledge
-
-    (tmp_path / "allowed.md").write_text(
-        "---\ntype: knowledge\ntitle: Timeline notes\n"
-        "description: timeline\ntags: [template-tag]\n---\n"
-        "## Timeline\ntimeline evidence from allowed doc\n",
-        encoding="utf-8",
-    )
-    (tmp_path / "blocked.md").write_text(
-        "---\ntype: knowledge\ntitle: Timeline timeline timeline\n"
-        "description: timeline timeline timeline\ntags: [section-family]\n---\n"
-        "## Timeline\ntimeline timeline timeline from blocked doc\n",
-        encoding="utf-8",
-    )
-    set_knowledge_docs(scan_knowledge_dir(tmp_path))
-    try:
-        ctx = SimpleNamespace(
-            title="Timeline",
-            block_heading="Timeline",
-            template_tags=("template-tag",),
-            base_url="",
-            model="",
-        )
-        system = _inject_org_knowledge("SYSTEM\n", ctx)
-    finally:
-        set_knowledge_docs([])
-
-    assert "allowed" in system
-    assert "blocked" not in system
-
-
-def test_section_knowledge_selection_uses_latest_missing_question(
-    tmp_path: Path,
-) -> None:
-    from forensia.knowledge.external import scan_knowledge_dir, set_knowledge_docs
-    from forensia.report.sections.section_block_plan import _inject_org_knowledge
-
-    (tmp_path / "log-clearing.md").write_text(
-        "---\ntype: knowledge\ntitle: Event 1102 log clearing\n"
-        "description: Security log removal\ntags: [windows]\n---\n"
-        "## Event 1102\nCheck event 1102 and adjacent service events.\n",
-        encoding="utf-8",
-    )
-    set_knowledge_docs(scan_knowledge_dir(tmp_path))
-    try:
-        ctx = SimpleNamespace(
-            title="Technical assessment",
-            block_heading="Open questions",
-            template_tags=("windows",),
-            base_url="",
-            model="",
-        )
-        system = _inject_org_knowledge(
-            "SYSTEM\n", ctx, focus_terms=["missing event_id 1102 log clearing"]
-        )
-    finally:
-        set_knowledge_docs([])
-    # The fragment shows the document title, not the file name.
-    assert "Event 1102 log clearing" in system
-    assert "log-clearing" not in system
-
-
-def test_section_knowledge_llm_compaction_preserves_fragment_metadata(
-    tmp_path: Path, monkeypatch
-) -> None:
-    from forensia.knowledge.external import scan_knowledge_dir, set_knowledge_docs
-    from forensia.report.sections.section_block_plan import _inject_org_knowledge
-
-    (tmp_path / "log-clearing.md").write_text(
-        "---\ntype: knowledge\ntitle: Event 1102 log clearing\n"
-        "description: Security log removal reference\ntags: [windows]\n---\n"
-        "## Event 1102\n" + ("Check event 1102 and adjacent service events.\n" * 200),
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(
-        "forensia.llm.compaction.llm_compact",
-        lambda text, budget, **kwargs: "Check event 1102 and adjacent service events.",
-    )
-    set_knowledge_docs(scan_knowledge_dir(tmp_path))
-    try:
-        ctx = SimpleNamespace(
-            title="Technical assessment",
-            block_heading="Open questions",
-            template_tags=("windows",),
-            base_url="http://llm.invalid",
-            model="test-model",
-        )
-        system = _inject_org_knowledge(
-            "SYSTEM\n", ctx, focus_terms=["event 1102 log clearing"]
-        )
-    finally:
-        set_knowledge_docs([])
-
-    assert "Topic: Event 1102 log clearing" in system
-    assert "Summary: Security log removal reference" in system
-    assert "log-clearing.md" not in system
-
-
 class IndexedContextTests(unittest.TestCase):
     """T-21: repeated global prompts become compact indexes with lazy detail."""
 
@@ -760,6 +825,110 @@ class IndexedContextTests(unittest.TestCase):
         self.assertIsNotNone(row)
         self.assertEqual("schema_hints", row[0])
         self.assertIn("evtx_events", row[1])
+
+    def test_provider_prompt_metadata_carries_captured_retrieval_refs(self) -> None:
+        from forensia.context.prompt_context import PromptMessages
+        from forensia.llm.request_metadata import prompt_metadata
+
+        messages = PromptMessages(
+            [{"role": "user", "content": "query"}], ["retrieval-1", "retrieval-2"]
+        )
+
+        self.assertEqual(
+            ["retrieval-1", "retrieval-2"],
+            prompt_metadata(messages)["retrieval_event_ids"],
+        )
+        metadata = prompt_metadata(messages)
+        self.assertEqual(
+            "prompt_builder_selection", metadata["retrieval_event_ids_stage"]
+        )
+        self.assertEqual("provider_attempt_messages", metadata["selected_ids_stage"])
+
+    def test_prompt_metadata_records_optional_blocks_removed_for_each_reason(
+        self,
+    ) -> None:
+        from forensia.context.prompt_context import PromptMessages
+        from forensia.llm.json_response import (
+            _compact_messages_after_context_rejection,
+            _messages_for_truncation_retry,
+        )
+        from forensia.llm.request_metadata import prompt_metadata
+
+        messages = PromptMessages(
+            [
+                {
+                    "role": "system",
+                    "content": "<TASK>" + ("required " * 40) + "</TASK>\n"
+                    "<ORG_KNOWLEDGE>"
+                    + ("optional " * 100)
+                    + "- id=doc-1 [SELECTED]</ORG_KNOWLEDGE>",
+                },
+                {
+                    "role": "user",
+                    "content": "<TEMPLATE_CONTEXT>"
+                    + ("template " * 20)
+                    + "</TEMPLATE_CONTEXT>",
+                },
+            ],
+            ["retrieval-1"],
+        )
+        with (
+            patch(
+                "forensia.context.prompt_context.get_prompt_budget_tokens",
+                return_value=200,
+            ),
+            patch(
+                "forensia.context.prompt_context.get_llm_settings",
+                return_value={"llm_context_window_tokens": None, "max_tokens": 100},
+            ),
+        ):
+            budget_fitted = fit_prompt_messages(messages)
+            self.assertIsNotNone(budget_fitted)
+            assert budget_fitted is not None
+            budget_metadata = prompt_metadata(budget_fitted)
+            self.assertEqual(
+                [
+                    {
+                        "name": "ORG_KNOWLEDGE",
+                        "count": 1,
+                        "reason": "input_budget",
+                    },
+                ],
+                budget_metadata["omitted_optional_blocks"],
+            )
+            self.assertEqual([], budget_metadata["selected_ids"])
+            self.assertEqual(["retrieval-1"], budget_metadata["retrieval_event_ids"])
+
+            rejected_fitted = _compact_messages_after_context_rejection(budget_fitted)
+            self.assertIsNotNone(rejected_fitted)
+            assert rejected_fitted is not None
+            self.assertEqual(
+                [
+                    *budget_metadata["omitted_optional_blocks"],
+                    {
+                        "name": "TEMPLATE_CONTEXT",
+                        "count": 1,
+                        "reason": "provider_context_rejection",
+                    },
+                ],
+                prompt_metadata(rejected_fitted)["omitted_optional_blocks"],
+            )
+            self.assertEqual(
+                ["retrieval-1"],
+                prompt_metadata(rejected_fitted)["retrieval_event_ids"],
+            )
+
+            no_op_fitted = fit_prompt_messages(rejected_fitted)
+            self.assertEqual(
+                prompt_metadata(rejected_fitted), prompt_metadata(no_op_fitted)
+            )
+            truncation_retry = _messages_for_truncation_retry(rejected_fitted)
+            retry_metadata = prompt_metadata(truncation_retry)
+            self.assertEqual(
+                prompt_metadata(rejected_fitted)["omitted_optional_blocks"],
+                retry_metadata["omitted_optional_blocks"],
+            )
+            self.assertEqual(["retrieval-1"], retry_metadata["retrieval_event_ids"])
 
 
 if __name__ == "__main__":

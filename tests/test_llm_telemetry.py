@@ -211,10 +211,10 @@ def test_nested_context_compaction_budget_exhaustion_propagates(tmp_path) -> Non
             patch.object(
                 json_response,
                 "_compact_messages_after_context_rejection",
-                side_effect=LLMBudgetExceededError(1, 1),
+                side_effect=ValueError("required prompt exceeds budget"),
             ),
         ):
-            with pytest.raises(LLMBudgetExceededError):
+            with pytest.raises(ValueError, match="required prompt exceeds budget"):
                 json_response.request_llm_json(
                     [{"role": "user", "content": "x" * 5000}],
                     base_url="http://llama.test",
@@ -225,6 +225,42 @@ def test_nested_context_compaction_budget_exhaustion_propagates(tmp_path) -> Non
     assert db.execute(
         "SELECT status FROM trace.llm_logical_calls WHERE session_id = 'S-COMPACT'"
     ).fetchall() == [("failed",)]
+
+
+def test_required_prompt_budget_error_closes_owned_logical_call(tmp_path) -> None:
+    from forensia.llm import json_response
+
+    case = Case.init(tmp_path)
+    db = CaseDB(case)
+    tel = LLMTelemetry(db, session_id="S-PROMPT-BUDGET", max_logical_calls=1)
+    set_active_telemetry(tel)
+    messages = [{"role": "user", "content": "required evidence and policy"}]
+    try:
+        with (
+            patch.object(
+                json_response,
+                "get_llm_settings",
+                return_value={"max_tokens": 1},
+            ),
+            patch(
+                "forensia.context.prompt_context.get_prompt_budget_tokens",
+                return_value=1,
+            ),
+        ):
+            with pytest.raises(ValueError, match="above the configured 1-token budget"):
+                json_response.request_llm_json(
+                    messages,
+                    base_url="http://llama.test",
+                    model="m",
+                )
+    finally:
+        set_active_telemetry(None)
+
+    assert messages[0]["content"] == "required evidence and policy"
+    assert db.execute(
+        "SELECT status FROM trace.llm_logical_calls WHERE session_id = 'S-PROMPT-BUDGET'"
+    ).fetchall() == [("failed",)]
+    assert tel.session_aggregates()["provider_attempt_count"] == 0
 
 
 def test_usage_aggregates_keep_actual_estimated_and_unknown_separate(telemetry) -> None:
@@ -277,6 +313,8 @@ def test_client_creates_attempt_receipts_for_retry_then_success(
 ) -> None:
     from unittest.mock import patch
 
+    from forensia.context.prompt_context import PromptMessages
+
     case = Case.init(tmp_path)
     db = CaseDB(case)
     tel = LLMTelemetry(db, session_id="S-2")
@@ -314,7 +352,9 @@ def test_client_creates_attempt_receipts_for_retry_then_success(
         )
 
     fake = _FakeClient()
+    messages = PromptMessages([{"role": "user", "content": "go"}], ["ret-1"])
     with (
+        patch.object(tel, "begin_attempt", wraps=tel.begin_attempt) as begin_attempt,
         patch.object(llm_client, "_get_http_client", return_value=fake),
         patch.object(
             llm_client, "get_settings", return_value=SimpleNamespace(llm_api_key="tok")
@@ -322,7 +362,7 @@ def test_client_creates_attempt_receipts_for_retry_then_success(
         patch.object(llm_client.time, "sleep"),
     ):
         result = llm_client.chat_completion(
-            [{"role": "user", "content": "go"}],
+            messages,
             model="m",
             base_url="http://llama.test",
         )
@@ -330,7 +370,7 @@ def test_client_creates_attempt_receipts_for_retry_then_success(
     set_active_telemetry(None)
 
     rows = db.execute(
-        "SELECT status, http_status, retry_ordinal, request_body, response_body "
+        "SELECT status, http_status, retry_ordinal, request_body, response_body, prompt_metadata "
         "FROM trace.llm_provider_attempts ORDER BY retry_ordinal"
     ).fetchall()
     # one failed 500 attempt + one success attempt
@@ -339,7 +379,115 @@ def test_client_creates_attempt_receipts_for_retry_then_success(
     assert json.loads(rows[0][3])["messages"] == [{"role": "user", "content": "go"}]
     assert rows[0][4] == "boom"
     assert json.loads(rows[1][4])["choices"][0]["message"]["content"] == '{"ok": true}'
+    assert begin_attempt.call_args_list[0].kwargs["prompt_metadata"][
+        "retrieval_event_ids"
+    ] == ["ret-1"]
+    assert json.loads(rows[0][5])["retrieval_event_ids"] == ["ret-1"]
+    assert json.loads(rows[1][5])["retrieval_event_ids"] == ["ret-1"]
     assert tel.session_aggregates()["logical_call_count"] == 1
+
+
+def test_context_rejection_attempt_metadata_explains_optional_block_omissions(
+    tmp_path,
+) -> None:
+    from unittest.mock import patch
+
+    from forensia.context.prompt_context import PromptMessages
+    from forensia.llm.json_response import request_llm_json
+
+    case = Case.init(tmp_path)
+    db = CaseDB(case)
+    tel = LLMTelemetry(db, session_id="S-CONTEXT-COMPACTION")
+    set_active_telemetry(tel)
+
+    class _FakeClient:
+        calls = 0
+
+        def post(self, url, json, headers):
+            self.calls += 1
+            req = httpx.Request("POST", url)
+            if self.calls == 1:
+                return httpx.Response(400, text="context length exceeded", request=req)
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {
+                            "message": {"content": '{"ok": true}'},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 2},
+                },
+                request=req,
+            )
+
+    settings = {
+        "llm_context_window_tokens": None,
+        "max_tokens": 100,
+        "temperature": 0,
+        "reasoning_reserve_tokens": 0,
+    }
+    messages = PromptMessages(
+        [
+            {
+                "role": "system",
+                "content": "<TASK>" + ("required " * 40) + "</TASK>\n"
+                "<ORG_KNOWLEDGE>" + ("optional " * 100) + "</ORG_KNOWLEDGE>\n"
+                "<TEMPLATE_CONTEXT>" + ("template " * 20) + "</TEMPLATE_CONTEXT>",
+            }
+        ],
+        ["retrieval-1"],
+    )
+    fake = _FakeClient()
+    try:
+        with (
+            patch.object(llm_client, "_get_http_client", return_value=fake),
+            patch.object(llm_client, "get_llm_settings", return_value=settings),
+            patch.object(
+                llm_client,
+                "get_settings",
+                return_value=SimpleNamespace(llm_api_key="tok"),
+            ),
+            patch(
+                "forensia.context.prompt_context.get_llm_settings",
+                return_value=settings,
+            ),
+            patch(
+                "forensia.context.prompt_context.get_prompt_budget_tokens",
+                return_value=200,
+            ),
+        ):
+            assert request_llm_json(
+                messages,
+                base_url="http://llama.test",
+                model="m",
+            ) == {"ok": True}
+    finally:
+        set_active_telemetry(None)
+
+    rows = db.execute(
+        "SELECT status, prompt_metadata FROM trace.llm_provider_attempts "
+        "WHERE session_id = 'S-CONTEXT-COMPACTION' ORDER BY start_time"
+    ).fetchall()
+    assert len(rows) == 2
+    assert rows[0][0] == "provider_error"
+    assert rows[1][0] == "success"
+    assert json.loads(rows[0][1])["omitted_optional_blocks"] == [
+        {"name": "ORG_KNOWLEDGE", "count": 1, "reason": "input_budget"}
+    ]
+    assert json.loads(rows[1][1])["omitted_optional_blocks"] == [
+        {
+            "name": "ORG_KNOWLEDGE",
+            "count": 1,
+            "reason": "provider_context_rejection",
+        },
+        {
+            "name": "TEMPLATE_CONTEXT",
+            "count": 1,
+            "reason": "provider_context_rejection",
+        },
+    ]
 
 
 def test_client_creates_timeout_attempt_receipt(tmp_path, monkeypatch) -> None:

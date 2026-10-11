@@ -5,7 +5,12 @@ import json
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
 from forensia.investigation import intervention
-from forensia.investigation.case_policy import load_recorded_policy
+from forensia.investigation.case_policy import (
+    CasePolicyInput,
+    decide_policy,
+    load_recorded_policy,
+    update_policy_sections,
+)
 
 
 def test_policy_intervention_updates_objective_and_records_receipt(
@@ -16,7 +21,13 @@ def test_policy_intervention_updates_objective_and_records_receipt(
     monkeypatch.setattr(
         intervention,
         "request_llm_json",
-        lambda *_args, **_kwargs: {"action": "update_policy", "policy_body": policy},
+        lambda *_args, **_kwargs: {
+            "action": "update_policy",
+            "policy_updates": {
+                "objective": "Determine whether Alice accessed the host.",
+                "guidance": "Prioritize logon evidence.",
+            },
+        },
     )
 
     with CaseDB(case) as db:
@@ -28,14 +39,14 @@ def test_policy_intervention_updates_objective_and_records_receipt(
             model="test-model",
         )
         assert result["status"] == "applied"
-        assert result["new_policy"] == policy
+        assert result["new_policy"].strip() == policy
         assert (
             db.execute(
                 "SELECT objective FROM investigation_state WHERE state_id = 'case'"
             ).fetchone()[0]
             == "Determine whether Alice accessed the host."
         )
-        assert load_recorded_policy(db)["body"] == policy
+        assert load_recorded_policy(db)["body"].strip() == policy
         trace = db.execute(
             "SELECT input_json FROM trace.investigation_steps WHERE phase = ?",
             ["human-intervention"],
@@ -47,11 +58,13 @@ def test_policy_intervention_uses_same_half_prompt_budget_as_file_adoption(
     tmp_path, monkeypatch
 ):
     case = Case.init(tmp_path / "case")
-    policy = "# Objective\n\n" + ("x" * 60)
     monkeypatch.setattr(
         intervention,
         "request_llm_json",
-        lambda *_args, **_kwargs: {"action": "update_policy", "policy_body": policy},
+        lambda *_args, **_kwargs: {
+            "action": "update_policy",
+            "policy_updates": {"objective": "x" * 60},
+        },
     )
     monkeypatch.setattr(
         "forensia.investigation.case_policy.get_system_prompt_budget_chars",
@@ -69,6 +82,47 @@ def test_policy_intervention_uses_same_half_prompt_budget_as_file_adoption(
         assert result["status"] == "rejected"
         assert "budget allows 50 chars" in result["reason"]
         assert load_recorded_policy(db) is None
+
+
+def test_policy_intervention_preserves_unedited_tail(tmp_path, monkeypatch):
+    case = Case.init(tmp_path / "case")
+    tail = "# Guidance\n\n" + "Retain original directions. " * 260
+    tail += "\n\n# Constraints\n\nNever investigate excluded-host.\n"
+    original = "# Objective\n\nInvestigate the acquired artifacts.\n\n" + tail
+    assert len(original) > 6000
+    sent = []
+
+    def proposal(messages, **_kwargs):
+        sent.extend(messages)
+        return {
+            "action": "update_policy",
+            "policy_updates": {"priority": "Prioritize host-A."},
+        }
+
+    monkeypatch.setattr(intervention, "request_llm_json", proposal)
+    with CaseDB(case) as db:
+        receipt = decide_policy(
+            CasePolicyInput(original, "explicit_path", "operator.md"), None
+        ).record
+        db.execute(
+            "INSERT INTO trace.investigation_steps "
+            "(step_id, session_id, iteration, phase, output_json, created_at) "
+            "VALUES ('policy-initial', 'initial', 0, 'forensia-md', ?, now())",
+            [json.dumps(receipt)],
+        )
+        result = intervention.apply_intervention(
+            case, db, "Prioritize host-A.", base_url="http://local.test", model="test"
+        )
+        adopted = load_recorded_policy(db)
+    assert result["status"] == "applied"
+    assert adopted["body"].startswith(original)
+    assert adopted["body"].count("Never investigate excluded-host.") == 1
+    assert json.loads(sent[1]["content"])["case_context"]["current_policy"] == original
+    assert result["previous_policy_sha256"] == receipt["content_sha256"]
+    assert result["updated_sections"] == ["priority"]
+    nested = "# Objective\n\nOld objective.\n\n## Constraints\n\nPreserve this.\n"
+    updated = update_policy_sections(nested, {"objective": "New objective."})
+    assert updated.endswith("## Constraints\n\nPreserve this.\n")
 
 
 def test_work_intervention_uses_existing_gap_admission(tmp_path, monkeypatch):

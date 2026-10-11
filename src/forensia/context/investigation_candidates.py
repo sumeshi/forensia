@@ -21,48 +21,37 @@ def _projection_sql(*, include_members: bool = False) -> str:
           FROM findings f, json_each(f.evidence) j
          WHERE COALESCE(f.status, 'accepted') != 'suppressed'
     ),
-    raw_matches AS (
-        SELECT f.finding_id, f.rule_id, f.title, f.summary, f.severity,
-               f.confidence, f.status, e.evidence_id, 'evtx' AS source_family,
-               e.source_file, e.computer AS host, e.timestamp, e.target_user,
-               e.src_ip, e.dst_ip, e.file_path, e.process_name, e.object_dn,
-               e.event_id, sha256(CAST(to_json(e) AS VARCHAR)) AS content_hash
-          FROM finding_refs f JOIN evtx_events e ON e.evidence_id = f.evidence_id
-        UNION ALL
-        SELECT f.finding_id, f.rule_id, f.title, f.summary, f.severity,
-               f.confidence, f.status, e.evidence_id, 'mft' AS source_family,
-               e.source_file, NULL AS host,
-               COALESCE(e.si_modified, e.fn_modified, e.si_created, e.fn_created) AS timestamp,
-               NULL AS target_user, NULL AS src_ip, NULL AS dst_ip, e.file_path,
-               NULL AS process_name, NULL AS object_dn, NULL AS event_id,
+    matched_evidence_ids AS MATERIALIZED (
+        SELECT DISTINCT evidence_id FROM finding_refs
+    ),
+    evidence_material AS MATERIALIZED (
+        SELECT e.evidence_id, 'evtx' AS source_family, e.source_file,
+               e.computer AS host, e.timestamp, e.target_user, e.src_ip, e.dst_ip,
+               e.file_path, e.process_name, e.object_dn, e.event_id,
                sha256(CAST(to_json(e) AS VARCHAR)) AS content_hash
-          FROM finding_refs f JOIN mft_entries e ON e.evidence_id = f.evidence_id
+          FROM evtx_events e JOIN matched_evidence_ids m USING (evidence_id)
         UNION ALL
-        SELECT f.finding_id, f.rule_id, f.title, f.summary, f.severity,
-               f.confidence, f.status, e.evidence_id, 'prefetch' AS source_family,
-               e.source_file, NULL AS host, e.last_exec_time AS timestamp,
-               NULL AS target_user, NULL AS src_ip, NULL AS dst_ip, NULL AS file_path,
-               e.executable_name AS process_name, NULL AS object_dn, NULL AS event_id,
-               sha256(CAST(to_json(e) AS VARCHAR)) AS content_hash
-          FROM finding_refs f JOIN prefetch_executions e ON e.evidence_id = f.evidence_id
+        SELECT e.evidence_id, 'mft', e.source_file, NULL,
+               COALESCE(e.si_modified, e.fn_modified, e.si_created, e.fn_created),
+               NULL, NULL, NULL, e.file_path, NULL, NULL, NULL,
+               sha256(CAST(to_json(e) AS VARCHAR))
+          FROM mft_entries e JOIN matched_evidence_ids m USING (evidence_id)
         UNION ALL
-        SELECT f.finding_id, f.rule_id, f.title, f.summary, f.severity,
-               f.confidence, f.status, e.evidence_id, 'prefetch' AS source_family,
-               e.source_file, NULL AS host, e.exec_time AS timestamp,
-               NULL AS target_user, NULL AS src_ip, NULL AS dst_ip, NULL AS file_path,
-               e.executable_name AS process_name, NULL AS object_dn, NULL AS event_id,
-               sha256(CAST(to_json(e) AS VARCHAR)) AS content_hash
-          FROM finding_refs f JOIN prefetch_timeline e ON e.evidence_id = f.evidence_id
+        SELECT e.evidence_id, 'prefetch', e.source_file, NULL, e.last_exec_time,
+               NULL, NULL, NULL, NULL, e.executable_name, NULL, NULL,
+               sha256(CAST(to_json(e) AS VARCHAR))
+          FROM prefetch_executions e JOIN matched_evidence_ids m USING (evidence_id)
+        UNION ALL
+        SELECT e.evidence_id, 'prefetch', e.source_file, NULL, e.exec_time,
+               NULL, NULL, NULL, NULL, e.executable_name, NULL, NULL,
+               sha256(CAST(to_json(e) AS VARCHAR))
+          FROM prefetch_timeline e JOIN matched_evidence_ids m USING (evidence_id)
          WHERE NOT EXISTS (
              SELECT 1 FROM prefetch_executions x WHERE x.evidence_id = e.evidence_id
          )
         UNION ALL
-        SELECT f.finding_id, f.rule_id, f.title, f.summary, f.severity,
-               f.confidence, f.status, e.artifact_id AS evidence_id, 'registry' AS source_family,
-               CAST(e.source_ids AS VARCHAR) AS source_file, NULL AS host,
-               e.timestamp, NULL AS target_user, NULL AS src_ip, NULL AS dst_ip,
-               e.key_path AS file_path, NULL AS process_name, e.key_path AS object_dn,
-               NULL AS event_id,
+        SELECT e.artifact_id, 'registry', CAST(e.source_ids AS VARCHAR), NULL,
+               e.timestamp, NULL, NULL, NULL, e.key_path, NULL, e.key_path, NULL,
                sha256(CAST(to_json(struct_pack(
                    artifact_id := e.artifact_id,
                    dataset_id := e.dataset_id,
@@ -74,8 +63,14 @@ def _projection_sql(*, include_members: bool = False) -> str:
                    "timestamp" := e.timestamp,
                    timestamp_kind := e.timestamp_kind,
                    raw_json := e.raw_json
-               )) AS VARCHAR)) AS content_hash
-          FROM finding_refs f JOIN registry_artifacts e ON e.artifact_id = f.evidence_id
+               )) AS VARCHAR))
+          FROM registry_artifacts e JOIN matched_evidence_ids m
+            ON m.evidence_id = e.artifact_id
+    ),
+    raw_matches AS (
+        SELECT f.finding_id, f.rule_id, f.title, f.summary, f.severity,
+               f.confidence, f.status, e.*
+          FROM finding_refs f JOIN evidence_material e USING (evidence_id)
     ),
     evidence_matches AS (
         SELECT evidence_id,
@@ -220,7 +215,9 @@ def build_investigation_candidates(
     excluded = set(excluded_fingerprints)
     selected: list[dict[str, Any]] = []
     filtered_count = eligible_count = 0
+    eligibility_evaluated_count = 0
     population_count = match_count = evidence_count_total = 0
+    eligibility_complete = True
     while raw_row := result.fetchone():
         row = dict(zip(columns, raw_row, strict=False))
         for key in ("rule_ids", "representative_ids"):
@@ -233,6 +230,10 @@ def build_investigation_candidates(
         population_count = int(row["candidate_population_count"])
         match_count = int(row["match_population_count"])
         evidence_count_total = int(row["evidence_population_count"])
+        if limit <= 0:
+            eligibility_complete = population_count == 0
+            break
+        eligibility_evaluated_count += 1
         candidate_ref = (
             "cand-"
             + hashlib.sha256(
@@ -304,6 +305,9 @@ def build_investigation_candidates(
         eligible_count += 1
         if len(selected) < max(0, limit):
             selected.append(candidate)
+        if len(selected) >= limit:
+            eligibility_complete = eligibility_evaluated_count >= population_count
+            break
     selected_ids = list(
         dict.fromkeys(
             str(evidence_id)
@@ -341,8 +345,12 @@ def build_investigation_candidates(
             "match_count": match_count,
             "distinct_evidence_count": evidence_count_total,
             "candidate_count": population_count,
-            "eligible_candidate_count": eligible_count,
+            "eligible_candidate_count": (
+                eligible_count if eligibility_complete else None
+            ),
             "excluded_count": filtered_count,
+            "eligibility_evaluated_count": eligibility_evaluated_count,
+            "eligibility_complete": eligibility_complete,
             "presented_count": len(selected),
             "unpresented_count": max(0, population_count - len(selected)),
         },

@@ -61,6 +61,7 @@ EVALUABLE_CONDITION_KEYS: frozenset[str] = frozenset(
         "same_entities",
         "min_count",
         "event_constraints",
+        "observation",
     }
 )
 

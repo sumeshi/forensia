@@ -5,30 +5,36 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from forensia.core.case import Case
 from forensia.core.session import Hypothesis
 from forensia.db.database import CaseDB
-from forensia.investigation.verification.assessment import assess_evidence_group
+from forensia.evidence.links import (
+    EvidenceLink,
+    evidence_link_currentness,
+    load_evidence_links,
+)
+from forensia.investigation.verification.assessment import (
+    _observation_value_matches,
+    assess_evidence_group,
+)
 from forensia.investigation.verification.settlement import (
     build_settlement_input_from_confirm_when,
     decide_settlement,
 )
 from forensia.investigation.verification.sufficiency import (
-    EvidenceLink,
     SufficiencyResult,
     assess_and_persist_sufficiency,
     create_evidence_links_for_query,
     create_hypothesis_evidence_link,
     evaluate_sufficiency,
-    evidence_link_currentness,
-    load_evidence_links,
     load_unlinkable_observations_for_session,
     reconcile_verdicts,
     record_unlinkable_observation,
-    update_claim_support_for_hypothesis,
 )
+from forensia.knowledge.coverage import canonical_observation_claim
 
 
 class SufficiencyEvaluationTests(unittest.TestCase):
@@ -254,7 +260,7 @@ class SufficiencyEvaluationTests(unittest.TestCase):
             evidence_ids=["evtx-1"],
         )
         self.assertEqual(first.role, "supporting")
-        self.assertTrue(first.assessment_id.startswith("EA-v1-"))
+        self.assertTrue(first.assessment_id.startswith("EA-v2-"))
         second = assess_evidence_group(
             hypothesis=Hypothesis(
                 id="H-HASH",
@@ -265,6 +271,268 @@ class SufficiencyEvaluationTests(unittest.TestCase):
             evidence_ids=["evtx-1"],
         )
         self.assertNotEqual(first.assessment_id, second.assessment_id)
+
+    def test_assessment_identity_tracks_canonical_content_changes(self) -> None:
+        hypothesis = Hypothesis(
+            id="H-CONTENT-HASH",
+            description="same",
+            confirm_when={"co_observed_event_ids": [4624]},
+        )
+        kwargs = {
+            "hypothesis": hypothesis,
+            "rows": [{"evidence_id": "evtx-1", "event_id": 4624}],
+            "evidence_ids": ["evtx-1"],
+        }
+        first = assess_evidence_group(
+            **kwargs, content_fingerprints={"evtx-1": "cf-content-a"}
+        )
+        changed = assess_evidence_group(
+            **kwargs, content_fingerprints={"evtx-1": "cf-content-b"}
+        )
+
+        self.assertNotEqual(first.assessment_id, changed.assessment_id)
+        self.assertEqual(first.content_fingerprints, (("evtx-1", "cf-content-a"),))
+
+    def test_assessment_links_only_condition_witness_rows(self) -> None:
+        hypothesis = Hypothesis(
+            id="H-WITNESS",
+            description="A successful logon was observed",
+            confirm_when={"co_observed_event_ids": [4624]},
+        )
+        rows = [
+            {"evidence_id": f"evtx-{index:02d}", "event_id": 4625}
+            for index in range(10)
+        ] + [{"evidence_id": "evtx-witness", "event_id": 4624}]
+        first = assess_evidence_group(
+            hypothesis=hypothesis,
+            rows=rows,
+            evidence_ids=[row["evidence_id"] for row in rows],
+        )
+        reordered = assess_evidence_group(
+            hypothesis=hypothesis,
+            rows=list(reversed(rows)),
+            evidence_ids=[row["evidence_id"] for row in reversed(rows)],
+        )
+
+        self.assertEqual(first.role, "supporting")
+        self.assertEqual(first.witness_groups, (("evtx-witness",),))
+        self.assertEqual(
+            set(first.contextual_evidence_ids),
+            {f"evtx-{index:02d}" for index in range(10)},
+        )
+        self.assertEqual(first.assessment_id, reordered.assessment_id)
+        self.assertEqual(first.witness_groups, reordered.witness_groups)
+
+    def test_correlated_witness_selection_is_stable_across_row_order(self) -> None:
+        base = datetime(2025, 1, 1, tzinfo=UTC)
+        context = {
+            "event_id": 4104,
+            "channel": "Microsoft-Windows-PowerShell/Operational",
+            "provider": "Microsoft-Windows-PowerShell",
+        }
+        rows = [
+            {
+                **context,
+                "evidence_id": "evtx-host-z-1",
+                "computer": "host-z",
+                "timestamp": base.isoformat(),
+            },
+            {
+                **context,
+                "evidence_id": "evtx-host-z-2",
+                "computer": "host-z",
+                "timestamp": (base + timedelta(minutes=1)).isoformat(),
+            },
+            {
+                **context,
+                "evidence_id": "evtx-host-a-first-1",
+                "computer": "host-a",
+                "timestamp": (base + timedelta(hours=2)).isoformat(),
+            },
+            {
+                **context,
+                "evidence_id": "evtx-host-a-first-2",
+                "computer": "host-a",
+                "timestamp": (base + timedelta(hours=2, minutes=1)).isoformat(),
+            },
+            {
+                **context,
+                "evidence_id": "evtx-host-a-later-1",
+                "computer": "host-a",
+                "timestamp": (base + timedelta(hours=3)).isoformat(),
+            },
+            {
+                **context,
+                "evidence_id": "evtx-host-a-later-2",
+                "computer": "host-a",
+                "timestamp": (base + timedelta(hours=3, minutes=1)).isoformat(),
+            },
+        ]
+        hypothesis = Hypothesis(
+            id="H-CORRELATED",
+            description="Repeated PowerShell script block activity was observed",
+            confirm_when={
+                "co_observed_event_ids": [4104],
+                "event_contexts": [
+                    {
+                        "event_id": 4104,
+                        "channel": context["channel"],
+                        "provider": context["provider"],
+                    }
+                ],
+                "same_host": True,
+                "within_minutes": 5,
+                "min_count": 2,
+            },
+        )
+        first = assess_evidence_group(
+            hypothesis=hypothesis,
+            rows=rows,
+            evidence_ids=[row["evidence_id"] for row in rows],
+        )
+        reversed_rows = list(reversed(rows))
+        reordered = assess_evidence_group(
+            hypothesis=hypothesis,
+            rows=reversed_rows,
+            evidence_ids=[row["evidence_id"] for row in reversed_rows],
+        )
+
+        expected = ("evtx-host-a-first-1", "evtx-host-a-first-2")
+        self.assertEqual(first.role, "supporting")
+        self.assertEqual(first.witness_groups, (expected,))
+        self.assertEqual(reordered.witness_groups, first.witness_groups)
+        self.assertEqual(reordered.assessment_id, first.assessment_id)
+        self.assertEqual(
+            set(first.contextual_evidence_ids),
+            {row["evidence_id"] for row in rows} - set(expected),
+        )
+
+    def test_non_evtx_observation_condition_is_typed_and_family_scoped(self) -> None:
+        hypothesis = Hypothesis(
+            id="H-PREFETCH",
+            description="PowerShell execution appears in Prefetch",
+            confirm_when={
+                "observation": {
+                    "family": "prefetch",
+                    "capability": "process_execution",
+                    "field": "executable_name",
+                    "operator": "equals",
+                    "value": "POWERSHELL.EXE",
+                }
+            },
+        )
+        rows = [
+            {
+                "evidence_id": "prefetch-match",
+                "source_family": "prefetch",
+                "executable_name": "powershell.exe",
+            },
+            {
+                "evidence_id": "mft-other",
+                "source_family": "mft",
+                "executable_name": "powershell.exe",
+            },
+        ]
+        assessment = assess_evidence_group(
+            hypothesis=hypothesis,
+            rows=rows,
+            evidence_ids=[row["evidence_id"] for row in rows],
+        )
+
+        self.assertEqual(assessment.role, "supporting")
+        self.assertEqual(assessment.witness_groups, (("prefetch-match",),))
+        self.assertEqual(assessment.contextual_evidence_ids, ("mft-other",))
+
+        typed_cases = (
+            (
+                "mft",
+                "file_activity",
+                "size",
+                "greater_than",
+                100,
+                {"size": 101},
+            ),
+            (
+                "mft",
+                "file_activity",
+                "is_deleted",
+                "equals",
+                True,
+                {"is_deleted": True},
+            ),
+            (
+                "registry",
+                "registry_observation",
+                "key_path",
+                "contains",
+                "Run",
+                {"key_path": r"HKLM\Software\Run"},
+            ),
+            (
+                "prefetch",
+                "process_execution",
+                "exec_times",
+                "contains",
+                "2015-03-25 14:00:00",
+                {"exec_times": ["2015-03-25 14:00:00", "2015-03-25 14:30:00"]},
+            ),
+        )
+        for index, (family, capability, field, operator, value, observed) in enumerate(
+            typed_cases, start=1
+        ):
+            with self.subTest(family=family):
+                scoped = assess_evidence_group(
+                    hypothesis=Hypothesis(
+                        id=f"H-{family.upper()}-OBSERVATION",
+                        description=f"{family} {field} observation",
+                        confirm_when={
+                            "observation": {
+                                "family": family,
+                                "capability": capability,
+                                "field": field,
+                                "operator": operator,
+                                "value": value,
+                            }
+                        },
+                    ),
+                    rows=[
+                        {
+                            "evidence_id": f"{family}-{index}",
+                            "source_family": family,
+                            **observed,
+                        }
+                    ],
+                    evidence_ids=[f"{family}-{index}"],
+                )
+                self.assertEqual("supporting", scoped.role)
+
+        two_matches = Hypothesis(
+            id="H-PREFETCH-MIN-COUNT",
+            description="two Prefetch observations match the executable name",
+            confirm_when={
+                **hypothesis.verification_spec.support_conditions,
+                "min_count": 2,
+            },
+        )
+        duplicate_rows = [rows[0], {**rows[0]}]
+        duplicate_assessment = assess_evidence_group(
+            hypothesis=two_matches,
+            rows=duplicate_rows,
+            evidence_ids=["prefetch-match", "prefetch-match"],
+        )
+        self.assertEqual("contextual", duplicate_assessment.role)
+        self.assertIn("distinct canonical evidence IDs", duplicate_assessment.reason)
+        distinct_rows = [rows[0], {**rows[0], "evidence_id": "prefetch-match-2"}]
+        distinct_assessment = assess_evidence_group(
+            hypothesis=two_matches,
+            rows=distinct_rows,
+            evidence_ids=[row["evidence_id"] for row in distinct_rows],
+        )
+        self.assertEqual("supporting", distinct_assessment.role)
+        self.assertEqual(
+            {"prefetch-match", "prefetch-match-2"},
+            set(distinct_assessment.evidence_ids),
+        )
 
     def test_assessment_fails_closed_for_unproven_observations(self) -> None:
         cases = [
@@ -324,6 +592,258 @@ class SufficiencyEvaluationTests(unittest.TestCase):
                     retrieval_outcome=outcome,
                 )
                 self.assertNotIn(assessment.role, {"supporting", "contradictory"})
+
+    def test_assessment_rejects_invalid_typed_observation_conditions(self) -> None:
+        observation = {
+            "family": "registry",
+            "capability": "registry_observation",
+            "field": "key_path",
+            "operator": "contains",
+            "value": "RunKey",
+        }
+        cases = (
+            (
+                {"observation": {**observation, "family": "evtx"}},
+                "observation-family-unsupported",
+            ),
+            (
+                {"observation": observation, "co_observed_event_ids": [4624]},
+                "mixed-verification-condition-kinds",
+            ),
+            (
+                {"observation": {**observation, "value": "  "}},
+                "observation-value-invalid",
+            ),
+        )
+        for conditions, reason in cases:
+            with self.subTest(conditions=conditions):
+                assessment = assess_evidence_group(
+                    hypothesis=Hypothesis(
+                        id="H-INVALID-OBSERVATION",
+                        description="Registry observation",
+                        confirm_when=conditions,
+                    ),
+                    rows=[
+                        {
+                            "evidence_id": "registry-1",
+                            "source_family": "registry",
+                            "key_path": r"HKLM\Software\Run",
+                        }
+                    ],
+                    evidence_ids=["registry-1"],
+                )
+                self.assertNotEqual(assessment.role, "supporting")
+                self.assertIn(reason, assessment.reason)
+
+    def test_greater_than_observations_fail_closed_on_uncomparable_values(self) -> None:
+        observation = {
+            "family": "registry",
+            "capability": "registry_observation",
+            "field": "key_path",
+            "operator": "greater_than",
+            "value": "2025-01-01T00:00:00+00:00",
+        }
+        for index, value in enumerate(
+            (10**1000, True, float("inf"), "2025-01-02T00:00:00"), start=1
+        ):
+            with self.subTest(value_type=type(value).__name__):
+                assessment = assess_evidence_group(
+                    hypothesis=Hypothesis(
+                        id=f"H-GREATER-THAN-{index}",
+                        description="Registry observation",
+                        confirm_when={"observation": observation},
+                    ),
+                    rows=[
+                        {
+                            "evidence_id": "registry-1",
+                            "source_family": "registry",
+                            "key_path": value,
+                        }
+                    ],
+                    evidence_ids=["registry-1"],
+                )
+                self.assertEqual("contextual", assessment.role)
+
+    def test_numeric_observations_preserve_precision_and_reject_nonfinite(self) -> None:
+        cases = (
+            ("equals", 2**53, 2**53 + 1, "contextual"),
+            ("greater_than", 2**53 + 1, 2**53, "supporting"),
+            ("greater_than", 10**400, 10**399, "supporting"),
+            ("greater_than", float("inf"), 1, "contextual"),
+            ("greater_than", float("nan"), 1, "contextual"),
+            ("greater_than", True, 0, "contextual"),
+            ("equals", True, "true", "contextual"),
+            ("equals", float("inf"), "Infinity", "contextual"),
+        )
+        for index, (operator, actual, expected, role) in enumerate(cases, start=1):
+            with self.subTest(operator=operator, actual=actual, expected=expected):
+                assessment = assess_evidence_group(
+                    hypothesis=Hypothesis(
+                        id=f"H-NUMERIC-OBSERVATION-{index}",
+                        description="Numeric observation",
+                        confirm_when={
+                            "observation": {
+                                "family": "mft",
+                                "capability": "file_activity",
+                                "field": "size",
+                                "operator": operator,
+                                "value": expected,
+                            }
+                        },
+                    ),
+                    rows=[
+                        {
+                            "evidence_id": "mft-numeric",
+                            "source_family": "mft",
+                            "size": actual,
+                        }
+                    ],
+                    evidence_ids=["mft-numeric"],
+                )
+                self.assertEqual(role, assessment.role)
+        self.assertFalse(_observation_value_matches(True, "equals", "true"))
+        self.assertTrue(_observation_value_matches(True, "equals", True))
+        self.assertTrue(_observation_value_matches(False, "equals", False))
+        self.assertFalse(_observation_value_matches(True, "equals", 1))
+        self.assertFalse(_observation_value_matches(1, "equals", True))
+        self.assertFalse(_observation_value_matches(True, "contains", True))
+        self.assertFalse(_observation_value_matches("Infinity", "equals", "Infinity"))
+        self.assertFalse(_observation_value_matches(float("inf"), "equals", "Infinity"))
+
+    def test_typed_observation_claim_scope_gates_settlement(self) -> None:
+        condition = {
+            "observation": {
+                "family": "prefetch",
+                "capability": "process_execution",
+                "field": "executable_name",
+                "operator": "equals",
+                "value": "ERASER.EXE",
+            }
+        }
+        canonical_hypothesis = Hypothesis(
+            id="H-OBSERVATION-SCOPE",
+            description="placeholder",
+            confirm_when=condition,
+        )
+        canonical_claim = canonical_observation_claim(
+            canonical_hypothesis.verification_spec
+        )
+        self.assertIsNotNone(canonical_claim)
+        self.assertEqual(
+            'At least 2 prefetch observations have executable_name equals "ERASER.EXE".',
+            canonical_observation_claim(
+                {
+                    "support_conditions": {**condition, "min_count": 2},
+                }
+            ),
+        )
+        boolean_condition = {
+            "support_conditions": {
+                "observation": {
+                    "family": "mft",
+                    "capability": "file_activity",
+                    "field": "is_deleted",
+                    "operator": "equals",
+                    "value": True,
+                }
+            }
+        }
+        self.assertEqual(
+            "At least 1 mft observation has is_deleted equals true.",
+            canonical_observation_claim(boolean_condition),
+        )
+        self.assertIsNone(
+            canonical_observation_claim(
+                {
+                    "support_conditions": {
+                        "observation": {
+                            **boolean_condition["support_conditions"]["observation"],
+                            "value": "true",
+                        }
+                    }
+                }
+            )
+        )
+
+        rows = [
+            {
+                "evidence_id": "prefetch-eraser",
+                "source_family": "prefetch",
+                "executable_name": "ERASER.EXE",
+            }
+        ]
+        sufficiency = SufficiencyResult(
+            status="sufficient",
+            score=1.0,
+            reasons=[],
+            independent_groups=1,
+            families=["prefetch"],
+            contradictory_groups=0,
+            missing_requirements=[],
+            human_review_required=False,
+        )
+
+        def settle(description: str, verdict: str, role: str = "supporting"):
+            hypothesis = Hypothesis(
+                id="H-OBSERVATION-SCOPE",
+                description=description,
+                confirm_when=condition,
+            )
+            return decide_settlement(
+                build_settlement_input_from_confirm_when(
+                    hypothesis=hypothesis,
+                    checker_verdict=verdict,
+                    check_summary="typed observation",
+                    sample_rows=rows,
+                    sufficiency_result=sufficiency,
+                ),
+                links=[
+                    EvidenceLink(
+                        link_id="L-OBSERVATION-SCOPE",
+                        hypothesis_id=hypothesis.id,
+                        evidence_id="prefetch-eraser",
+                        finding_id="",
+                        query_id="Q-OBSERVATION-SCOPE",
+                        assessment_id="EA-OBSERVATION-SCOPE",
+                        role=role,
+                        source_family="prefetch",
+                        source_file="eraser.pf",
+                        derivation_group="prefetch-eraser",
+                        strength="strong",
+                    )
+                ],
+                coverage={},
+            )
+
+        broad_confirmation = settle(
+            "ERASER.EXE destroyed confidential files", "confirmed"
+        )
+        self.assertEqual("inconclusive", broad_confirmation.verdict)
+        self.assertIn("scope unproven", broad_confirmation.reason)
+
+        exact_confirmation = settle(canonical_claim or "", "confirmed")
+        self.assertEqual("confirmed", exact_confirmation.verdict)
+        self.assertTrue(exact_confirmation.allowed)
+
+        refutation = settle(canonical_claim or "", "refuted", role="contradictory")
+        self.assertEqual("inconclusive", refutation.verdict)
+        self.assertIn("does not establish", refutation.reason)
+
+    def test_observation_without_canonical_row_id_cannot_become_a_witness(self) -> None:
+        assessment = assess_evidence_group(
+            hypothesis=Hypothesis(
+                id="H-UNLINKABLE-WITNESS",
+                description="A successful logon was observed",
+                confirm_when={"co_observed_event_ids": [4624]},
+            ),
+            rows=[{"event_id": 4624}],
+            evidence_ids=["evtx-unlinked"],
+        )
+
+        self.assertEqual("contextual", assessment.role)
+        self.assertEqual((), assessment.evidence_ids)
+        self.assertEqual(("evtx-unlinked",), assessment.contextual_evidence_ids)
+        self.assertIn("no linkable witness ID", assessment.reason)
 
     def test_qualified_event_contexts_reach_supporting(self) -> None:
         """A persisted spec with qualified event_contexts is evaluable.
@@ -697,37 +1217,6 @@ class EvidenceLinkPersistenceTests(unittest.TestCase):
                     [("new", 2)],
                 )
 
-    def test_unobservable_sufficiency_updates_linked_claim(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(tmpdir)
-            with CaseDB(case) as db:
-                db.execute(
-                    "INSERT INTO claims (claim_id, claim_text, hypothesis_ids, "
-                    "support_status) VALUES ('C-1', 'claim', '[\"H-001\"]', 'supported')"
-                )
-                result = SufficiencyResult(
-                    status="unobservable",
-                    score=0.0,
-                    reasons=[],
-                    independent_groups=0,
-                    families=[],
-                    contradictory_groups=0,
-                    missing_requirements=[],
-                    human_review_required=False,
-                )
-                update_claim_support_for_hypothesis(
-                    db,
-                    hypothesis_id="H-001",
-                    result=result,
-                    final_verdict="untestable",
-                )
-                self.assertEqual(
-                    db.execute(
-                        "SELECT support_status FROM claims WHERE claim_id = 'C-1'"
-                    ).fetchone()[0],
-                    "unobservable",
-                )
-
 
 class CurrentLinkTests(unittest.TestCase):
     """T04: historical links must not count as currently-usable support."""
@@ -771,7 +1260,7 @@ class CurrentLinkTests(unittest.TestCase):
             )
             assessment = assess_evidence_group(
                 hypothesis=hypothesis,
-                rows=[{"event_id": 4624}],
+                rows=[{"evidence_id": "evtx-1", "event_id": 4624}],
                 evidence_ids=["evtx-1"],
                 derivation_group="evtx-1",
             )
@@ -989,7 +1478,7 @@ class CurrentLinkTests(unittest.TestCase):
                 )
                 assessment = assess_evidence_group(
                     hypothesis=hypothesis,
-                    rows=[{"event_id": 4624}],
+                    rows=[{"evidence_id": "evtx-1", "event_id": 4624}],
                     evidence_ids=["evtx-1"],
                     derivation_group="evtx-1",
                 )
@@ -1090,7 +1579,9 @@ class CurrentLinkTests(unittest.TestCase):
                         derivation_group="evtx-1",
                     )
 
-                assessment = _assess_under(first_spec, [{"event_id": 4624}])
+                assessment = _assess_under(
+                    first_spec, [{"evidence_id": "evtx-1", "event_id": 4624}]
+                )
                 self.assertEqual(assessment.role, "supporting")
                 create_hypothesis_evidence_link(
                     db,
@@ -1122,7 +1613,14 @@ class CurrentLinkTests(unittest.TestCase):
                     [json.dumps(changed_spec)],
                 )
                 re_assessment = _assess_under(
-                    changed_spec, [{"event_id": 4624, "computer": "host-a"}]
+                    changed_spec,
+                    [
+                        {
+                            "evidence_id": "evtx-1",
+                            "event_id": 4624,
+                            "computer": "host-a",
+                        }
+                    ],
                 )
                 self.assertEqual(re_assessment.role, "supporting")
                 self.assertNotEqual(re_assessment.assessment_id, grounds[0][2])

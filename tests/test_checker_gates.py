@@ -136,6 +136,21 @@ class TestVerifyVerdictConsistency(unittest.TestCase):
                 )
                 assert actual == expected
 
+    def test_duplicate_evidence_id_does_not_satisfy_min_count(self) -> None:
+        hypothesis = _hypothesis(
+            confirm_when={"co_observed_event_ids": [4624], "min_count": 2}
+        )
+        rows = [
+            {"evidence_id": "evtx-one", "event_id": 4624},
+            {"evidence_id": "evtx-one", "event_id": 4624},
+        ]
+
+        actual, _ = verify_verdict_consistency(
+            "confirmed", "", hypothesis, _summary(rows, [4624])
+        )
+
+        assert actual == "inconclusive"
+
     def test_benign_context_only_downgrades_fully_benign_support(self) -> None:
         benign = {"subject_user": "PC-01$", "evidence_id": "ev-1"}
         ordinary = {"subject_user": "administrator", "evidence_id": "ev-2"}

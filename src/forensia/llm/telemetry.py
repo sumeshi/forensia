@@ -2,7 +2,7 @@
 
 This module writes the structured, queryable trajectory. It deliberately does
 NOT create a separate telemetry database:
-all rows live in the existing attached ``trace`` database.
+all rows live in the ``trace`` schema of the authoritative case database.
 
 Three record kinds are kept distinct (GOAL.md §5.1):
 
@@ -15,8 +15,8 @@ Three record kinds are kept distinct (GOAL.md §5.1):
   LLM tokens and must not be counted as LLM work.
 
 Only the host may finalize attempts; callers must always pair
-``begin_attempt``/``finalize_attempt`` (use the ``attempt_span`` context
-manager to guarantee finalization on every exit path).
+``begin_attempt``/``finalize_attempt`` through the transport-owned lifecycle in
+``llm.attempt``.
 """
 
 from __future__ import annotations
@@ -33,6 +33,7 @@ from typing import Any, Literal
 from forensia.config import get_llm_settings
 from forensia.core.session import LLMBudgetExceededError
 from forensia.db.database import CaseDB
+from forensia.db.views import llm_session_aggregates
 
 # Active telemetry for the current run. The investigation session installs an
 # LLMTelemetry instance here so that every LLM call site (including direct
@@ -363,7 +364,7 @@ class LLMTelemetry:
                 retry_reason = ?,
                 policy_decision = ?,
                 request_changed_fields = ?,
-                prompt_metadata = ?,
+                prompt_metadata = COALESCE(?, prompt_metadata),
                 status = ?
             WHERE attempt_id = ?
             """,
@@ -437,129 +438,10 @@ class LLMTelemetry:
 
     # --- aggregate queries (T-12.5) --------------------------------------
     def session_aggregates(self, session_id: str | None = None) -> dict[str, Any]:
-        sid = session_id or self.session_id
-        logical = self.db.execute(
-            "SELECT COUNT(*) FROM trace.llm_logical_calls WHERE session_id = ?", (sid,)
-        ).fetchone()[0]
-        row = self.db.execute(
-            """
-            SELECT
-                COUNT(*),
-                SUM(CASE WHEN error_type IS NOT NULL OR http_status >= 400 THEN 1 ELSE 0 END),
-                SUM(CASE WHEN retry_ordinal > 0 THEN 1 ELSE 0 END),
-                SUM(CASE WHEN duplicate_of IS NOT NULL THEN 1 ELSE 0 END),
-                SUM(CASE WHEN input_tokens_source = 'provider_actual' THEN input_tokens ELSE 0 END),
-                SUM(CASE WHEN output_tokens_source = 'provider_actual' THEN output_tokens ELSE 0 END),
-                SUM(CASE WHEN input_tokens_source = 'local_estimate' THEN input_tokens ELSE 0 END),
-                SUM(CASE WHEN output_tokens_source = 'local_estimate' THEN output_tokens ELSE 0 END),
-                SUM(CASE WHEN input_tokens_source = 'unknown' OR input_tokens IS NULL THEN 1 ELSE 0 END),
-                SUM(CASE WHEN output_tokens_source = 'unknown' OR output_tokens IS NULL THEN 1 ELSE 0 END),
-                SUM(CASE WHEN input_tokens_source = 'provider_actual' THEN 1 ELSE 0 END),
-                SUM(CASE WHEN output_tokens_source = 'provider_actual' THEN 1 ELSE 0 END),
-                SUM(CASE WHEN input_tokens_source = 'local_estimate' THEN 1 ELSE 0 END),
-                SUM(CASE WHEN output_tokens_source = 'local_estimate' THEN 1 ELSE 0 END)
-            FROM trace.llm_provider_attempts WHERE session_id = ?
-            """,
-            (sid,),
-        ).fetchone()
-        det = self.db.execute(
-            "SELECT COUNT(*) FROM trace.llm_deterministic_ops WHERE session_id = ?",
-            (sid,),
-        ).fetchone()[0]
-        return {
-            "session_id": sid,
-            "logical_call_count": logical,
-            "provider_attempt_count": row[0] or 0,
-            "provider_attempt_failures": row[1] or 0,
-            "provider_attempt_retries": row[2] or 0,
-            "duplicate_attempts": row[3] or 0,
-            "actual_input_tokens": row[4] if row[10] else None,
-            "actual_output_tokens": row[5] if row[11] else None,
-            "estimated_input_tokens": row[6] if row[12] else None,
-            "estimated_output_tokens": row[7] if row[13] else None,
-            "unknown_input_usage_attempts": row[8] or 0,
-            "unknown_output_usage_attempts": row[9] or 0,
-            "actual_input_usage_attempts": row[10] or 0,
-            "actual_output_usage_attempts": row[11] or 0,
-            "estimated_input_usage_attempts": row[12] or 0,
-            "estimated_output_usage_attempts": row[13] or 0,
-            "deterministic_op_count": det,
-        }
+        return llm_session_aggregates(self.db, session_id or self.session_id)
 
 
 def _json_or_none(value: Any) -> str | None:
     if value is None:
         return None
     return json.dumps(value, ensure_ascii=False)
-
-
-@contextmanager
-def attempt_span(
-    telemetry: LLMTelemetry,
-    *,
-    logical_call_id: str,
-    endpoint: str,
-    provider: str,
-    model: str,
-    schema_mode: str,
-    request_fingerprint: str | None,
-    configured_output_limit: int,
-    reasoning_reserve_tokens: int,
-    known_context_limit: int | None,
-    effective_output_limit: int,
-    requested_output_limit: int,
-    input_chars: int,
-    phase: str | None = None,
-    retry_ordinal: int = 0,
-    parent_attempt_id: str | None = None,
-    connect_timeout_ms: int | None = None,
-    read_timeout_ms: int | None = None,
-    logical_deadline_ms: int | None = None,
-) -> Iterator[str]:
-    """Create a provider-attempt receipt and guarantee finalization.
-
-    The yielded value is the ``attempt_id``. Callers update the attempt inside
-    the block via ``telemetry.finalize_attempt(attempt_id=..., ...)``; if they do
-    not, the context manager finalizes it as an ``application_discard`` so no
-    attempt is ever silently lost (T-11.1).
-    """
-
-    attempt_id = telemetry.begin_attempt(
-        logical_call_id=logical_call_id,
-        endpoint=endpoint,
-        provider=provider,
-        model=model,
-        schema_mode=schema_mode,
-        request_fingerprint=request_fingerprint,
-        configured_output_limit=configured_output_limit,
-        reasoning_reserve_tokens=reasoning_reserve_tokens,
-        known_context_limit=known_context_limit,
-        effective_output_limit=effective_output_limit,
-        requested_output_limit=requested_output_limit,
-        input_chars=input_chars,
-        phase=phase,
-        retry_ordinal=retry_ordinal,
-        parent_attempt_id=parent_attempt_id,
-        connect_timeout_ms=connect_timeout_ms,
-        read_timeout_ms=read_timeout_ms,
-        logical_deadline_ms=logical_deadline_ms,
-    )
-    finalized = False
-    try:
-        yield attempt_id
-    except Exception:
-        if not finalized:
-            telemetry.finalize_attempt(
-                attempt_id=attempt_id,
-                status="application_discard",
-                discarded_reason="uncaught_exception_in_call_site",
-            )
-        finalized = True
-        raise
-    finally:
-        if not finalized:
-            telemetry.finalize_attempt(
-                attempt_id=attempt_id,
-                status="application_discard",
-                discarded_reason="attempt_left_unfinalized",
-            )

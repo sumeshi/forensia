@@ -184,8 +184,9 @@ def record_retrieval_event(
     selected_chars: int,
     budget: int,
     rejected_refs: list[str] | None = None,
-) -> None:
+) -> str:
     """Record what retrieval exposed; never feed observations into ranking."""
+    event_id = str(uuid4())
     db.execute(
         """
         INSERT INTO trace.retrieval_events (
@@ -195,7 +196,7 @@ def record_retrieval_event(
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
-            str(uuid4()),
+            event_id,
             session_id,
             scope_kind,
             scope_id,
@@ -210,3 +211,4 @@ def record_retrieval_event(
             datetime.now(UTC).replace(tzinfo=None),
         ),
     )
+    return event_id

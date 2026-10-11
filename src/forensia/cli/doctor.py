@@ -12,9 +12,9 @@ def _check(label: str, check: Callable[[], None]) -> tuple[str, bool]:
     try:
         check()
     except Exception as exc:
-        print(f"  ✗ {label}: {exc}")
+        print(f"  FAIL {label}: {exc}")
         return label, False
-    print(f"  ✓ {label}")
+    print(f"  OK {label}")
     return label, True
 
 
@@ -88,15 +88,15 @@ def _doctor_report_template_policy_check() -> tuple[str, bool]:
                 problems.append(f"{path.name}: missing {', '.join(missing)}")
         ok = not problems
         if ok:
-            print("  ✓ Packaged templates include knowledge metadata and instructions")
+            print("  OK Packaged templates include knowledge metadata and instructions")
         else:
             print(
-                "  ✗ Invalid packaged templates:\n"
+                "  FAIL Invalid packaged templates:\n"
                 + "\n".join(f"      - {p}" for p in problems)
             )
         return "Report template contract", ok
     except Exception as exc:
-        print(f"  ✗ Error: {exc}")
+        print(f"  FAIL Error: {exc}")
         return "Report template contract", False
 
 
@@ -110,9 +110,9 @@ def run_doctor() -> None:
     ]
     failed = [name for name, ok in checks if not ok]
     if failed:
-        print(f"[bold red]✗ Failed: {', '.join(failed)}[/bold red]")
+        print(f"[bold red]Failed: {', '.join(failed)}[/bold red]")
     else:
-        print(f"[bold green]✓ All {len(checks)} checks passed[/bold green]")
+        print(f"[bold green]All {len(checks)} checks passed[/bold green]")
     sys.exit(1 if failed else 0)
 
 

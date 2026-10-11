@@ -1090,7 +1090,6 @@ class ReportRefreshFailureTests(unittest.TestCase):
                                 model="none",
                                 progress_callback=events.append,
                                 focus_sections=[],
-                                report_max_queries_per_section=1,
                                 state=state,
                             )
                         )
@@ -1129,7 +1128,6 @@ class ReportRefreshFailureTests(unittest.TestCase):
                         model="none",
                         progress_callback=None,
                         focus_sections=[],
-                        report_max_queries_per_section=1,
                         state=state,
                     )
                 )
@@ -1236,7 +1234,6 @@ class ReportRefreshFailureTests(unittest.TestCase):
                                 model="none",
                                 progress_callback=progress_events.append,
                                 focus_sections=[],
-                                report_max_queries_per_section=1,
                                 state=state,
                             )
                         )

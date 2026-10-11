@@ -28,11 +28,13 @@ from typing import Any
 
 from forensia.core.verification import EVALUABLE_CONDITION_KEYS
 from forensia.db.database import CaseDB
-from forensia.investigation.verification.sufficiency import (
+from forensia.evidence.links import (
     EvidenceLink,
-    derivation_root_key,
     evidence_link_currentness,
     load_evidence_links,
+)
+from forensia.investigation.verification.sufficiency import (
+    derivation_root_key,
 )
 from forensia.knowledge.coverage import derive_required_capabilities
 

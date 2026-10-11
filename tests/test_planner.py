@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -21,6 +22,65 @@ from forensia.investigation.working_state import render_working_state
 
 def _llm_base_url() -> str:
     return resolve_llm_config()[0] or "http://test-llm.invalid"
+
+
+def _insert_durable_attempt(
+    db: CaseDB,
+    *,
+    hypothesis_id: str,
+    query_id: str,
+    attempt_ref: str,
+    check_summary: str,
+) -> None:
+    planned_query = {
+        "query_id": query_id,
+        "hypothesis_id": hypothesis_id,
+        "purpose": "inspect prior evidence",
+        "template_id": None,
+        "params": {},
+        "sql": "SELECT event_id FROM evtx_events LIMIT 1",
+    }
+    db.execute(
+        """
+        INSERT INTO trace.investigation_steps (
+            step_id, session_id, hypothesis_id, iteration, phase,
+            input_json, output_json, created_at
+        ) VALUES (?, 'S-prior', ?, 1, 'do', ?, ?, now())
+        """,
+        [
+            f"{attempt_ref}-do",
+            hypothesis_id,
+            json.dumps({"planned_query": planned_query}),
+            json.dumps(
+                {
+                    "attempt": {
+                        "attempt_ref": attempt_ref,
+                        "status": "completed",
+                        "query_fingerprint": "query-fingerprint",
+                    }
+                }
+            ),
+        ],
+    )
+    db.execute(
+        """
+        INSERT INTO trace.investigation_steps (
+            step_id, session_id, hypothesis_id, iteration, phase,
+            input_json, output_json, created_at
+        ) VALUES (?, 'S-prior', ?, 1, 'check', '{}', ?, now() + INTERVAL '1 second')
+        """,
+        [
+            f"{attempt_ref}-check",
+            hypothesis_id,
+            json.dumps(
+                {
+                    "attempt_ref": attempt_ref,
+                    "check_verdict": "inconclusive",
+                    "check_summary": check_summary,
+                }
+            ),
+        ],
+    )
 
 
 class PlannerRetryTests(unittest.TestCase):
@@ -194,12 +254,12 @@ class PlannerRetryTests(unittest.TestCase):
                     "'G-workctx', 'H-workctx'), ('T-other', 'verification', "
                     "'Unrelated task', 'open', 'G-other', 'H-other')"
                 )
-                db.execute(
-                    "INSERT INTO trace.hypothesis_reasoning "
-                    "(entry_id, hypothesis_id, session_id, iteration, phase, "
-                    "query_id, body, created_at) VALUES "
-                    "('HR-workctx', 'H-workctx', 'old-session', 1, 'check', "
-                    "'Q-prior', 'previous SQL attempt', now())"
+                _insert_durable_attempt(
+                    db,
+                    hypothesis_id="H-workctx",
+                    query_id="Q-prior",
+                    attempt_ref="receipt-prior",
+                    check_summary="previous SQL attempt",
                 )
                 create_hypothesis_evidence_link(
                     db,
@@ -416,7 +476,6 @@ class PlannerRetryTests(unittest.TestCase):
         # The typed action menu is not extendable by disclosed text.
         action, error = normalize_query_intent_action(
             {"action": {"type": "shell.exec", "command": "whoami"}},
-            phase="initial",
         )
         self.assertIsNone(action)
         self.assertIn("malformed", str(error))
@@ -724,12 +783,12 @@ class PlannerRetryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
-                db.execute(
-                    """
-                    INSERT INTO trace.hypothesis_reasoning (
-                        entry_id, hypothesis_id, session_id, iteration, phase, verdict, query_id, body, created_at
-                    ) VALUES ('HR-1', 'H1', 'S-1', 1, 'check', 'inconclusive', 'Q-old', 'already tested', now())
-                    """
+                _insert_durable_attempt(
+                    db,
+                    hypothesis_id="H1",
+                    query_id="Q-old",
+                    attempt_ref="receipt-old",
+                    check_summary="already tested",
                 )
                 db.execute(
                     """
@@ -800,12 +859,12 @@ class PlannerRetryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
-                db.execute(
-                    """
-                    INSERT INTO trace.hypothesis_reasoning (
-                        entry_id, hypothesis_id, session_id, iteration, phase, verdict, query_id, body, created_at
-                    ) VALUES ('HR-1', 'H1', 'S-1', 1, 'check', 'inconclusive', 'Q-local', 'duplicate row', now())
-                    """
+                _insert_durable_attempt(
+                    db,
+                    hypothesis_id="H1",
+                    query_id="Q-local",
+                    attempt_ref="receipt-local",
+                    check_summary="already tested",
                 )
                 with patch(
                     "forensia.llm.json_response.request_llm_json",
@@ -823,9 +882,8 @@ class PlannerRetryTests(unittest.TestCase):
         first_call_system = mock_request.call_args_list[0].kwargs["messages"][0][
             "content"
         ]
-        # Exactly one attempt line for Q-local: the DB reasoning row sharing
-        # the same query_id must merge with the local history entry, not
-        # appear as a second attempt.
+        # The durable database attempt is the history source when the case DB
+        # is available, so the same local query label appears once.
         self.assertEqual(1, first_call_system.count("query_id=Q-local"))
 
     def test_query_fingerprint_normalizes_equivalent_ast_forms(self) -> None:

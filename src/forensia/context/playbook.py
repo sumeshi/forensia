@@ -54,7 +54,7 @@ class _PlaybookBudgetResult:
 
 @lru_cache(maxsize=1)
 def _load_schema_notes() -> str:
-    """Load schema notes from evtx_events.yaml and prefetch_executions.yaml for section agent."""
+    """Load event and prefetch schema notes for investigator prompts."""
 
     import yaml
 
@@ -443,11 +443,11 @@ def _playbook_include_flags(
     phase: str, tables: set[str] | None
 ) -> tuple[bool, bool, bool, bool]:
     planning_phases = {"broad_plan", "hypothesis_plan"}
-    interpretation_phases = {"check", "report_section", "section_agent_check"}
+    interpretation_phases = {"check"}
     include_fp = phase in interpretation_phases
     include_app_catalog = phase not in planning_phases
     include_artifact_inference = phase in interpretation_phases
-    include_ioc_catalog = phase in (interpretation_phases | {"section_agent_plan"})
+    include_ioc_catalog = phase == "hypothesis_plan" or phase in interpretation_phases
 
     has_mft_or_prefetch = tables is None or bool(
         tables
@@ -745,8 +745,7 @@ def _dfir_playbook(
 ) -> str:
     """Generate DFIR investigator playbook narrative for the given phase.
 
-    Phase is one of: 'broad_plan', 'hypothesis_plan', 'check', 'report_section',
-    'section_agent_plan', 'section_agent_check'.
+    Phase is one of: 'broad_plan', 'hypothesis_plan', or 'check'.
 
     Parameters
     ----------

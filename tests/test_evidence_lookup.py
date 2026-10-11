@@ -14,6 +14,7 @@ from forensia.db.evidence_lookup import (
     lookup_evidence_record,
 )
 from forensia.db.views import case_detail
+from forensia.investigation.hypotheses.hypothesis_runner import _result_evidence_ids
 
 
 class EvidenceLookupTest(unittest.TestCase):
@@ -61,12 +62,35 @@ class EvidenceLookupTest(unittest.TestCase):
                 "2015-03-25 15:15:50",
             ),
         )
+        eraser_id = (
+            "prefetch-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-"
+            "eraser.exe-abc123"
+        )
         self.db.execute(
-            "INSERT INTO prefetch_timeline (evidence_id, executable_name, exec_time) VALUES (?, ?, ?)",
+            "INSERT INTO prefetch_executions "
+            "(evidence_id, executable_name, exec_count, last_exec_time, exec_times) "
+            "VALUES (?, ?, ?, ?, ?)",
             (
-                "prefetch-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-eraser.exe-abc123",
+                eraser_id,
+                "ERASER.EXE",
+                2,
+                "2015-03-25 14:30:00",
+                json.dumps(["2015-03-25 14:00:00", "2015-03-25 14:30:00"]),
+            ),
+        )
+        self.db.execute(
+            "INSERT INTO prefetch_timeline "
+            "(timeline_id, evidence_id, executable_name, exec_time) "
+            "VALUES (?, ?, ?, ?), (?, ?, ?, ?)",
+            (
+                "timeline-eraser-1",
+                eraser_id,
                 "ERASER.EXE",
                 "2015-03-25 14:00:00",
+                "timeline-eraser-2",
+                eraser_id,
+                "ERASER.EXE",
+                "2015-03-25 14:30:00",
             ),
         )
         self.db.execute(
@@ -86,6 +110,18 @@ class EvidenceLookupTest(unittest.TestCase):
             "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-999999999999",
         )
         self.assertIsNone(result)
+
+    def test_timeline_id_is_not_an_evidence_identity(self):
+        self.assertEqual(
+            [],
+            _result_evidence_ids(
+                [
+                    {
+                        "timeline_id": "prefetch-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-1"
+                    }
+                ]
+            ),
+        )
 
     def test_same_local_evtx_record_from_two_sources_resolves_independently(self):
         source_a = "c" * 64
@@ -177,11 +213,19 @@ class EvidenceLookupTest(unittest.TestCase):
             ]["executable_name"],
             "ERASER.EXE",
         )
+        canonical_prefetch = result[
+            "prefetch-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-eraser.exe-abc123"
+        ]
+        self.assertEqual(
+            canonical_prefetch["exec_times"],
+            ["2015-03-25 14:00:00", "2015-03-25 14:30:00"],
+        )
+        self.assertNotIn("exec_time", canonical_prefetch)
         expected_sources = [
             "evtx_events",
             "mft_entries",
             "prefetch_executions",
-            "prefetch_timeline",
+            "prefetch_executions",
             "registry_artifacts",
         ]
         for evidence_id, source in zip(
@@ -251,7 +295,57 @@ class EvidenceLookupTest(unittest.TestCase):
         )
         self.assertEqual(evidence_id, detail["evidence"][0]["evidence_id"])
         self.assertEqual(1, detail["output_json"]["row_count"])
-        self.assertEqual(
-            detail,
-            case_detail(self.db, "query_receipt", "Q-1"),
+        self.assertIsNone(case_detail(self.db, "query_receipt", "Q-1"))
+
+    def test_trace_details_recover_full_prompt_and_domain_references(self):
+        request = {"messages": [{"content": "x" * 20000 + "unseen-tail"}]}
+        self.db.execute(
+            "INSERT INTO trace.llm_logical_calls (logical_call_id, session_id) "
+            "VALUES ('lc-1', 'session-1')"
+        )
+        self.db.execute(
+            "INSERT INTO trace.llm_provider_attempts "
+            "(attempt_id, logical_call_id, request_body) VALUES ('pa-1', 'lc-1', ?)",
+            [json.dumps(request)],
+        )
+        call = case_detail(self.db, "llm_call", "lc-1")
+        self.assertEqual(call["attempt_ids"], ["pa-1"])
+        page = case_detail(self.db, "llm_attempt", "pa-1")
+        pieces = [page["text"]]
+        while page["next_offset"] is not None:
+            page = case_detail(
+                self.db, "llm_attempt", "pa-1", offset=page["next_offset"]
+            )
+            pieces.append(page["text"])
+        self.assertEqual(json.loads("".join(pieces))["request_body"], request)
+
+        self.db.execute(
+            "INSERT INTO hypothesis_evidence "
+            "(link_id, hypothesis_id, evidence_id, assessment_id, role, derivation_group) "
+            "VALUES ('link-1', 'H-1', 'evtx-1', 'EA-1', 'supporting', 'source-1')"
+        )
+        assessment = case_detail(self.db, "assessment", "EA-1")
+        self.assertEqual(assessment["evidence_ids"], ["evtx-1"])
+        self.assertEqual(assessment["derivation_groups"], ["source-1"])
+        grounds = {
+            "assessment_id": "EA-1",
+            "evidence_ids": ["evtx-1"],
+            "role": "supporting",
+        }
+        self.db.execute(
+            "INSERT INTO trace.investigation_steps "
+            "(step_id, phase, output_json, created_at) "
+            "VALUES ('check-1', 'check', ?, now())",
+            [json.dumps({"assessment": grounds})],
+        )
+        self.db.execute("DELETE FROM hypothesis_evidence WHERE assessment_id = 'EA-1'")
+        retained = case_detail(self.db, "assessment", "EA-1")
+        self.assertEqual(retained["assessment"], grounds)
+        self.assertIsNone(retained["current_links"])
+        self.db.execute(
+            "INSERT INTO trace.hypothesis_reasoning (entry_id, body) "
+            "VALUES ('reason-1', 'This is an interpretation, not Evidence.')"
+        )
+        self.assertIn(
+            "interpretation", case_detail(self.db, "reasoning", "reason-1")["body"]
         )

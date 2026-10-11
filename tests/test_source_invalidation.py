@@ -16,7 +16,6 @@ from forensia.evidence.invalidation import (
 )
 from forensia.evidence.normalize import normalize_all
 from forensia.investigation.selection import select_focus_hypotheses
-from forensia.report.sections.section_store import _claim_support_status
 
 
 class SourceInvalidationTests(unittest.TestCase):
@@ -141,46 +140,24 @@ class SourceInvalidationTests(unittest.TestCase):
             self.assertEqual((True,), section)
             self.assertEqual(("evtx-old", "supporting"), links)
 
-    def test_claim_support_lookup_recognizes_registry_artifacts(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(Path(tmpdir) / "case")
-            with CaseDB(case) as db:
-                db.execute(
-                    """
-                    INSERT INTO registry_artifacts (
-                        artifact_id, dataset_id, source_ids, plugin, raw_json, created_at
-                    ) VALUES ('registry-artifact-1', 'dataset-1', '[]', 'plugin', '{}', now())
-                    """
-                )
-                self.assertEqual(
-                    "supported",
-                    _claim_support_status(db, ["registry-artifact-1"], [], []),
-                )
-
-    def test_removed_evidence_stales_section_facts_dependents(self) -> None:
-        """section_facts and case_timeline references are part of the invalidation survey."""
+    def test_removed_evidence_stales_section_evidence_dependents(self) -> None:
+        """Current section links are invalidated while timeline history remains."""
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(Path(tmpdir) / "case")
             with CaseDB(case) as db:
                 self._seed_dependents(db)
                 db.execute(
                     """
-                    INSERT INTO section_facts (
-                        fact_id, fact_type, fact_value, evidence_ids,
-                        source_query, source_section, confidence,
-                        created_at, updated_at
-                    ) VALUES (
-                        'fact-1', 'fact_type', '"v"', ?, 'q1', 'section-2',
-                        0.8, now(), now()
-                    )
-                    """,
-                    [json.dumps(["evtx-old"])],
-                )
-                db.execute(
-                    """
                     INSERT INTO report_sections (
                         section_key, title, body, status, update_count, stale
                     ) VALUES ('section-2', 'Other', 'body', 'draft', 1, false)
+                    """
+                )
+                db.execute(
+                    """
+                    INSERT INTO section_evidence (
+                        section_key, block_heading, evidence_id, role, source_query, created_at
+                    ) VALUES ('section-2', 'Other', 'evtx-old', 'observed', 'q2', now())
                     """
                 )
                 db.execute(
@@ -214,10 +191,7 @@ class SourceInvalidationTests(unittest.TestCase):
                         "WHERE section_key = 'section-2'"
                     ).fetchone(),
                 )
-                # History is kept: facts and timeline rows are not deleted.
-                self.assertEqual(
-                    (1,), db.execute("SELECT COUNT(*) FROM section_facts").fetchone()
-                )
+                # Timeline rows remain as historical entries.
                 self.assertEqual(
                     (1,),
                     db.execute(
