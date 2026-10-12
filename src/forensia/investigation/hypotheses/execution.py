@@ -10,7 +10,7 @@ import sqlglot
 from sqlglot import exp
 
 from forensia.context.retrieval import ToolReceipt, coverage_snapshot
-from forensia.context.sql_templates import query_referenced_tables
+from forensia.context.sql_templates import MAX_SQL_ROWS, query_referenced_tables
 from forensia.core.log import log as _log
 from forensia.core.session import Hypothesis
 from forensia.db.database import CaseDB
@@ -344,6 +344,8 @@ def build_sql_receipt(
     duration_ms: float,
     rows: list[dict[str, Any]] | None,
     original_row_count: int | None,
+    host_executed_sql: str | None = None,
+    truncated: bool = False,
     fallback_info: dict[str, Any] | None = None,
     error: str | None = None,
     validator_info: dict[str, Any] | None = None,
@@ -375,7 +377,9 @@ def build_sql_receipt(
         if row.get(key)
     }
     continuation_handle = f"sql:{session_id}:{hypothesis.id}:{query_hash}"
-    receipt_id = f"receipt-{session_id}-{plan_cycle}-{query_index}-{query_hash}"
+    receipt_id = (
+        f"receipt-{session_id}-{hypothesis.id}-{plan_cycle}-{query_index}-{query_hash}"
+    )
 
     tel = get_active_telemetry()
     if tel is not None:
@@ -416,6 +420,12 @@ def build_sql_receipt(
         retry_hints = [
             "inspect fallback provenance and verify Coverage before interpreting result"
         ]
+    elif truncated:
+        status = "partial"
+        reason = "host row limit reached; total row count is unknown"
+        returned_count = len(result_summary)
+        sampled_count = min(len(result_summary), 10)
+        retry_hints = ["narrow the retrieval scope; this result is incomplete"]
     else:
         status = "empty" if not result_summary else "ok"
         reason = "no rows returned" if not result_summary else None
@@ -440,7 +450,10 @@ def build_sql_receipt(
             "template_id": planned_query.template_id,
             "params": planned_query.params,
             "normalized_sql": planned_query.sql,
-            "original_returned_count": original_row_count,
+            "host_executed_sql": host_executed_sql,
+            "host_row_limit": MAX_SQL_ROWS,
+            "observed_row_count": original_row_count,
+            "observed_row_count_is_lower_bound": truncated,
             "fallback_row_count": fallback_info.get("original_row_count")
             if fallback_info
             else None,
@@ -458,7 +471,7 @@ def build_sql_receipt(
         duration_ms=round(duration_ms, 3),
         returned_count=returned_count,
         sampled_count=sampled_count,
-        truncated=truncated,
+        truncated=truncated or bool(fallback_info and fallback_info.get("truncated")),
         result_refs={
             "evidence_ids": evidence_ids,
             "finding_ids": finding_ids,

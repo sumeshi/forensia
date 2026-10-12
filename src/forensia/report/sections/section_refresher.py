@@ -660,7 +660,7 @@ def _projection_receipts(
 
 def _emit_section_failure(
     progress_callback: Callable[[dict[str, Any]], None] | None,
-    iteration: int,
+    iteration: int | None,
     session_id: str,
     section_key: str,
     exc: Exception,
@@ -685,7 +685,7 @@ def _record_projection(
     db: CaseDB,
     projection: dict[str, Any],
     *,
-    iteration: int,
+    iteration: int | None,
     report_input_digest: str,
     narration_status: str,
     narration_rejection_reasons: list[str] | None = None,
@@ -747,7 +747,7 @@ def _record_projection(
 
 def _emit_section_completed(
     progress_callback: Callable[[dict[str, Any]], None] | None,
-    iteration: int,
+    iteration: int | None,
     session_id: str,
     section_key: str,
     summary: str,
@@ -769,7 +769,7 @@ def _emit_section_completed(
 
 def _emit_narration_outcome(
     progress_callback: Callable[[dict[str, Any]], None] | None,
-    iteration: int,
+    iteration: int | None,
     session_id: str,
     section_key: str,
     status: str,
@@ -826,7 +826,7 @@ async def _refresh_section(
     case_signature: str,
     report_input_digest: str,
     session_id: str,
-    iteration: int,
+    iteration: int | None,
     base_url: str,
     model: str,
     progress_callback: Callable[[dict[str, Any]], None] | None,
@@ -1016,7 +1016,7 @@ async def async_refresh_report_sections(
     case: Case,
     db: CaseDB,
     session_id: str,
-    iteration: int,
+    iteration: int | None,
     base_url: str,
     model: str,
     sections: list[SectionSource],

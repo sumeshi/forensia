@@ -1,4 +1,4 @@
-"""Per-hypothesis consecutive retrieval feedback."""
+"""Per-hypothesis zero-row retrieval feedback."""
 
 from __future__ import annotations
 
@@ -48,8 +48,6 @@ class HypothesisProgressTracker:
     """Track feedback consumed by the settlement gate."""
 
     zero_row_inconclusive_count: int = 0
-    _last_missing_signature: str = ""
-    consecutive_same_missing: int = 0
 
     def record(self, verdict: str, row_count: int) -> None:
         """Record a retrieval result for zero-row settlement feedback."""
@@ -57,15 +55,3 @@ class HypothesisProgressTracker:
             self.zero_row_inconclusive_count += 1
         else:
             self.zero_row_inconclusive_count = 0
-
-    def register_check(self, verdict: str, missing_signature: str = "") -> None:
-        """Track consecutive same-missing checks for auto-refute detection."""
-        if verdict == "inconclusive" and missing_signature:
-            if missing_signature == self._last_missing_signature:
-                self.consecutive_same_missing += 1
-            else:
-                self.consecutive_same_missing = 1
-            self._last_missing_signature = missing_signature
-        elif verdict != "inconclusive":
-            self.consecutive_same_missing = 0
-            self._last_missing_signature = ""

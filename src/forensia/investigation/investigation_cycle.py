@@ -41,10 +41,15 @@ from forensia.investigation.prompts import (
     build_gap_identifier_messages,
     build_hypothesis_drafter_messages,
 )
+from forensia.investigation.report_gap import report_cycle_progress
 from forensia.investigation.selection import (
     select_focus_hypotheses,
 )
-from forensia.investigation.work_judgment import judge_work
+from forensia.investigation.work_judgment import (
+    judge_work,
+    work_progress_fingerprint,
+    work_progress_snapshot,
+)
 from forensia.knowledge.rules.loader import _get_rule_cache
 from forensia.llm import json_response
 from forensia.llm.llm_client import (
@@ -1384,12 +1389,14 @@ async def _run_cycle_body(
     )
 
     if not report_only:
+        active_ids = [hypothesis.id for hypothesis in state.active_hypotheses]
         runnable_ids = sorted(
             hypothesis_id
             for hypothesis_id, judgment in judge_work(
                 db,
-                [hypothesis.id for hypothesis in state.active_hypotheses],
+                active_ids,
                 selection_gate=True,
+                session_id=session_id,
             ).items()
             if judgment.runnable
         )
@@ -1495,6 +1502,12 @@ async def _run_cycle_body(
                 hypothesis_id=hypothesis.id,
             )
             with telemetry_scope(hypothesis_id=hypothesis.id, iteration=plan_cycle):
+                semantic_before = work_progress_snapshot(db, hypothesis.id)
+                fingerprint_before = (
+                    work_progress_fingerprint(semantic_before)
+                    if semantic_before is not None
+                    else None
+                )
                 state, sections = await _investigate_one_hypothesis(
                     hypothesis=hypothesis,
                     state=state,
@@ -1511,4 +1524,28 @@ async def _run_cycle_body(
                     llm_status_fn=llm_status,
                     case_profile=case_profile,
                 )
+            semantic_after = work_progress_snapshot(db, hypothesis.id)
+            progressed = bool(
+                semantic_before is not None
+                and semantic_after is not None
+                and report_cycle_progress(semantic_before, semantic_after)
+            )
+            fingerprint_after = (
+                work_progress_fingerprint(semantic_after)
+                if semantic_after is not None
+                else None
+            )
+            _save_step(
+                db=db,
+                session_id=session_id,
+                iteration=plan_cycle,
+                phase="work-progress",
+                hypothesis_id=hypothesis.id,
+                input_json={"fingerprint_before": fingerprint_before},
+                output_json={
+                    "status": "completed",
+                    "fingerprint": fingerprint_after,
+                    "progressed": progressed,
+                },
+            )
     return broad_plan_stop, focus_sections

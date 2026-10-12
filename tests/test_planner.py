@@ -800,8 +800,9 @@ class PlannerRetryTests(unittest.TestCase):
             schema_context="",
         )
         system = messages[0]["content"]
-        self.assertIn('"template_id": null', system)
-        self.assertIn('"sql": "SELECT evidence_id FROM evtx_events LIMIT 20"', system)
+        self.assertIn("set template_id to null", system)
+        self.assertIn("provide a bounded SELECT", system)
+        self.assertNotIn("SELECT evidence_id FROM evtx_events LIMIT 20", system)
         self.assertIn(
             "copy a template_id exactly from the supplied <TEMPLATE_CATALOG>", system
         )

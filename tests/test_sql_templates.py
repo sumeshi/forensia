@@ -201,6 +201,17 @@ class HostValidationTests(unittest.TestCase):
             validate_select_sql("SELECT * FROM evtx_events LIMIT 100000")
         sql = "SELECT event_id FROM evtx_events LIMIT 50"
         self.assertEqual(sql, validate_select_sql(sql))
+        for query in (
+            "SELECT 1 UNION ALL SELECT 2",
+            "WITH q AS (SELECT 1 LIMIT 1) SELECT * FROM q UNION ALL SELECT 2",
+        ):
+            self.assertEqual(query, validate_select_sql(query))
+        for query in (
+            "SELECT 1 LIMIT 1001 UNION ALL SELECT 2",
+            "WITH q AS (SELECT 1 LIMIT 1001) SELECT * FROM q",
+        ):
+            with self.assertRaisesRegex(ValueError, "exceeds the host maximum"):
+                validate_select_sql(query)
         catalog = query_template_catalog()
         self.assertGreaterEqual(len(catalog), 3)
         self.assertLessEqual(len(catalog), 7)

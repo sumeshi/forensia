@@ -23,6 +23,7 @@ from forensia.context.prompt_context import (
 from forensia.context.sql_templates import query_template_catalog_for_tables
 from forensia.core.session import Hypothesis
 from forensia.db.evidence_lookup import canonical_record_table, routed_family
+from forensia.db.query import normalize_value
 from forensia.investigation.case_policy import case_policy_block
 from forensia.knowledge.catalog import load_benign_context_rules
 from forensia.knowledge.coverage import (
@@ -372,7 +373,9 @@ def build_query_intent_messages(
     disclosure_tables, _primary_tables = _work_disclosure_tables(
         hypothesis, spec_payload
     )
-    planning_tables = eligible_tables or disclosure_tables
+    planning_tables = (
+        eligible_tables if eligible_tables is not None else disclosure_tables
+    )
     template_catalog_md = _template_catalog_block(
         query_template_catalog_for_tables(planning_tables or ())
     )
@@ -454,21 +457,22 @@ def build_query_intent_messages(
         f"hypothesis: {json.dumps(_hypothesis_prompt_projection(hypothesis), ensure_ascii=False, default=str)}\n"
         f"{render_prior_attempts(recent_history)}"
         f"time_range: {json.dumps(time_range, ensure_ascii=False, default=str)}\n"
+        f"eligible_tables: {json.dumps(planning_tables)}\n"
         f"{template_catalog_md}"
         f"schema: {schema_context}\n"
         "</INPUT_SCHEMA>\n"
         "<OUTPUT_SCHEMA>\n"
         "Return exactly one bounded SQL query action:\n"
-        'Raw SQL example: {"action": {"type": "sql.query", "intent": "inspect matching evidence", '
-        '"target_table": "evtx_events", "template_id": null, "params": {}, '
-        '"sql": "SELECT evidence_id FROM evtx_events LIMIT 20", "filters_required": [], '
-        '"time_window": "case range", "expected_row_shape": "evidence_id"}}\n'
+        'Return {"action": {...}} with type="sql.query", intent, target_table '
+        "from eligible_tables, template_id, params, sql, filters_required, "
+        "time_window, and expected_row_shape. Raw SQL must select canonical "
+        "evidence_id (or Registry artifact_id) and use only eligible_tables.\n"
         "Template path: use the same sql.query fields, copy a template_id exactly from the supplied <TEMPLATE_CATALOG>, set its params, and set sql to an empty string."
         "</OUTPUT_SCHEMA>\n"
         "<RULES>\n"
         "The sql.query action MUST include a complete intent, known target_table, and exactly one execution path: for a template, copy an executable ID from <TEMPLATE_CATALOG>, set params, and set sql to an empty string; for raw SQL, set template_id to null and provide a bounded SELECT. If the catalog contains no applicable template, use raw SQL. RECIPE_INDEX IDs are never valid template_id values. Do not emit unknown actions, free-form tools, or an empty/ambiguous action.\n"
         "If EXECUTION_ERROR is present, you MUST change the query — at minimum change the table list, the WHERE clause, or eliminate the failing JOIN. Never repeat the same SQL that caused an execution error.\n"
-        "If prior_check_feedback names specific missing event_ids or evidence types, the new SQL MUST include those event_ids or evidence types. Never ignore prior check feedback.\n"
+        "Address prior_check_feedback within eligible_tables. If required evidence is outside the eligible catalog, report the unmet requirement instead of proposing an unauthorized query.\n"
         + (
             "This is corroboration after the typed primary search. Do not repeat that primary query. Use only tables listed in the selected schema cards; cross-family corroboration is allowed only when those tables are listed. Keep the purpose and evidence family explicit.\n"
             if test_intent == "corroboration"
@@ -792,7 +796,7 @@ def build_hypothesis_drafter_messages(
             }
         )
     typed_observations: dict[str, dict[str, Any]] = {}
-    typed_observation_examples: dict[tuple[str, str, str], dict[str, Any]] = {}
+    typed_observation_examples: dict[tuple[str, str, str, str], dict[str, Any]] = {}
     for row in (observed_candidate or {}).get("evidence", [])[:3]:
         if not isinstance(row, dict):
             continue
@@ -825,7 +829,18 @@ def build_hypothesis_drafter_messages(
             for field in fields:
                 target = "boolean_fields" if field in boolean_fields else "fields"
                 definition[target] = sorted(set(definition[target] + [field]))
-                value = row[field]
+                value = normalize_value(row[field])
+                operator = "equals"
+                if isinstance(value, list):
+                    value = next(
+                        (
+                            item
+                            for item in value[:3]
+                            if isinstance(item, str) and item.strip()
+                        ),
+                        None,
+                    )
+                    operator = "contains"
                 evidence_id = str(row.get("evidence_id") or "").strip()
                 if not evidence_id or not isinstance(value, (str, int, float, bool)):
                     continue
@@ -836,7 +851,7 @@ def build_hypothesis_drafter_messages(
                 except TypeError, ValueError:
                     continue
                 example = typed_observation_examples.setdefault(
-                    (family, field, value_key),
+                    (family, field, operator, value_key),
                     {"value": value, "evidence_ids": set()},
                 )
                 example["evidence_ids"].add(evidence_id)
@@ -855,7 +870,12 @@ def build_hypothesis_drafter_messages(
     ]
     typed_claim_examples = []
     for count in (1, 2):
-        for (family, field, _value_key), example in typed_observation_examples.items():
+        for (
+            family,
+            field,
+            operator,
+            _value_key,
+        ), example in typed_observation_examples.items():
             if len(example["evidence_ids"]) < count:
                 continue
             condition = {
@@ -863,7 +883,7 @@ def build_hypothesis_drafter_messages(
                     "family": family,
                     "capability": typed_observations[family]["capabilities"][0],
                     "field": field,
-                    "operator": "equals",
+                    "operator": operator,
                     "value": example["value"],
                 },
                 **({"min_count": count} if count > 1 else {}),
@@ -1058,6 +1078,7 @@ def build_hypothesis_drafter_messages(
         + json.dumps(typed_observation_entries, ensure_ascii=False)
         + "\nUse only the listed family, capability, and field combinations. Choose values "
         "from that field in OBSERVED_CANDIDATE. `contains` requires a string value; "
+        "For array fields, use a disclosed element with `contains`, not the serialized JSON array or its sample wrapper. "
         "`greater_than` requires a number or ISO datetime. Boolean fields require a "
         "JSON boolean and support only `equals`.\n"
         + (

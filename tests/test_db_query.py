@@ -6,7 +6,10 @@ import unittest
 from datetime import datetime
 from unittest.mock import MagicMock
 
-from forensia.db.query import fetch_records, normalize_value
+import duckdb
+
+from forensia.context.sql_templates import bounded_select_sql
+from forensia.db.query import fetch_bounded_records, fetch_records, normalize_value
 
 
 class NormalizeValueTests(unittest.TestCase):
@@ -83,3 +86,42 @@ class FetchRecordsTests(unittest.TestCase):
         db.execute.side_effect = RuntimeError("db error")
         with self.assertRaisesRegex(RuntimeError, "db error"):
             fetch_records(db, "SELECT * FROM t")
+
+    def test_bounded_fetch_uses_a_sentinel_without_fetchall(self) -> None:
+        db = self._db(["id"], [])
+        result = db.execute.return_value
+        result.fetchmany.return_value = [(1,), (2,), (3,)]
+        rows, truncated = fetch_bounded_records(
+            db, bounded_select_sql("SELECT id FROM t", max_rows=2), max_rows=2
+        )
+        self.assertEqual([{"id": 1}, {"id": 2}], rows)
+        self.assertTrue(truncated)
+        result.fetchall.assert_not_called()
+        self.assertIn("LIMIT 3", db.execute.call_args.args[0])
+
+    def test_bounded_fetch_limits_union_output(self) -> None:
+        query = bounded_select_sql(
+            "WITH q AS (SELECT 1 AS id LIMIT 1) "
+            "SELECT id FROM q UNION ALL SELECT 2 UNION ALL SELECT 3",
+            max_rows=2,
+        )
+        rows, truncated = fetch_bounded_records(
+            duckdb.connect(":memory:"), query, max_rows=2
+        )
+        self.assertEqual([{"id": 1}, {"id": 2}], rows)
+        self.assertTrue(truncated)
+
+    def test_bounded_fetch_overrides_nonliteral_or_percent_outer_limits(self) -> None:
+        connection = duckdb.connect(":memory:")
+        queries = (
+            "SELECT i FROM range(10) t(i) ORDER BY i DESC LIMIT (SELECT 9)",
+            "SELECT i FROM range(10) t(i) ORDER BY i DESC LIMIT '9'",
+            "SELECT i FROM range(10) t(i) ORDER BY i DESC LIMIT 9",
+            "SELECT i FROM range(10) t(i) ORDER BY i DESC LIMIT 50 PERCENT",
+        )
+        for sql in queries:
+            with self.subTest(sql=sql):
+                query = bounded_select_sql(sql, max_rows=2)
+                rows, truncated = fetch_bounded_records(connection, query, max_rows=2)
+                self.assertEqual([{"i": 9}, {"i": 8}], rows)
+                self.assertTrue(truncated)

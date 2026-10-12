@@ -259,14 +259,27 @@ def _save_step(
 ) -> None:
     """Persist an investigation step (input/output JSON) to the database."""
     step_id = f"{session_id}-{iteration:02d}-{phase}"
+    if hypothesis_id and not (suffix or "").startswith(f"{hypothesis_id}-"):
+        step_id = f"{step_id}-{hypothesis_id}"
     if suffix:
         step_id = f"{step_id}-{suffix}"
+    attempt_ref = (
+        input_json.get("attempt_ref") if isinstance(input_json, dict) else None
+    )
+    if isinstance(output_json, dict):
+        attempt_ref = attempt_ref or output_json.get("attempt_ref")
+        attempt = output_json.get("attempt")
+        if isinstance(attempt, dict):
+            attempt_ref = attempt_ref or attempt.get("attempt_ref")
+    if attempt_ref:
+        step_id = f"{step_id}-{attempt_ref}"
     db.execute(
         """
         INSERT INTO trace.investigation_steps (
             step_id, session_id, hypothesis_id, iteration, phase, input_json, output_json, created_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (step_id) DO UPDATE SET
+            input_json = excluded.input_json,
             output_json = excluded.output_json,
             created_at = excluded.created_at
         """,
@@ -285,12 +298,13 @@ def _save_step(
 
 def _reasoning_entry_id(
     hypothesis_id: str,
+    session_id: str,
     iteration: int,
     phase: str,
     query_id: str | None,
 ) -> str:
     """Generate a deterministic SHA1-based ID for a reasoning entry."""
-    body = f"{hypothesis_id}-{iteration}-{phase}-{query_id or '-'}"
+    body = f"{session_id}-{hypothesis_id}-{iteration}-{phase}-{query_id or '-'}"
     return hashlib.sha1(body.encode("utf-8")).hexdigest()[:16]
 
 
@@ -308,7 +322,9 @@ def append_hypothesis_reasoning(
     text = str(body).strip()
     if not hypothesis_id or not text:
         return None
-    entry_id = _reasoning_entry_id(hypothesis_id, iteration, phase, query_id)
+    entry_id = _reasoning_entry_id(
+        hypothesis_id, session_id, iteration, phase, query_id
+    )
     db.execute(
         """
         INSERT INTO trace.hypothesis_reasoning (

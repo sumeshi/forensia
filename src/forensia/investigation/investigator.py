@@ -431,12 +431,12 @@ async def _final_report_refresh(
     reach the rendered report.
     """
     try:
-        with telemetry_scope(iteration=env.max_iter + 1):
+        with telemetry_scope(iteration=None, action_id="report-finalization"):
             await async_refresh_report_sections(
                 case=env.case,
                 db=env.db,
                 session_id=env.session_id,
-                iteration=env.max_iter + 1,
+                iteration=None,
                 base_url=env.base_url,
                 model=env.model,
                 sections=env.report_sections,
@@ -630,6 +630,28 @@ async def investigate(
                 level="error",
             )
 
+    def build_stop_summary() -> dict[str, Any]:
+        summary: dict[str, Any] = stop_summary(db)
+        if not env.report_only and status == "stopped":
+            planner_facts = broad_plan_terminal_facts(db, session_id)
+            summary.update(
+                {
+                    "planner_status": planner_facts["planner_status"],
+                    "planner_iteration": planner_facts["planner_iteration"],
+                    "planner_step_id": planner_facts["planner_step_id"],
+                    "candidate_count": planner_facts["candidate_count"],
+                    "drafted_work_count": planner_facts["drafted_work_count"],
+                    "drafted_work_scope": planner_facts["drafted_work_scope"],
+                    "candidate_unexamined_count": planner_facts[
+                        "unexamined_candidate_count"
+                    ],
+                    "candidate_draft_cap_omitted_count": planner_facts[
+                        "draft_cap_omitted_count"
+                    ],
+                }
+            )
+        return summary
+
     try:
         if report_decision.notice:
             _log("REPORT", report_decision.notice)
@@ -648,7 +670,7 @@ async def investigate(
         # validation and narratives observe the same final state as the API.
         # Report-only is a report job (R07): it must not rewrite the Case stop
         # state — an unresolved Case stays resumable after report-only.
-        summary = stop_summary(db)
+        summary = build_stop_summary()
         if not env.report_only:
             save_stop_reason(
                 db,
@@ -717,7 +739,7 @@ async def investigate(
         ):
             classify_stopped_work()
         try:
-            summary = stop_summary(db)
+            summary = build_stop_summary()
             if not env.report_only:
                 save_stop_reason(
                     db,

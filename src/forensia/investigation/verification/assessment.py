@@ -10,6 +10,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Literal
 
 from forensia.core.verification import EVALUABLE_CONDITION_KEYS
+from forensia.db.query import normalize_value
 from forensia.investigation.verification.check_guardrails import (
     _co_observation_evaluation,
 )
@@ -122,6 +123,8 @@ def _condition_matches(
 
 def _observation_value_matches(value: Any, operator: str, expected: Any) -> bool:
     """Apply the small typed observation operator set to a normalized field."""
+    if isinstance(value, str):
+        value = normalize_value(value)
     if value is None:
         return False
     if isinstance(value, bool) or isinstance(expected, bool):

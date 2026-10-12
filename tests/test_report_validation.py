@@ -172,6 +172,22 @@ class TestEvidenceIdPattern:
         assert EVIDENCE_ID_PATTERN.search("evtx-security-000000000120") is None
         assert EVIDENCE_ID_PATTERN.search("mft-000000072008-00") is None
 
+    def test_matches_canonical_ids_next_to_japanese_text(self) -> None:
+        from forensia.core.evidence import make_prefetch_evidence_id
+
+        prefetch = "prefetch-" + "a" * 64 + "-calc-exe-deadbeef"
+        mft = "mft-" + "b" * 64 + "-72008-00"
+        evtx_a = "evtx-" + "c" * 64 + "-security-000000000001"
+        evtx_b = "evtx-" + "d" * 64 + "-system-000000000002"
+        text = f"{prefetch}）と{mft}など{evtx_a}および{evtx_b}。"
+
+        assert EVIDENCE_ID_PATTERN.findall(text) == [prefetch, mft, evtx_a, evtx_b]
+        localized = make_prefetch_evidence_id("a" * 64, "調査.exe", "deadbeef")
+        assert EVIDENCE_ID_PATTERN.findall(
+            f"{localized}など{evtx_a}および{evtx_b}"
+        ) == [localized, evtx_a, evtx_b]
+        assert EVIDENCE_ID_PATTERN.findall(f"unknown-{evtx_a}z") == []
+
 
 class TestDeterministicTableTraceability:
     def test_table_claim_requires_current_source_receipt(self) -> None:

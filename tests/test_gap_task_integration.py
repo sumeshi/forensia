@@ -178,6 +178,58 @@ class WorkContextSnapshotTests(unittest.TestCase):
 
 
 class StopClassificationTests(unittest.TestCase):
+    def test_inflight_draft_receipt_survives_missing_plan_receipt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with CaseDB(Case.init(tmpdir)) as db:
+                db.execute(
+                    "INSERT INTO trace.investigation_steps "
+                    "(step_id, session_id, iteration, phase, input_json, output_json, created_at) "
+                    "VALUES ('draft-inflight', 'S-INFLIGHT', 4, 'plan-broad-candidate', ?, ?, now())",
+                    [
+                        json.dumps({"candidate_ref": "C-gap"}),
+                        json.dumps(
+                            {"status": "correcting", "correction_calls_used": 1}
+                        ),
+                    ],
+                )
+                facts = broad_plan_terminal_facts(db, "S-INFLIGHT")
+                self.assertEqual(facts["planner_status"], "unknown")
+                self.assertEqual(facts["planner_iteration"], None)
+                self.assertEqual(facts["drafted_work_count"], 1)
+                self.assertTrue(facts["awaiting_proposal_correction"])
+
+    def test_latest_skipped_broad_plan_keeps_candidate_counts_unknown(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with CaseDB(Case.init(tmpdir)) as db:
+                db.execute(
+                    "INSERT INTO trace.investigation_steps "
+                    "(step_id, session_id, iteration, phase, input_json, output_json, created_at) "
+                    "VALUES ('plan-completed', 'S-SKIP', 1, 'plan-broad', '{}', ?, now()), "
+                    "('plan-skipped', 'S-SKIP', 2, 'plan-broad', '{}', ?, now()), "
+                    "('draft-old', 'S-SKIP', 1, 'plan-broad-candidate', ?, '{}', now()), "
+                    "('draft-skip', 'S-SKIP', 2, 'plan-broad-candidate', ?, '{}', now())",
+                    [
+                        json.dumps(
+                            {
+                                "status": "completed",
+                                "candidate_summary": {"candidate_count": 9},
+                            }
+                        ),
+                        json.dumps(
+                            {"status": "skipped", "reason": "existing_runnable_work"}
+                        ),
+                        json.dumps({"candidate_ref": "old"}),
+                        json.dumps({"candidate_ref": "skip"}),
+                    ],
+                )
+                facts = broad_plan_terminal_facts(db, "S-SKIP")
+                self.assertEqual(facts["planner_status"], "skipped")
+                self.assertEqual(facts["planner_iteration"], 2)
+                self.assertEqual(facts["planner_step_id"], "plan-skipped")
+                self.assertEqual(facts["drafted_work_count"], 1)
+                self.assertIsNone(facts["candidate_count"])
+                self.assertIsNone(facts["unexamined_candidate_count"])
+
     def test_broad_plan_terminal_facts_preserve_candidate_and_wait_reasons(
         self,
     ) -> None:
@@ -245,6 +297,13 @@ class StopClassificationTests(unittest.TestCase):
                 facts = broad_plan_terminal_facts(db, "S-FACTS")
 
                 self.assertEqual(facts["candidate_count"], 9)
+                self.assertEqual(facts["planner_status"], "completed")
+                self.assertEqual(facts["planner_iteration"], 1)
+                self.assertEqual(facts["planner_step_id"], "S-FACTS-plan")
+                self.assertEqual(facts["drafted_work_count"], 1)
+                self.assertEqual(
+                    facts["drafted_work_scope"], "finding_and_gap_candidates"
+                )
                 self.assertEqual(facts["unexamined_candidate_count"], 4)
                 self.assertEqual(facts["attempt_exhausted_count"], 1)
                 self.assertEqual(
@@ -456,7 +515,7 @@ class StopClassificationTests(unittest.TestCase):
                 self.assertTrue(task[0].startswith("TASK-STOP-"))
                 self.assertTrue(task[1].startswith("GAP-STOP-"))
                 self.assertEqual(task[2], "termination")
-                self.assertTrue(task[3])
+                self.assertEqual(task[3], "new_evidence_or_manual_resume")
                 self.assertTrue(task[4])
                 gap = db.execute(
                     "SELECT task_id, hypothesis_id, origin FROM report_gaps "
@@ -469,11 +528,44 @@ class StopClassificationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             with CaseDB(Case.init(tmpdir)) as db:
                 hypothesis = _insert_hypothesis(db, "H-001", sufficiency="unobservable")
+                db.execute(
+                    "UPDATE hypotheses SET sufficiency_reason = ?, verification_spec = ? "
+                    "WHERE hypothesis_id = ?",
+                    [
+                        "Key capabilities unavailable for direct observation",
+                        json.dumps(
+                            {
+                                "spec_version": "1",
+                                "required_capabilities": ["process_execution"],
+                            }
+                        ),
+                        hypothesis.id,
+                    ],
+                )
+                db.execute(
+                    "INSERT INTO evidence_coverage (capability, source_family, state) "
+                    "VALUES ('process_execution', 'prefetch', 'unavailable')"
+                )
                 counts = classify_active_hypotheses_on_stop(
                     db, [hypothesis], "no_progress_limit"
                 )
                 self.assertEqual(counts["untestable"], 1)
                 self.assertEqual(hypothesis.status, "untestable")
+                task = db.execute(
+                    "SELECT reason, retry_condition FROM investigation_tasks "
+                    "WHERE hypothesis_id = ?",
+                    [hypothesis.id],
+                ).fetchone()
+                gap_reason = db.execute(
+                    "SELECT coverage_reason FROM report_gaps WHERE hypothesis_id = ?",
+                    [hypothesis.id],
+                ).fetchone()[0]
+                self.assertEqual(
+                    task[0],
+                    "required evidence capability unavailable: process_execution",
+                )
+                self.assertEqual(task[1], "required_capability_available")
+                self.assertEqual(gap_reason, task[0])
 
     def test_preclassified_untestable_gets_linked_work_on_stop(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

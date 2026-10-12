@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -13,6 +14,11 @@ from forensia.investigation.selection import (
     check_eligibility,
     compute_priority_score,
     select_focus_hypotheses,
+)
+from forensia.investigation.work_judgment import (
+    judge_work,
+    work_progress_fingerprint,
+    work_progress_snapshot,
 )
 
 
@@ -253,6 +259,108 @@ class SelectionIntegrationTests(unittest.TestCase):
                 self.assertEqual(len(results), 1)
                 self.assertTrue(results[0].eligible)
                 self.assertEqual(results[0].hypothesis_id, "H-001")
+
+    def test_unchanged_stalled_work_blocks_only_its_session(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                db.execute(
+                    "INSERT INTO hypotheses (hypothesis_id, description, status, "
+                    "required_entities, verification_spec) VALUES "
+                    "('H-STALL', 'stalled work', 'active', '[\"host\"]', "
+                    '\'{"spec_version": "1"}\')'
+                )
+                snapshot = work_progress_snapshot(db, "H-STALL")
+                fingerprint = work_progress_fingerprint(snapshot)
+                db.execute(
+                    "INSERT INTO trace.investigation_steps "
+                    "(step_id, session_id, hypothesis_id, iteration, phase, "
+                    "input_json, output_json, created_at) "
+                    "VALUES ('stall-1', 'S-1', 'H-STALL', 1, 'work-progress', "
+                    "'{}', ?, now())",
+                    [
+                        json.dumps(
+                            {
+                                "status": "completed",
+                                "fingerprint": fingerprint,
+                                "progressed": False,
+                            }
+                        )
+                    ],
+                )
+                judgment = judge_work(
+                    db,
+                    ["H-STALL"],
+                    selection_gate=True,
+                    session_id="S-1",
+                )["H-STALL"]
+                self.assertFalse(judgment.runnable)
+                self.assertIn(
+                    "work_exhausted", {blocker.code for blocker in judgment.blockers}
+                )
+                judgment = judge_work(
+                    db,
+                    ["H-STALL"],
+                    selection_gate=True,
+                    session_id="S-1",
+                )["H-STALL"]
+                self.assertFalse(judgment.runnable)
+                self.assertIn(
+                    "work_exhausted", {blocker.code for blocker in judgment.blockers}
+                )
+                self.assertTrue(
+                    judge_work(
+                        db,
+                        ["H-STALL"],
+                        selection_gate=True,
+                        session_id="S-2",
+                    )["H-STALL"].runnable
+                )
+
+                db.execute(
+                    "UPDATE hypotheses SET verification_spec = ? "
+                    "WHERE hypothesis_id = 'H-STALL'",
+                    ['{"spec_version":"1","required_capabilities":["new-cap"]}'],
+                )
+                db.execute(
+                    "INSERT INTO evidence_coverage (capability, source_family, state) "
+                    "VALUES ('new-cap', 'evtx', 'available')"
+                )
+                self.assertTrue(
+                    judge_work(
+                        db,
+                        ["H-STALL"],
+                        selection_gate=True,
+                        session_id="S-1",
+                    )["H-STALL"].runnable
+                )
+
+                current = work_progress_snapshot(db, "H-STALL")
+                db.execute(
+                    "UPDATE trace.investigation_steps SET output_json = ? "
+                    "WHERE step_id = 'stall-1'",
+                    [
+                        json.dumps(
+                            {
+                                "status": "completed",
+                                "fingerprint": work_progress_fingerprint(current),
+                                "progressed": False,
+                            }
+                        )
+                    ],
+                )
+                db.execute(
+                    "INSERT INTO evidence_coverage (capability, source_family, state) "
+                    "VALUES ('other-cap', 'mft', 'available')"
+                )
+                self.assertTrue(
+                    judge_work(
+                        db,
+                        ["H-STALL"],
+                        selection_gate=True,
+                        session_id="S-1",
+                    )["H-STALL"].runnable
+                )
 
     def test_skips_blocked_hypothesis(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

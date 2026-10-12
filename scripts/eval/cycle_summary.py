@@ -37,7 +37,7 @@ def main() -> int:
         allocation = cycle.get("allocation", "cycle")
         iteration = (
             cycle.get("phase", "unknown")
-            if allocation == "unassigned"
+            if allocation != "cycle"
             else cycle["iteration"]
         )
         print(

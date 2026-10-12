@@ -2,11 +2,12 @@
 
 Selection eligibility, stop classification, and reopen previously interpreted
 Coverage and retry state with three different predicates.  All readers now
-derive from this one judgment, read on demand from the existing Case State
+derive from this one judgment, read on demand from existing Case State
 (``hypotheses``, ``investigation_tasks``, ``hypothesis_relations``,
-``evidence_coverage``).  It is a pure read result: no Agenda table, no cache,
-and no new status value is created; write owners stay in ``work_state.py``
-(``classify_active_hypotheses_on_stop``, ``reopen_retryable_work``).
+``evidence_coverage``) and session Trace work-progress receipts.  It is a pure
+read result: no Agenda table, cache, or status write is created; write owners
+stay in ``work_state.py`` (``classify_active_hypotheses_on_stop``,
+``reopen_retryable_work``).
 
 Shared availability rule (the one interpretation of Coverage): a required
 capability is **ready** when any ``evidence_coverage`` row for it reports
@@ -20,6 +21,7 @@ and is never fused into this readiness boolean.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections import defaultdict
 from dataclasses import dataclass
@@ -28,6 +30,7 @@ from typing import Any
 
 from forensia.core.verification import EVALUABLE_CONDITION_KEYS
 from forensia.db.database import CaseDB
+from forensia.db.query import normalize_value
 from forensia.evidence.links import (
     EvidenceLink,
     evidence_link_currentness,
@@ -59,6 +62,7 @@ _BLOCKER_MESSAGES = {
     "blocked": "blocked: {owner}",
     "retry_budget": "retry budget exhausted",
     "inconclusive_limit": "repeated inconclusive limit",
+    "work_exhausted": "previous attempt made no semantic progress: {owner}",
     "prerequisite": "waiting for prerequisite {owner}",
     "external_task": "waiting for external investigation task",
     "capability_unavailable": "required evidence capability unavailable",
@@ -83,8 +87,8 @@ class Blocker:
     """A current reason the work is not runnable, carrying its owner.
 
     ``owner`` names the entity holding the condition — a required capability,
-    an open external Task, a prerequisite hypothesis, or the persisted reason —
-    so selection, stop, and reopen records can cite the same owner.
+    an open external Task, a prerequisite hypothesis, stalled hypothesis work,
+    or the persisted reason — so selection can cite the same owner.
     """
 
     code: str
@@ -239,6 +243,8 @@ def judge_work(
     *,
     selection_gate: bool = False,
     now: datetime | None = None,
+    session_id: str = "",
+    case_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, WorkJudgment]:
     """Judge work refs from Case State on demand.
 
@@ -247,8 +253,9 @@ def judge_work(
     not-ready capabilities and blocker owners for one Case State.
     ``selection_gate=True`` adds the candidate-flow-only conditions (active
     status, cooldown, retry budget, unconfirmed prerequisite, repeated
-    inconclusive) that answer "may this be selected next"; stop and reopen do
-    not ask that question and therefore never carry those blockers.
+    inconclusive, and same-session semantic exhaustion) that answer "may this
+    be selected next"; stop and reopen do not ask that question and therefore
+    never carry those blockers.
 
     Hypothesis ids without a persisted row are dropped: a judgment is only
     defined for Case State that exists.
@@ -297,6 +304,10 @@ def judge_work(
             "WHERE relation_type = 'prerequisite_for'"
         ).fetchall():
             prerequisites.setdefault(str(target_id), []).append(str(source_id))
+        if session_id and case_snapshot is None:
+            from forensia.investigation.report_gap import evaluation_snapshot
+
+            case_snapshot = evaluation_snapshot(db)
 
     judgments: dict[str, WorkJudgment] = {}
     family_counts: dict[str, int] = {}
@@ -365,6 +376,17 @@ def judge_work(
             for prerequisite in prerequisites.get(hid, ()):
                 if statuses.get(prerequisite) != "confirmed":
                     gate_blockers.append(Blocker("prerequisite", prerequisite))
+            if session_id and work_progress_exhausted(
+                db,
+                session_id,
+                hid,
+                current=work_progress_snapshot(
+                    db,
+                    hid,
+                    case_snapshot=case_snapshot,
+                ),
+            ):
+                gate_blockers.append(Blocker("work_exhausted", hid))
             blockers = [*gate_blockers, *blockers]
         judgments[hid] = WorkJudgment(
             hypothesis_id=hid,
@@ -486,6 +508,96 @@ def open_work_refs(db: CaseDB) -> list[WorkRef]:
         for cluster in clusters.values()
     ]
     return sorted(refs, key=lambda ref: ref.ref_id)
+
+
+def work_progress_snapshot(
+    db: CaseDB,
+    hypothesis_id: str,
+    *,
+    case_snapshot: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Project the existing semantic progress view onto one hypothesis."""
+    from forensia.investigation.report_gap import evaluation_snapshot
+
+    row = db.execute(
+        "SELECT verification_spec, required_entities FROM hypotheses "
+        "WHERE hypothesis_id = ?",
+        [hypothesis_id],
+    ).fetchone()
+    if row is None:
+        return None
+
+    snapshot = case_snapshot if case_snapshot is not None else evaluation_snapshot(db)
+    identity = json.dumps(
+        {
+            "source_coverage": snapshot["identity"],
+            "verification_spec": normalize_value(row[0]),
+            "required_entities": normalize_value(row[1]),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        default=str,
+    )
+    return {
+        "identity": hashlib.sha256(identity.encode("utf-8")).hexdigest(),
+        "open_work": tuple(
+            ref for ref in snapshot["open_work"] if hypothesis_id in ref[0]
+        ),
+        "observations": tuple(
+            item for item in snapshot["observations"] if item[0] == hypothesis_id
+        ),
+        "contradictions": tuple(
+            item for item in snapshot["contradictions"] if item[0] == hypothesis_id
+        ),
+    }
+
+
+def work_progress_fingerprint(snapshot: dict[str, Any]) -> str:
+    """Hash the stable JSON form of one semantic work snapshot."""
+    encoded = json.dumps(
+        snapshot,
+        ensure_ascii=False,
+        sort_keys=True,
+        default=str,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def work_progress_exhausted(
+    db: CaseDB,
+    session_id: str,
+    hypothesis_id: str,
+    *,
+    current: dict[str, Any] | None = None,
+) -> bool:
+    """Check whether this session's unchanged completed attempt exhausted work."""
+    if not session_id:
+        return False
+    row = db.execute(
+        "SELECT output_json FROM trace.investigation_steps "
+        "WHERE session_id = ? AND hypothesis_id = ? AND phase = 'work-progress' "
+        "ORDER BY iteration DESC, created_at DESC, step_id DESC LIMIT 1",
+        [session_id, hypothesis_id],
+    ).fetchone()
+    if row is None:
+        return False
+    output = row[0]
+    if isinstance(output, str):
+        try:
+            output = json.loads(output)
+        except json.JSONDecodeError:
+            return False
+    if not isinstance(output, dict) or output.get("status") != "completed":
+        return False
+    previous_fingerprint = output.get("fingerprint")
+    if output.get("progressed") or not isinstance(previous_fingerprint, str):
+        return False
+    if current is None:
+        current = work_progress_snapshot(db, hypothesis_id)
+    if current is None:
+        return False
+    return previous_fingerprint == work_progress_fingerprint(current)
 
 
 @dataclass(frozen=True)

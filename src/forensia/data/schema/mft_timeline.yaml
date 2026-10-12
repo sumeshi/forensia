@@ -1,10 +1,12 @@
 table: mft_timeline
 core_columns:
+  - evidence_id
   - timestamp
   - timestamp_type
   - file_path
   - description
 column_descriptions:
+  evidence_id: "Canonical parent Evidence ID for this expanded timeline row; return this when retrieving evidence. timeline_id is only a projection row ID."
   timestamp: "Event time (TIMESTAMP)."
   timestamp_type: "Which $SI / $FN attribute: 'si_created', 'si_modified', 'si_accessed', 'fn_created', 'fn_modified', 'fn_accessed'."
   file_path: "Full path under the volume."

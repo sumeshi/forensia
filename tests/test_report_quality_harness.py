@@ -295,7 +295,48 @@ class TestReportQualityContract(unittest.TestCase):
             assert state["publication_status"] == "needs_review"
             assert state["evidence_confidence"] == "not_established"
             assert "needs_review` / `incomplete" in report
+            assert "stop reason: unknown" in report
             assert "Rule signal text." in report
+
+    def test_opening_notice_separates_investigation_from_report_completion(
+        self,
+    ) -> None:
+        from forensia.db.investigation_state import ensure_investigation_state
+        from forensia.report.render.writer import render_written_report
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                ensure_investigation_state(db)
+                db.execute(
+                    "UPDATE investigation_state SET status = 'stopped', "
+                    "stop_reason_code = 'no_progress_limit', "
+                    "stop_reason = 'No new work was available' WHERE state_id = 'case'"
+                )
+                with settings_scope(Settings(llm_output_language="en")):
+                    markdown_path, html_path = render_written_report(case, db)
+                    state = derive_publication_state(db)
+                report = markdown_path.read_text(encoding="utf-8")
+                html = html_path.read_text(encoding="utf-8")
+                validation = json.loads(
+                    (case.reports_dir / "report_validation.json").read_text(
+                        encoding="utf-8"
+                    )
+                )
+
+        assert state["investigation_status"] == "stopped"
+        assert state["confirmed_hypothesis_count"] == 0
+        assert state["report_complete"] is False
+        assert "no_progress_limit" in report
+        assert "Confirmed hypotheses: 0" in report
+        assert "Claim scope: deterministic_signals_only" in report
+        assert "Report material: incomplete" in report
+        assert "Investigation: stopped" in html
+        assert (
+            validation["publication_state"]["stop_reason_code"] == "no_progress_limit"
+        )
+        assert validation["publication_state"]["confirmed_hypothesis_count"] == 0
+        assert validation["report_complete"] is False
 
     def test_unverified_confirmation_is_not_established_by_report_prose(self) -> None:
         from forensia.report.render.writer import build_report_markdown_from_db

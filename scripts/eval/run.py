@@ -423,17 +423,25 @@ def _cycle_rows(conn: duckdb.DuckDBPyConnection) -> list[dict[str, Any]]:
         if cycle is not None:
             cycle["plan_broad_status"] = output.get("status")
             cycle["candidate_summary"] = output.get("candidate_summary")
-    unassigned: dict[tuple[str, str], dict[str, Any]] = {}
+    unassigned: dict[tuple[str, str, str], dict[str, Any]] = {}
 
-    def get_unassigned(session_id: Any, phase: Any) -> dict[str, Any]:
-        key = (str(session_id or "unassigned"), str(phase or "unknown"))
+    def get_unassigned(session_id: Any, phase: Any, action_id: Any) -> dict[str, Any]:
+        key = (
+            str(session_id or "unassigned"),
+            str(phase or "unknown"),
+            str(action_id or ""),
+        )
+        allocation = (
+            "finalization" if action_id == "report-finalization" else "unassigned"
+        )
         return unassigned.setdefault(
             key,
             {
                 "session_id": key[0],
                 "iteration": None,
-                "allocation": "unassigned",
+                "allocation": allocation,
                 "phase": key[1],
+                "action_id": key[2] or None,
                 "reasoning_verdicts": {},
                 "reasoning_entries": 0,
                 "logical_calls": 0,
@@ -442,18 +450,22 @@ def _cycle_rows(conn: duckdb.DuckDBPyConnection) -> list[dict[str, Any]]:
             },
         )
 
-    for session_id, phase, count in conn.execute(
-        "SELECT session_id, phase, COUNT(*) FROM trace.llm_logical_calls "
-        "WHERE session_id IS NULL OR iteration IS NULL GROUP BY session_id, phase"
+    for session_id, phase, action_id, count in conn.execute(
+        "SELECT session_id, phase, action_id, COUNT(*) "
+        "FROM trace.llm_logical_calls "
+        "WHERE session_id IS NULL OR iteration IS NULL "
+        "GROUP BY session_id, phase, action_id"
     ).fetchall():
-        get_unassigned(session_id, phase)["logical_calls"] += int(count)
+        get_unassigned(session_id, phase, action_id)["logical_calls"] += int(count)
 
-    for session_id, phase, count in conn.execute(
-        "SELECT c.session_id, c.phase, COUNT(*) FROM trace.llm_provider_attempts a "
+    for session_id, phase, action_id, count in conn.execute(
+        "SELECT c.session_id, c.phase, c.action_id, COUNT(*) "
+        "FROM trace.llm_provider_attempts a "
         "JOIN trace.llm_logical_calls c USING (logical_call_id) "
-        "WHERE c.session_id IS NULL OR c.iteration IS NULL GROUP BY c.session_id, c.phase"
+        "WHERE c.session_id IS NULL OR c.iteration IS NULL "
+        "GROUP BY c.session_id, c.phase, c.action_id"
     ).fetchall():
-        get_unassigned(session_id, phase)["provider_attempts"] += int(count)
+        get_unassigned(session_id, phase, action_id)["provider_attempts"] += int(count)
 
     return [cycles[key] for key in sorted(cycles)] + [
         unassigned[key] for key in sorted(unassigned)

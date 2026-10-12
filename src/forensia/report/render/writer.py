@@ -41,6 +41,7 @@ def _audit_notice(state: dict[str, object], fatal: list[object]) -> str:
     checks = sorted(
         {str(getattr(issue, "check_name", "validation")) for issue in fatal}
     )
+    confirmed = state.get("confirmed_hypothesis_count")
     return wording["audit_notice"].format(
         case_status=(
             wording["case_complete"]
@@ -51,7 +52,7 @@ def _audit_notice(state: dict[str, object], fatal: list[object]) -> str:
         stop_reason_code=state.get("stop_reason_code") or wording["stop_reason_none"],
         stop_reason=state.get("stop_reason") or wording["stop_reason_none"],
         evidence_confidence=state.get("evidence_confidence") or "not_established",
-        confirmed=int(state.get("confirmed_hypothesis_count") or 0),
+        confirmed=str(confirmed) if confirmed is not None else wording["unknown"],
         investigation_reasons=(
             ", ".join(
                 str(reason)
@@ -61,6 +62,43 @@ def _audit_notice(state: dict[str, object], fatal: list[object]) -> str:
             or wording["investigation_reason_none"]
         ),
         checks=", ".join(checks) or wording["audit_clear"],
+    )
+
+
+def _investigation_notice(state: dict[str, object]) -> str:
+    wording = load_report_formats()["publication"][get_settings().llm_output_language]
+    count = state.get("confirmed_hypothesis_count")
+    report_reasons = state.get("reasons") or []
+    investigation_reasons = state.get("investigation_reasons") or []
+    report_unknown = any(
+        reason in {"database_unavailable", "report_status_unavailable"}
+        for reason in report_reasons
+    )
+    investigation_unknown = any(
+        reason in {"database_unavailable", "investigation_state_unavailable"}
+        for reason in investigation_reasons
+    )
+    return wording["state_notice"].format(
+        investigation_status=state.get("investigation_status") or "unknown",
+        stop_reason_code=(
+            wording["unknown"]
+            if investigation_unknown
+            else state.get("stop_reason_code") or wording["stop_reason_none"]
+        ),
+        stop_reason=(
+            wording["unknown"]
+            if investigation_unknown
+            else state.get("stop_reason") or wording["stop_reason_none"]
+        ),
+        confirmed=(str(count) if count is not None else wording["unknown"]),
+        claim_scope=state.get("claim_scope") or wording["unknown"],
+        report_status=wording[
+            "unknown"
+            if report_unknown
+            else "report_complete"
+            if state.get("report_complete")
+            else "report_incomplete"
+        ],
     )
 
 
@@ -81,11 +119,12 @@ def build_report_markdown_from_db(db: CaseDB, case: Case | None = None) -> str:
             continue
         rendered = _strip_narrative_status_lines(body)
         ordered.append(rendered)
+    notice = _investigation_notice(publication_state)
     if not ordered:
         if publication_state.get("publication_status") == "needs_review":
-            return _publication_notice(publication_state) + "\n"
-        return ""
-    report_body = "\n\n".join(ordered).strip()
+            return notice + "\n\n" + _publication_notice(publication_state) + "\n"
+        return notice + "\n"
+    report_body = f"{notice}\n\n" + "\n\n".join(ordered).strip()
     if publication_state.get("publication_status") == "needs_review":
         report_body = f"{_publication_notice(publication_state)}\n\n{report_body}"
     return report_body + "\n"

@@ -12,17 +12,12 @@ from forensia.core.session import Hypothesis, SessionState
 from forensia.db.database import CaseDB
 from forensia.db.query import fetch_records
 from forensia.investigation.hypotheses.hypothesis_manager import (
-    _resolve_hypothesis_in_transaction,
     admit_new_hypothesis,
     merge_active_hypotheses,
     qualify_event_contexts,
 )
 from forensia.investigation.hypotheses.hypothesis_model import (
     _description_has_material_unknown,
-)
-from forensia.investigation.verification.settlement import (
-    SettlementInput,
-    settle_hypothesis,
 )
 from forensia.knowledge.rules.loader import _get_rule_cache
 from forensia.report.answers.keypoint_catalog import (
@@ -189,87 +184,7 @@ def _seed_rule_hypotheses(
             "HYPOTHESIS",
             f"seeded {len(seeded)} rule-declared hypotheses (active={len(state.active_hypotheses)})",
         )
-    # G-8: Pre-screen telemetry availability to avoid wasting LLM cycles on
-    # hypotheses whose required event IDs are entirely absent from the case.
-    prescreen_telemetry_availability(db, state, session_id)
     return seeded_ids
-
-
-def prescreen_telemetry_availability(
-    db: CaseDB,
-    state: SessionState,
-    session_id: str,
-) -> None:
-    """Resolve as 'untestable' any active hypothesis whose confirm_when.co_observed_event_ids
-    are entirely absent from the case evtx_events table.
-
-    Rules:
-    - No confirm_when or no co_observed_event_ids → skip (cannot determine)
-    - ALL referenced event IDs missing → resolve as untestable immediately
-    - SOME exist → let it proceed (normal investigation)
-
-    This prevents wasting 3+ LLM cycles on hypotheses that will ultimately
-    become untestable due to missing telemetry.
-    """
-    # Compute the set of event_ids present in the case.
-    try:
-        rows = db.execute(
-            "SELECT DISTINCT event_id FROM evtx_events WHERE event_id IS NOT NULL"
-        ).fetchall()
-        available_event_ids: set[int] = {int(r[0]) for r in rows}
-    except Exception:
-        # Table may not exist yet or have no event_id column
-        available_event_ids = set()
-
-    screened = 0
-    for hyp in list(state.active_hypotheses):
-        confirm_when = hyp.verification_spec.support_conditions
-        co_observed = confirm_when.get("co_observed_event_ids")
-        if not co_observed or not isinstance(co_observed, list):
-            continue
-        # Coerce to int set
-        required_ids: set[int] = set()
-        for eid in co_observed:
-            try:
-                required_ids.add(int(eid))
-            except TypeError, ValueError:
-                continue
-        if not required_ids:
-            continue
-        # G-8: If ALL required event_ids are missing → untestable
-        if not required_ids.intersection(available_event_ids):
-            id_list = ", ".join(str(eid) for eid in sorted(required_ids))
-            _log(
-                "RESOLVE",
-                f"{hyp.id} — untestable (pre-screen): required event IDs [{id_list}] "
-                f"are not present in the available telemetry",
-            )
-            decision = settle_hypothesis(
-                db,
-                SettlementInput(
-                    hypothesis=hyp,
-                    checker_verdict="inconclusive",
-                    check_summary="pre-screened against available telemetry",
-                    unavailable_missing_event_ids=sorted(required_ids),
-                ),
-            )
-            if decision.allowed and decision.verdict == "untestable":
-                with db.transaction():
-                    _resolve_hypothesis_in_transaction(
-                        db=db,
-                        state=state,
-                        hypothesis_id=hyp.id,
-                        verdict=decision.verdict,
-                        summary=decision.reason,
-                        session_id=session_id,
-                    )
-                screened += 1
-    if screened:
-        _log(
-            "HYPOTHESIS",
-            f"pre-screened {screened} hypotheses as untestable "
-            f"(missing telemetry, active={len(state.active_hypotheses)})",
-        )
 
 
 def _family_interleaved_keypoint_names() -> list[str]:

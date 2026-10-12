@@ -90,6 +90,29 @@ def test_empty_sql_receipt_is_not_negative_evidence_or_support(tmp_path) -> None
     assert evaluation.outcome == "partial"
     assert evaluation.empty_semantics == "unknown"
     assert "supporting" not in receipt.model_dump()
+
+    raw_only = receipt.model_copy(
+        update={
+            "status": "ok",
+            "returned_count": 2,
+            "arguments": {
+                "normalized_sql": "SELECT timeline_id FROM mft_timeline",
+                "canonical_evidence_count": 0,
+                "observed_evidence_id_count": 0,
+                "unresolved_evidence_id_count": 0,
+                "missing_evidence_id_count": 2,
+            },
+        }
+    )
+    raw_only_eval = evaluate_retrieval(
+        raw_only,
+        required_fields=["normalized_sql"],
+    )
+    assert raw_only_eval.outcome == "partial"
+    assert raw_only_eval.canonical_evidence_count == 0
+    assert raw_only_eval.unresolved_evidence_id_count == 0
+    assert raw_only_eval.missing_evidence_id_count == 2
+    assert raw_only_eval.empty_semantics == "unknown"
     error = receipt.model_copy(
         update={
             "status": "error",
@@ -129,32 +152,43 @@ def test_empty_sql_receipt_is_not_negative_evidence_or_support(tmp_path) -> None
         )
 
 
-def test_fallback_receipt_keeps_pre_limit_count_and_truncation() -> None:
-    receipt = build_sql_receipt(
-        db=object(),
-        session_id="S-1",
-        plan_cycle=1,
-        query_index=1,
-        hypothesis=Hypothesis(id="H-1", description="test"),
-        planned_query=PlannedQuery(
-            query_id="H-1-q1",
-            hypothesis_id="H-1",
-            purpose="test",
-            sql="SELECT 1",
-        ),
-        query_hash="qhash",
-        duration_ms=1,
-        rows=[{"event_id": i} for i in range(20)],
-        original_row_count=0,
-        fallback_info={
-            "phase": "artifact_table",
-            "original_row_count": 24,
-            "truncated": True,
-        },
-    )
+def test_receipt_identity_and_fallback_truncation() -> None:
+    receipts = [
+        build_sql_receipt(
+            db=object(),
+            session_id="S-1",
+            plan_cycle=1,
+            query_index=1,
+            hypothesis=Hypothesis(id=hypothesis_id, description="test"),
+            planned_query=PlannedQuery(
+                query_id=f"{hypothesis_id}-q1",
+                hypothesis_id=hypothesis_id,
+                purpose="test",
+                sql="SELECT 1",
+            ),
+            query_hash="qhash",
+            duration_ms=1,
+            rows=[{"event_id": i} for i in range(20)],
+            original_row_count=0,
+            host_executed_sql="SELECT event_id FROM evtx_events LIMIT 1001",
+            fallback_info={
+                "phase": "artifact_table",
+                "original_row_count": 24,
+                "truncated": True,
+            },
+        )
+        for hypothesis_id in ("H-1", "H-2")
+    ]
+    assert receipts[0].receipt_id != receipts[1].receipt_id
+    receipt = receipts[0]
     assert receipt.arguments["fallback_row_count"] == 24
     assert receipt.returned_count == 20
     assert receipt.truncated is True
+    assert (
+        receipt.arguments["host_executed_sql"]
+        == "SELECT event_id FROM evtx_events LIMIT 1001"
+    )
+    assert receipt.arguments["host_row_limit"] == 1000
 
 
 def test_assessment_hydrates_and_deduplicates_canonical_evidence(tmp_path) -> None:
@@ -398,42 +432,42 @@ def test_evidence_scope_tracks_normalizer_receipt_and_source_changes(tmp_path):
         (
             "partial",
             "SELECT evidence_id FROM evtx_events WHERE event_id = 4688 LIMIT 20",
-            "untestable",
+            "inconclusive",
         ),
         (
             "unknown",
             "SELECT evidence_id FROM evtx_events WHERE event_id = 4688 LIMIT 20",
-            "untestable",
+            "inconclusive",
         ),
         (
             "unavailable",
             "SELECT evidence_id FROM evtx_events WHERE event_id = 4688 LIMIT 20",
-            "untestable",
+            "inconclusive",
         ),
         (
             "available",
             "SELECT evidence_id FROM evtx_events WHERE event_id = 4688 AND computer = 'WS-X' LIMIT 20",
-            "untestable",
+            "inconclusive",
         ),
         (
             "available",
             "SELECT evidence_id FROM evtx_events WHERE event_id = 4624 LIMIT 20",
-            "untestable",
+            "inconclusive",
         ),
         (
             "available",
             "SELECT evidence_id FROM evtx_events TABLESAMPLE SYSTEM(0 PERCENT) WHERE event_id = 4688 LIMIT 20",
-            "untestable",
+            "inconclusive",
         ),
         (
             "available",
             "SELECT unnest([]) FROM evtx_events WHERE event_id = 4688 LIMIT 20",
-            "untestable",
+            "inconclusive",
         ),
         (
             "available",
             "SELECT evidence_id FROM evtx_events WHERE event_id = 4688 LIMIT 10 PERCENT",
-            "untestable",
+            "inconclusive",
         ),
     ],
 )
@@ -480,9 +514,7 @@ def test_runner_empty_sql_reaches_only_observable_refutation(
             tracker=SimpleNamespace(
                 record=lambda *a, **k: None,
                 zero_row_inconclusive_count=3,
-                consecutive_same_missing=0,
             ),
-            missing_checks_raw=[],
             sufficiency_result=None,
             check_result=SimpleNamespace(verdict="inconclusive", report_text="empty"),
         )
@@ -504,3 +536,75 @@ def test_runner_empty_sql_reaches_only_observable_refutation(
             json.loads(payload)["retrieval_evaluation"]
             == rs.retrieval_evaluation.model_dump()
         )
+
+
+@pytest.mark.parametrize(
+    ("projection", "expected_canonical", "expected_missing", "expected_unresolved"),
+    [
+        ("timestamp", 0, 1, 0),
+        ("timeline_id AS evidence_id", 0, 0, 1),
+        ("evidence_id", 1, 0, 0),
+    ],
+)
+def test_timeline_query_hydration_controls_retrieval_adequacy(
+    tmp_path, projection, expected_canonical, expected_missing, expected_unresolved
+):
+    from forensia.investigation.investigation_session import Ctx
+
+    case = Case.init(tmp_path)
+    with CaseDB(case) as db:
+        db.execute(
+            "INSERT INTO mft_entries (evidence_id, file_path) VALUES ('mft-real', 'C:/x')"
+        )
+        db.execute(
+            "INSERT INTO mft_timeline (timeline_id, evidence_id, timestamp) "
+            "VALUES ('timeline-row', 'mft-real', '2025-01-01')"
+        )
+        hypothesis = Hypothesis(id="H-timeline", description="File activity")
+        query = _materialize_planned_query(
+            {
+                "query_id": "Q-timeline",
+                "hypothesis_id": hypothesis.id,
+                "purpose": "retrieve file timeline evidence",
+                "sql": f"SELECT {projection} FROM mft_timeline",
+            },
+            db,
+        )
+        rs = SimpleNamespace(
+            hypothesis=hypothesis,
+            ctx=Ctx(),
+            state=SessionState(session_id="S-timeline"),
+            db=db,
+            session_id="S-timeline",
+            plan_cycle=1,
+            query_index=0,
+            emit_fn=None,
+            focus_sections={},
+            hypothesis_plan=SimpleNamespace(query=query),
+            tracker=SimpleNamespace(record=lambda *a, **k: None),
+            sufficiency_result=None,
+        )
+        with patch(
+            "forensia.investigation.hypotheses.hypothesis_runner.resolve_zero_row_fallbacks",
+            side_effect=lambda **kwargs: (kwargs["rows"], None),
+        ):
+            assert _phase_execute(rs) == "ok"
+
+    evaluation = rs.retrieval_evaluation
+    assert evaluation.canonical_evidence_count == expected_canonical
+    assert evaluation.missing_evidence_id_count == expected_missing
+    assert evaluation.unresolved_evidence_id_count == expected_unresolved
+    assert evaluation.outcome == ("adequate" if expected_canonical else "partial")
+    assert rs.result_summary["retrieval_evaluation"]["outcome"] == evaluation.outcome
+    with CaseDB(case) as db:
+        payload = json.loads(
+            db.execute(
+                "SELECT output_json FROM trace.investigation_steps WHERE phase = 'do'"
+            ).fetchone()[0]
+        )
+    receipt = payload["tool_receipt"]
+    assert receipt["result_refs"]["evidence_ids"] == (
+        ["mft-real"] if expected_canonical else []
+    )
+    assert receipt["arguments"]["host_row_limit"] == 1000
+    assert "_forensia_bounded LIMIT 1001" in receipt["arguments"]["host_executed_sql"]

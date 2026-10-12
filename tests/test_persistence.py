@@ -19,7 +19,10 @@ from forensia.core.verification import VerificationSpec
 from forensia.db.database import CaseDB
 from forensia.investigation.hypotheses.hypothesis_manager import merge_active_hypotheses
 from forensia.investigation.hypotheses.hypothesis_store import load_persisted_hypotheses
-from forensia.investigation.investigation_session import append_hypothesis_reasoning
+from forensia.investigation.investigation_session import (
+    _save_step,
+    append_hypothesis_reasoning,
+)
 from forensia.investigation.investigator import final_summary
 from forensia.investigation.report_gap import (
     classify_gap_kind,
@@ -193,6 +196,85 @@ class PersistenceTests(unittest.TestCase):
 
             self.assertEqual(first, second)
             self.assertEqual(1, count)
+
+    def test_trace_identity_keeps_hypotheses_and_sessions_separate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                for hypothesis_id, output in (("H-1", "one"), ("H-2", "two")):
+                    _save_step(
+                        db,
+                        "S-1",
+                        1,
+                        "sufficiency",
+                        hypothesis_id,
+                        {"query_index": 1},
+                        {"result": output},
+                        suffix="1",
+                    )
+                _save_step(
+                    db,
+                    "S-1",
+                    1,
+                    "sufficiency",
+                    "H-1",
+                    {"query_index": 1, "revision": 2},
+                    {"result": "one-updated"},
+                    suffix="1",
+                )
+                for session_id in ("S-1", "S-2"):
+                    append_hypothesis_reasoning(
+                        db,
+                        "H-1",
+                        session_id,
+                        1,
+                        "plan",
+                        "same query",
+                        query_id="q-1",
+                    )
+                steps = db.execute(
+                    "SELECT hypothesis_id, input_json, output_json "
+                    "FROM trace.investigation_steps "
+                    "WHERE phase = 'sufficiency' ORDER BY hypothesis_id"
+                ).fetchall()
+                reasoning_sessions = db.execute(
+                    "SELECT DISTINCT session_id FROM trace.hypothesis_reasoning "
+                    "ORDER BY session_id"
+                ).fetchall()
+
+            self.assertEqual(
+                [
+                    (
+                        "H-1",
+                        '{"query_index": 1, "revision": 2}',
+                        '{"result": "one-updated"}',
+                    ),
+                    ("H-2", '{"query_index": 1}', '{"result": "two"}'),
+                ],
+                steps,
+            )
+            self.assertEqual([("S-1",), ("S-2",)], reasoning_sessions)
+
+    def test_step_identity_keeps_execution_attempts_separate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                for attempt_ref in ("receipt-1", "receipt-2"):
+                    _save_step(
+                        db,
+                        "S-1",
+                        1,
+                        "do",
+                        "H-1",
+                        {"planned_query": "same"},
+                        {"attempt": {"attempt_ref": attempt_ref}},
+                        suffix="Q-1-01",
+                    )
+                count = db.execute(
+                    "SELECT COUNT(*) FROM trace.investigation_steps WHERE phase = 'do'"
+                ).fetchone()[0]
+
+            self.assertEqual(2, count)
 
     def test_load_persisted_hypotheses_restores_resolved_rows(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

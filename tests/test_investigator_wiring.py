@@ -169,6 +169,7 @@ class InvestigateWiringTests(unittest.TestCase):
                 )
 
                 async def fail_final_refresh(**kwargs):
+                    self.assertIsNone(kwargs["iteration"])
                     receipt = db.execute(
                         "SELECT status, finished_at, terminal_reason "
                         "FROM trace.investigation_sessions WHERE session_id = ?",
@@ -961,6 +962,106 @@ class InvestigateWiringTests(unittest.TestCase):
                 broad_call.assert_awaited_once()
                 runner.assert_not_awaited()
 
+    def test_stalled_hypothesis_yields_to_new_work_within_cycle_budget(self) -> None:
+        from forensia.core.session import Hypothesis, SessionState
+        from forensia.investigation import investigation_cycle
+        from forensia.investigation.investigation_session import Ctx
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            stalled = Hypothesis(
+                id="H-STALL", description="repeat the same query", status="active"
+            )
+            state = SessionState(session_id="S-SWITCH", active_hypotheses=[stalled])
+            with CaseDB(case) as db:
+                db.execute(
+                    "INSERT INTO hypotheses (hypothesis_id, description, status, "
+                    "verification_spec) VALUES ('H-STALL', ?, 'active', ?)",
+                    [stalled.description, '{"spec_version":"1"}'],
+                )
+                broad_calls: list[int] = []
+
+                async def broad_plan(**kwargs):
+                    broad_calls.append(kwargs["plan_cycle"])
+                    next_hypothesis = Hypothesis(
+                        id="H-NEW", description="new candidate", status="active"
+                    )
+                    db.execute(
+                        "INSERT INTO hypotheses (hypothesis_id, description, status, "
+                        "verification_spec) VALUES ('H-NEW', ?, 'active', ?)",
+                        [next_hypothesis.description, '{"spec_version":"1"}'],
+                    )
+                    state.active_hypotheses.append(next_hypothesis)
+                    return False
+
+                async def runner(**kwargs):
+                    hypothesis = kwargs["hypothesis"]
+                    if hypothesis.id == "H-NEW":
+                        db.execute(
+                            "INSERT INTO hypothesis_evidence "
+                            "(link_id, hypothesis_id, evidence_id, assessment_id, role) "
+                            "VALUES ('L-NEW', 'H-NEW', 'E-NEW', 'A-NEW', 'supporting')"
+                        )
+                    return kwargs["state"], {}
+
+                async def passthrough(call_fn, **kwargs):
+                    return await call_fn(**kwargs)
+
+                with (
+                    mock.patch.object(
+                        investigation_cycle,
+                        "_run_broad_plan_step",
+                        new=mock.AsyncMock(side_effect=broad_plan),
+                    ),
+                    mock.patch.object(
+                        investigation_cycle,
+                        "_call_with_outage_recovery",
+                        new=passthrough,
+                    ),
+                    mock.patch.object(
+                        investigation_cycle,
+                        "_investigate_one_hypothesis",
+                        new=mock.AsyncMock(side_effect=runner),
+                    ) as run_hypothesis,
+                ):
+                    for plan_cycle in (1, 2):
+                        asyncio.run(
+                            investigation_cycle._run_cycle_body(
+                                state=state,
+                                ctx=Ctx(),
+                                db=db,
+                                case=case,
+                                session_id="S-SWITCH",
+                                base_url="http://127.0.0.1:9",
+                                model="none",
+                                progress_callback=None,
+                                max_queries_per_hypothesis=1,
+                                plan_cycle=plan_cycle,
+                                max_iter=2,
+                                report_only=False,
+                            )
+                        )
+
+                self.assertEqual([2], broad_calls)
+                self.assertEqual(
+                    ["H-STALL", "H-NEW"],
+                    [
+                        call.kwargs["hypothesis"].id
+                        for call in run_hypothesis.await_args_list
+                    ],
+                )
+                self.assertEqual(
+                    [
+                        ("H-NEW", "true"),
+                        ("H-STALL", "false"),
+                    ],
+                    db.execute(
+                        "SELECT hypothesis_id, json_extract(output_json, '$.progressed') "
+                        "FROM trace.investigation_steps WHERE phase = 'work-progress' "
+                        "ORDER BY hypothesis_id"
+                    ).fetchall(),
+                )
+
     def test_selection_failure_persists_failed_session_without_execution(self) -> None:
         from forensia.investigation import investigation_cycle
         from forensia.investigation import investigator as investigator_module
@@ -1078,11 +1179,57 @@ class InvestigateWiringTests(unittest.TestCase):
                         )
                         return {}
 
+                    async def _stop_after_execution(_env):
+                        session_id = db.execute(
+                            "SELECT session_id FROM trace.investigation_sessions "
+                            "ORDER BY started_at DESC LIMIT 1"
+                        ).fetchone()[0]
+                        db.execute(
+                            "INSERT INTO trace.investigation_steps "
+                            "(step_id, session_id, iteration, phase, input_json, output_json, created_at) "
+                            "VALUES ('plan-old', ?, 1, 'plan-broad', '{}', ?, now()), "
+                            "('plan-last', ?, 2, 'plan-broad', '{}', ?, now()), "
+                            "('draft-old', ?, 1, 'plan-broad-candidate', ?, '{}', now()), "
+                            "('draft-a', ?, 2, 'plan-broad-candidate', ?, '{}', now()), "
+                            "('draft-a-retry', ?, 2, 'plan-broad-candidate', ?, '{}', now()), "
+                            "('draft-b', ?, 2, 'plan-broad-candidate', ?, '{}', now()), "
+                            "('executed', ?, 2, 'do', '{}', '{}', now())",
+                            [
+                                session_id,
+                                json.dumps(
+                                    {
+                                        "status": "completed",
+                                        "candidate_summary": {"candidate_count": 3},
+                                    }
+                                ),
+                                session_id,
+                                json.dumps(
+                                    {
+                                        "status": "completed",
+                                        "candidate_summary": {
+                                            "candidate_count": 2,
+                                            "unexamined_candidate_count": 0,
+                                        },
+                                    }
+                                ),
+                                session_id,
+                                json.dumps({"candidate_ref": "C-old"}),
+                                session_id,
+                                json.dumps({"candidate_ref": "C-a"}),
+                                session_id,
+                                json.dumps({"candidate_ref": "C-a"}),
+                                session_id,
+                                json.dumps({"candidate_ref": "C-b"}),
+                                session_id,
+                            ],
+                        )
+                        return "stopped", 0, reason
+
                     with (
                         mock.patch.object(
                             investigator_module,
                             "_run_investigation_loop",
-                            new=mock.AsyncMock(return_value=("stopped", 0, reason)),
+                            new=mock.AsyncMock(side_effect=_stop_after_execution),
                         ),
                         mock.patch.object(
                             investigator_module,
@@ -1105,6 +1252,23 @@ class InvestigateWiringTests(unittest.TestCase):
                         )
 
                     self.assertEqual(result["status"], "stopped")
+                    stopped_summary = db.execute(
+                        "SELECT stop_summary FROM investigation_state WHERE state_id = 'case'"
+                    ).fetchone()[0]
+                    stopped_summary = (
+                        json.loads(stopped_summary)
+                        if isinstance(stopped_summary, str)
+                        else stopped_summary
+                    )
+                    self.assertEqual(stopped_summary["candidate_count"], 2)
+                    self.assertEqual(stopped_summary["drafted_work_count"], 2)
+                    self.assertEqual(
+                        stopped_summary["drafted_work_scope"],
+                        "finding_and_gap_candidates",
+                    )
+                    self.assertEqual(stopped_summary["planner_status"], "completed")
+                    self.assertEqual(stopped_summary["planner_iteration"], 2)
+                    self.assertEqual(stopped_summary["planner_step_id"], "plan-last")
                     receipt = db.execute(
                         "SELECT status, phase, finished_at IS NOT NULL, terminal_reason "
                         "FROM trace.investigation_sessions"

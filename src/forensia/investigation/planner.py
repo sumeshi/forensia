@@ -25,7 +25,6 @@ from forensia.context.sql_templates import (
 from forensia.core.session import Hypothesis, PlannedQuery, SessionState
 from forensia.db.database import CaseDB
 from forensia.db.evidence_lookup import canonical_record_table
-from forensia.db.query import normalize_value
 from forensia.evidence.links import verification_spec_fingerprint
 from forensia.investigation.hypotheses.execution import (
     _evidence_scope_fingerprint,
@@ -140,8 +139,6 @@ def _typed_observation_query(
     )
     while batch := cursor.fetchmany(512):
         for evidence_id, value in batch:
-            if family == "prefetch" and field == "exec_times":
-                value = normalize_value(value)
             if _observation_value_matches(value, operator, expected):
                 matching_ids.append(str(evidence_id))
                 if len(matching_ids) == MAX_SQL_ROWS:

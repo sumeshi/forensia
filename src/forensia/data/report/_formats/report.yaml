@@ -2,6 +2,9 @@ version: 1
 
 publication:
   ja:
+    state_notice: |-
+      > **調査状態: {investigation_status}（停止理由: {stop_reason_code} — {stop_reason}）**
+      > 確定仮説: {confirmed} 件。結論の範囲: {claim_scope}。報告材料: {report_status}。
     notice: |-
       > **レポート状態: `needs_review` / `incomplete`**
       > 現行の出力がない節: {missing}。更新が必要な節: {stale}。
@@ -20,8 +23,14 @@ publication:
     stop_reason_none: "なし"
     case_complete: "complete"
     case_incomplete: "incomplete"
+    report_complete: "complete"
+    report_incomplete: "incomplete"
+    unknown: "不明"
     incomplete_reason: "公開要件が未充足"
   en:
+    state_notice: |-
+      > **Investigation: {investigation_status} (stop reason: {stop_reason_code} — {stop_reason})**
+      > Confirmed hypotheses: {confirmed}. Claim scope: {claim_scope}. Report material: {report_status}.
     notice: |-
       > **Report status: `needs_review` / `incomplete`**
       > Sections without current output: {missing}. Sections needing refresh: {stale}.
@@ -40,6 +49,9 @@ publication:
     stop_reason_none: "none"
     case_complete: "complete"
     case_incomplete: "incomplete"
+    report_complete: "complete"
+    report_incomplete: "incomplete"
+    unknown: "unknown"
     incomplete_reason: "publication requirements are incomplete"
 
 narration_labels:

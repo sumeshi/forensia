@@ -72,6 +72,9 @@ class RetrievalEvaluation(BaseModel):
         "unknown"
     )
     sampling: dict[str, Any] = Field(default_factory=dict)
+    canonical_evidence_count: int | None = None
+    unresolved_evidence_id_count: int | None = None
+    missing_evidence_id_count: int | None = None
     empty_semantics: Literal["not_empty", "observable", "unknown"] = "not_empty"
     retry_hints: list[str] = Field(default_factory=list)
 
@@ -134,6 +137,19 @@ def evaluate_retrieval(
         coverage_status = (
             coverage if coverage in {"partial", "unavailable"} else "unknown"
         )
+    canonical_count = receipt.arguments.get("canonical_evidence_count")
+    observed_count = receipt.arguments.get("observed_evidence_id_count")
+    unresolved_count = receipt.arguments.get("unresolved_evidence_id_count")
+    missing_id_count = receipt.arguments.get("missing_evidence_id_count")
+    canonical_gap = bool(
+        receipt.returned_count
+        and canonical_count is not None
+        and (
+            (observed_count is not None and canonical_count < observed_count)
+            or (unresolved_count or 0) > 0
+            or (missing_id_count or 0) > 0
+        )
+    )
 
     if missing or scope_status == "rejected":
         outcome: Literal[
@@ -142,6 +158,8 @@ def evaluate_retrieval(
     elif receipt.status in {"error", "unavailable"}:
         outcome = "unavailable"
     elif receipt.status == "partial":
+        outcome = "partial"
+    elif canonical_gap:
         outcome = "partial"
     elif receipt.returned_count == 0 and coverage_status != "available":
         outcome = "partial"
@@ -152,6 +170,11 @@ def evaluate_retrieval(
     if receipt.status == "empty":
         empty_semantics = "observable" if coverage_status == "available" else "unknown"
     hints = list(receipt.retry_hints)
+    if canonical_gap:
+        empty_semantics = "unknown"
+        hints.append(
+            "return resolvable canonical evidence IDs before interpreting this result"
+        )
     if outcome in {"invalid", "needs-pivot", "partial"} and not hints:
         hints = ["narrow or pivot the retrieval scope"]
     return RetrievalEvaluation(
@@ -164,7 +187,21 @@ def evaluate_retrieval(
             "returned_count": receipt.returned_count,
             "sampled_count": receipt.sampled_count,
             "truncated": receipt.truncated,
+            "observed_row_count": (
+                None
+                if receipt.truncated
+                else receipt.arguments.get("observed_row_count")
+            ),
+            "observed_row_count_lower_bound": (
+                receipt.arguments.get("observed_row_count")
+                if receipt.truncated
+                else None
+            ),
+            "total_row_count": None if receipt.truncated else receipt.returned_count,
         },
+        canonical_evidence_count=canonical_count,
+        unresolved_evidence_id_count=unresolved_count,
+        missing_evidence_id_count=missing_id_count,
         empty_semantics=empty_semantics,
         retry_hints=hints,
     )

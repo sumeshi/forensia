@@ -83,6 +83,29 @@ def test_logical_call_inherits_hypothesis_scope(telemetry) -> None:
     assert row == ("H-CHAIN", 3)
 
 
+def test_finalization_scope_is_not_allocated_to_an_investigation_cycle(
+    telemetry,
+) -> None:
+    from scripts.eval.run import _cycle_rows
+
+    with (
+        telemetry_scope(iteration=4),
+        telemetry_scope(iteration=None, action_id="report-finalization"),
+    ):
+        logical_call_id = telemetry.begin_logical_call(phase="section-narrative")
+
+    row = telemetry.db.execute(
+        "SELECT iteration FROM trace.llm_logical_calls WHERE logical_call_id = ?",
+        (logical_call_id,),
+    ).fetchone()
+    assert row == (None,)
+    finalization = _cycle_rows(telemetry.db.conn)
+    assert len(finalization) == 1
+    assert finalization[0]["allocation"] == "finalization"
+    assert finalization[0]["action_id"] == "report-finalization"
+    assert finalization[0]["logical_calls"] == 1
+
+
 def test_logical_call_cap_counts_failed_calls_and_blocks_before_transport(
     tmp_path,
 ) -> None:

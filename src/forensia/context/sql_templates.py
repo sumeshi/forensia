@@ -22,7 +22,6 @@ FORBIDDEN_SQL = re.compile(
     r"\b(insert|update|delete|drop|alter|create|attach|detach|copy|pragma|truncate|merge|replace)\b",
     re.IGNORECASE,
 )
-LIMIT_PATTERN = re.compile(r"\blimit\s+(\d+)", re.IGNORECASE)
 
 # Host-enforced upper bound on returned rows. Any explicit LIMIT above this is
 # rejected so the host always produces a bounded observation (T-20).
@@ -30,18 +29,40 @@ MAX_SQL_ROWS = 1000
 
 
 def _enforce_row_limit(sql: str) -> None:
-    """Reject SQL whose explicit LIMIT exceeds the host-bound maximum."""
+    """Reject invalid or oversized LIMITs in every SELECT scope."""
+    try:
+        tree = sqlglot.parse_one(sql, read="duckdb")
+    except sqlglot.errors.ParseError as exc:
+        raise ValueError("SQL could not be parsed") from exc
+    for limit_node in tree.find_all(sqlglot.exp.Limit):
+        value = limit_node.expression
+        if not isinstance(value, sqlglot.exp.Literal) or value.is_string:
+            continue  # The DuckDB binder reports non-literal LIMIT expressions.
+        limit = int(value.this)
+        if limit <= 0:
+            raise ValueError("SQL LIMIT must be a positive integer")
+        if limit > MAX_SQL_ROWS:
+            raise ValueError(
+                f"SQL LIMIT {limit} exceeds the host maximum of {MAX_SQL_ROWS} rows"
+            )
 
-    match = LIMIT_PATTERN.search(sql)
-    if not match:
-        return
-    limit = int(match.group(1))
-    if limit <= 0:
-        raise ValueError("SQL LIMIT must be a positive integer")
-    if limit > MAX_SQL_ROWS:
-        raise ValueError(
-            f"SQL LIMIT {limit} exceeds the host maximum of {MAX_SQL_ROWS} rows"
-        )
+
+def bounded_select_sql(sql: str, *, max_rows: int = MAX_SQL_ROWS) -> str:
+    """Bound the final result, including CTE and UNION output."""
+    if max_rows < 1:
+        raise ValueError("max_rows must be positive")
+    normalized = sql.rstrip().rstrip(";")
+    tree = sqlglot.parse_one(normalized, read="duckdb")
+    limit = tree.args.get("limit")
+    if limit is not None and not limit.args.get("limit_options"):
+        value = limit.expression
+        if isinstance(value, sqlglot.exp.Literal) and not value.is_string:
+            try:
+                if int(value.this) <= max_rows:
+                    return normalized
+            except ValueError:
+                pass
+    return f"SELECT * FROM ({normalized}) AS _forensia_bounded LIMIT {max_rows + 1}"
 
 
 @dataclass(frozen=True, slots=True)

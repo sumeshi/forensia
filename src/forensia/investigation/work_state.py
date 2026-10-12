@@ -16,6 +16,7 @@ from forensia.core.session import Hypothesis
 from forensia.db.database import CaseDB
 from forensia.investigation.work_judgment import (
     VERIFICATION_INFEASIBLE_CODES,
+    blocker_message,
     coverage_readiness,
     judge_work,
 )
@@ -55,8 +56,8 @@ def ensure_objective_gap(db: CaseDB, objective: str) -> str:
 # Default reopen condition per stop classification; the shared judgment
 # overrides it whenever the current Case State derives a more specific one.
 _CLASSIFICATION_RETRY_CONDITIONS = {
-    "untestable": "required_capability_available",
-    "blocked": "required_capability_available",
+    "untestable": "human_or_external_result",
+    "blocked": "new_evidence_or_manual_resume",
     "needs_review": "new_evidence_or_human_review",
     "deferred": "new_evidence_or_manual_resume",
 }
@@ -192,7 +193,7 @@ def classify_active_hypotheses_on_stop(
                 SELECT
                     (SELECT COUNT(*) FROM trace.hypothesis_reasoning WHERE hypothesis_id = ?),
                     (SELECT COUNT(*) FROM hypothesis_evidence WHERE hypothesis_id = ?),
-                    sufficiency_status, blocked_reason
+                    sufficiency_status, sufficiency_reason, blocked_reason
                 FROM hypotheses WHERE hypothesis_id = ?
                 """,
                 [hypothesis_id, hypothesis_id, hypothesis_id],
@@ -200,7 +201,8 @@ def classify_active_hypotheses_on_stop(
             reasoning_count = int(row[0] or 0) if row else 0
             evidence_count = int(row[1] or 0) if row else 0
             sufficiency_status = str(row[2] or "") if row else ""
-            prior_blocked_reason = str(row[3] or "") if row else ""
+            sufficiency_reason = str(row[3] or "") if row else ""
+            prior_blocked_reason = str(row[4] or "") if row else ""
             judgment = judge_work(db, [hypothesis_id])[hypothesis_id]
             classification = _classification_for(
                 reasoning_count=reasoning_count,
@@ -225,17 +227,26 @@ def classify_active_hypotheses_on_stop(
                 "deferred": f"Not investigated before {stop_reason_code}",
                 "blocked": f"Blocked before {stop_reason_code}",
                 "needs_review": f"Human review or more evidence required after {stop_reason_code}",
-                "untestable": f"Required telemetry unavailable at {stop_reason_code}",
+                "untestable": (
+                    blocker_message(judgment)
+                    or sufficiency_reason
+                    or "Verification cannot be evaluated with the current requirements"
+                ),
             }[classification]
             if observation_blockers:
                 reason = "typed-observation-infeasible: " + "; ".join(
                     observation_blockers
                 )
             if judgment.unavailable_capabilities or judgment.external_task_ids:
-                owners = list(judgment.unavailable_capabilities)
+                owners = [
+                    capability
+                    for capability in judgment.unavailable_capabilities
+                    if capability not in reason
+                ]
                 if judgment.external_task_ids:
                     owners.append("open external task " + judgment.external_task_ids[0])
-                reason += ": " + ", ".join(owners)
+                if owners:
+                    reason += ": " + ", ".join(owners)
 
             hypothesis.status = classification
             db.execute(
@@ -258,7 +269,8 @@ def classify_active_hypotheses_on_stop(
         # same authoritative Task/Gap pair.
         missing_terminal_work = db.execute(
             """
-            SELECT h.hypothesis_id, h.description, h.status, h.blocked_reason
+            SELECT h.hypothesis_id, h.description, h.status, h.blocked_reason,
+                   h.sufficiency_reason
             FROM hypotheses h
             LEFT JOIN investigation_tasks t
               ON t.hypothesis_id = h.hypothesis_id
@@ -272,6 +284,7 @@ def classify_active_hypotheses_on_stop(
             description,
             classification,
             blocked_reason,
+            sufficiency_reason,
         ) in missing_terminal_work:
             reason = (
                 str(blocked_reason or "").strip()
@@ -281,7 +294,8 @@ def classify_active_hypotheses_on_stop(
                     "needs_review": (
                         f"Human review or more evidence required after {stop_reason_code}"
                     ),
-                    "untestable": f"Required telemetry unavailable at {stop_reason_code}",
+                    "untestable": str(sufficiency_reason or "").strip()
+                    or "Verification cannot be evaluated with the current requirements",
                 }[str(classification)]
             )
             _upsert_terminal_work(
@@ -450,12 +464,16 @@ def broad_plan_terminal_facts(db: CaseDB, session_id: str) -> dict[str, Any]:
         return {}
 
     row = db.execute(
-        "SELECT output_json FROM trace.investigation_steps "
+        "SELECT iteration, step_id, output_json FROM trace.investigation_steps "
         "WHERE session_id = ? AND phase = 'plan-broad' "
         "ORDER BY iteration DESC, created_at DESC, step_id DESC LIMIT 1",
         [session_id],
     ).fetchone()
-    output = decode(row[0]) if row else {}
+    iteration = int(row[0]) if row and row[0] is not None else None
+    step_id = str(row[1]) if row and row[1] is not None else None
+    output = decode(row[2]) if row else {}
+    planner_status = str(output.get("status") or "unknown")
+    assessed_summary = planner_status == "completed"
     summary = output.get("candidate_summary")
     summary = summary if isinstance(summary, dict) else {}
     outcomes = output.get("candidate_outcomes")
@@ -463,11 +481,25 @@ def broad_plan_terminal_facts(db: CaseDB, session_id: str) -> dict[str, Any]:
 
     # Include the last per-candidate receipt if interruption occurred before
     # the enclosing plan step wrote its final candidate_outcomes projection.
+    attempt_iteration = iteration
+    if attempt_iteration is None:
+        latest_candidate = db.execute(
+            "SELECT iteration FROM trace.investigation_steps "
+            "WHERE session_id = ? AND phase = 'plan-broad-candidate' "
+            "ORDER BY iteration DESC, created_at DESC, step_id DESC LIMIT 1",
+            [session_id],
+        ).fetchone()
+        attempt_iteration = (
+            int(latest_candidate[0])
+            if latest_candidate and latest_candidate[0] is not None
+            else None
+        )
     attempt_rows = db.execute(
         "SELECT input_json, output_json FROM trace.investigation_steps "
         "WHERE session_id = ? AND phase = 'plan-broad-candidate' "
+        "AND iteration = ? "
         "ORDER BY created_at DESC, step_id DESC",
-        [session_id],
+        [session_id, attempt_iteration],
     ).fetchall()
     latest_by_ref = {
         str(item.get("candidate_ref")): item
@@ -572,12 +604,26 @@ def broad_plan_terminal_facts(db: CaseDB, session_id: str) -> dict[str, Any]:
         return int(value) if isinstance(value, (int, float)) else None
 
     return {
-        "planner_status": str(output.get("status") or "unknown"),
-        "candidate_count": count_or_none("candidate_count"),
-        "eligible_candidate_count": count_or_none("eligible_candidate_count"),
-        "unexamined_candidate_count": count_or_none("unexamined_candidate_count"),
-        "draft_cap_omitted_count": count_or_none("draft_cap_omitted_count"),
-        "attempt_exhausted_count": count_or_none("attempt_exhausted_count"),
+        "planner_status": planner_status,
+        "planner_iteration": iteration,
+        "planner_step_id": step_id,
+        "drafted_work_count": len(latest_by_ref),
+        "drafted_work_scope": "finding_and_gap_candidates",
+        "candidate_count": count_or_none("candidate_count")
+        if assessed_summary
+        else None,
+        "eligible_candidate_count": count_or_none("eligible_candidate_count")
+        if assessed_summary
+        else None,
+        "unexamined_candidate_count": count_or_none("unexamined_candidate_count")
+        if assessed_summary
+        else None,
+        "draft_cap_omitted_count": count_or_none("draft_cap_omitted_count")
+        if assessed_summary
+        else None,
+        "attempt_exhausted_count": count_or_none("attempt_exhausted_count")
+        if assessed_summary
+        else None,
         "rejection_reasons": dict(sorted(rejection_reasons.items())),
         "awaiting_proposal_correction": awaiting_proposal_correction,
         "awaiting_external_evidence": external_waits > 0,

@@ -17,6 +17,22 @@ def fetch_records(
     return [dict(zip(columns, row, strict=False)) for row in result.fetchall()]
 
 
+def fetch_bounded_records(
+    db: CaseDB, query: str, *, max_rows: int
+) -> tuple[list[dict[str, Any]], bool]:
+    """Fetch an already bounded query plus one sentinel row."""
+    if max_rows < 1:
+        raise ValueError("max_rows must be positive")
+    result = db.execute(query)
+    columns = [item[0] for item in result.description]
+    fetched = result.fetchmany(max_rows + 1)
+    truncated = len(fetched) > max_rows
+    return (
+        [dict(zip(columns, row, strict=False)) for row in fetched[:max_rows]],
+        truncated,
+    )
+
+
 def normalize_value(value: Any) -> Any:
     """Normalize database values: JSON-parse stringified JSON, ISO-format datetimes, recurse into lists/dicts."""
     if value is None:

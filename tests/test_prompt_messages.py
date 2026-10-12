@@ -36,6 +36,105 @@ class PromptMessageTests(unittest.TestCase):
             {"count": 4, "sample": ["a", "b", "c"], "omitted_count": 1},
         )
 
+    def test_array_observation_example_uses_disclosed_value(self) -> None:
+        from forensia.db.evidence_lookup import fetch_evidence_records
+        from forensia.investigation import prompts
+        from forensia.investigation.planner import _typed_observation_query
+        from forensia.investigation.verification.assessment import assess_evidence_group
+
+        path = r"\\server\share\file.txt"
+        candidate = {
+            "evidence": [
+                {
+                    "evidence_id": "prefetch-p1",
+                    "_source": "prefetch_executions",
+                    "filenames": json.dumps([path, "b", "c", "omitted"]),
+                }
+            ]
+        }
+        with patch.object(prompts, "_org_knowledge_block", return_value=""):
+            messages, _ = prompts.build_hypothesis_drafter_messages(
+                {"keypoint_id": "host_execution_activity"},
+                [],
+                observed_candidate=candidate,
+            )
+        text = "\n".join(message["content"] for message in messages)
+        description = (
+            "At least 1 prefetch observation has filenames contains "
+            + json.dumps(path)
+            + "."
+        )
+        self.assertIn(description, text)
+        observed = json.loads(
+            text.split("<OBSERVED_CANDIDATE>\n", 1)[1].split(
+                "\n</OBSERVED_CANDIDATE>", 1
+            )[0]
+        )
+        self.assertEqual(
+            observed["observations"][0]["filenames"],
+            {
+                "count": 4,
+                "sample": [path, "b", "c"],
+                "omitted_count": 1,
+            },
+        )
+        hypothesis = Hypothesis(
+            id="H-array",
+            description=description,
+            confirm_when={
+                "observation": {
+                    "family": "prefetch",
+                    "capability": "process_execution",
+                    "field": "filenames",
+                    "operator": "contains",
+                    "value": path,
+                },
+            },
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with CaseDB(Case.init(temp_dir)) as db:
+                db.execute(
+                    "INSERT INTO prefetch_executions (evidence_id, source_file, filenames) VALUES (?, ?, ?)",
+                    ["prefetch-p1", "source", candidate["evidence"][0]["filenames"]],
+                )
+                query = _typed_observation_query(
+                    hypothesis=hypothesis,
+                    spec_payload=hypothesis.verification_spec.model_dump(mode="json"),
+                    query_index=1,
+                    db=db,
+                )
+                self.assertIsNotNone(query)
+                self.assertEqual(db.execute(query.sql).fetchall(), [("prefetch-p1",)])
+                row = fetch_evidence_records(db, ["prefetch-p1"])["prefetch-p1"]
+                self.assertEqual(
+                    row["filenames"], candidate["evidence"][0]["filenames"]
+                )
+                assessment = assess_evidence_group(
+                    hypothesis=hypothesis,
+                    rows=[{**row, "source_family": "prefetch"}],
+                    evidence_ids=["prefetch-p1"],
+                )
+                self.assertEqual(assessment.role, "supporting")
+
+    def test_query_prompt_keeps_eligible_scope_without_provider_schema(self) -> None:
+        from forensia.investigation.prompts import build_query_intent_messages
+
+        messages = build_query_intent_messages(
+            hypothesis=Hypothesis(id="H-mft", description="MFT observation"),
+            recent_history=[],
+            active_hypotheses=[],
+            eligible_tables=("mft_entries", "mft_timeline", "prefetch_executions"),
+            prior_check_feedback="Missing EVTX events",
+        )
+        system = messages[0]["content"]
+        self.assertIn(
+            'eligible_tables: ["mft_entries", "mft_timeline", "prefetch_executions"]',
+            system,
+        )
+        self.assertNotIn("SELECT evidence_id FROM evtx_events LIMIT 20", system)
+        self.assertIn("report the unmet requirement", system)
+        self.assertIn('Return {"action": {...}}', system)
+
     """Prompt message content: truncation, guidance blocks, language handling."""
 
     def test_common_fitter_drops_whole_optional_template_context(self) -> None:

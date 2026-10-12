@@ -84,6 +84,19 @@ class RenderMarkdownFragmentTests(unittest.TestCase):
             html,
         )
 
+    def test_japanese_punctuation_keeps_adjacent_evidence_links_separate(self):
+        prefetch = "prefetch-" + "a" * 64 + "-calc-exe-deadbeef"
+        mft = "mft-" + "b" * 64 + "-72008-00"
+        evtx_a = "evtx-" + "c" * 64 + "-security-000000000001"
+        evtx_b = "evtx-" + "d" * 64 + "-system-000000000002"
+        html = str(
+            render_markdown_fragment(f"{prefetch}）と{mft}など{evtx_a}および{evtx_b}。")
+        )
+
+        for evidence_id in (prefetch, mft, evtx_a, evtx_b):
+            self.assertIn(f'href="#ev-{evidence_id}"', html)
+        self.assertEqual(4, html.count('class="evidence-ref"'))
+
 
 class EvidenceMapTests(unittest.TestCase):
     def test_evidence_map_builds_from_body(self):

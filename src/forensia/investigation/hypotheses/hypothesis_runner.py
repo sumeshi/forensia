@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import Any
 
-from forensia.context.case_profile import CaseEvidenceProfile, observed_event_ids
+from forensia.context.case_profile import CaseEvidenceProfile
 from forensia.context.retrieval import evaluate_retrieval
+from forensia.context.sql_templates import MAX_SQL_ROWS, bounded_select_sql
 from forensia.core.case import Case
 from forensia.core.control import check_stop
 from forensia.core.log import log as _log
@@ -23,7 +23,7 @@ from forensia.core.session import (
     SessionState,
 )
 from forensia.db.database import CaseDB
-from forensia.db.query import fetch_records, summarize_query_result
+from forensia.db.query import fetch_bounded_records, summarize_query_result
 from forensia.evidence.content_identity import fingerprint_from_record
 from forensia.evidence.links import verification_spec_fingerprint
 from forensia.investigation.hypotheses.execution import (
@@ -83,42 +83,6 @@ from forensia.knowledge.coverage import (
 )
 
 
-def _unavailable_missing_event_ids(
-    missing_questions: list[Any],
-    available_event_ids: set[int] | None,
-) -> list[int]:
-    """Return event IDs referenced by the check's missing_questions that the case
-    telemetry cannot contain.
-
-    Returns an empty list (i.e. "keep investigating") when:
-    - no availability profile is set,
-    - the missing questions reference no known event IDs,
-    - at least one referenced event ID exists in the case, or
-    - the missing questions also point at an artifact-table alternative
-      (mft_*/prefetch_*), which remains testable without those event IDs.
-    """
-    if not available_event_ids or not missing_questions:
-        return []
-    from forensia.knowledge.catalog import load_event_id_hints
-
-    vocabulary = set(load_event_id_hints().keys())
-    if not vocabulary:
-        return []
-    missing_text = " ".join(str(q).lower() for q in missing_questions if q)
-    referenced = {
-        int(m) for m in re.findall(r"\b(\d{3,5})\b", missing_text)
-    } & vocabulary
-    if not referenced:
-        return []
-    if referenced & available_event_ids:
-        return []
-    if any(
-        t in missing_text for t in ("mft_entries", "mft_timeline", "prefetch", "mft ")
-    ):
-        return []
-    return sorted(referenced)
-
-
 def _matching_findings(
     snapshot: list[dict[str, Any]], hypothesis: Hypothesis | None
 ) -> list[dict[str, Any]]:
@@ -139,17 +103,6 @@ def _matching_findings(
         if any(word in haystack for word in words):
             matched.append(finding)
     return matched[:10] if matched else snapshot[:10]
-
-
-def _rationale_signature(rationale: str) -> str:
-    text = rationale.lower()
-    eids = sorted(set(re.findall(r"\b(?:event\s*id\s*)?(\d{3,5})\b", text)))
-    keywords = sorted(
-        set(
-            re.findall(r"\b(missing|requires|correlation|not\s+present|absent)\b", text)
-        )
-    )
-    return "eid:" + ",".join(eids) + "|kw:" + ",".join(keywords)
 
 
 def _result_evidence_ids(rows: list[dict[str, Any]]) -> list[str]:
@@ -324,7 +277,6 @@ class _HypothesisRunState:
     result_summary: dict[str, Any] | None = None
     check_result: Any = None
     evidence_assessment: EvidenceAssessment | None = None
-    missing_checks_raw: list[Any] | None = None
     retrieval_evaluation: Any = None
     sufficiency_result: SufficiencyResult | None = None
     planner_retry_granted: bool = False
@@ -505,9 +457,12 @@ def _phase_execute(rs: _HypothesisRunState) -> str:
         source_families = [observation_family]
     elif source_families is None:
         source_families = _query_artifact_families(planned_query.sql)
+    host_executed_sql = bounded_select_sql(planned_query.sql)
     try:
-        rows = fetch_records(db, planned_query.sql)
-        original_row_count = len(rows)
+        rows, sql_truncated = fetch_bounded_records(
+            db, host_executed_sql, max_rows=MAX_SQL_ROWS
+        )
+        original_row_count = len(rows) + int(sql_truncated)
         _log("EXEC", f"{hypothesis.id} {planned_query.query_id} — {len(rows)} rows")
         rows, fallback_info = resolve_zero_row_fallbacks(
             db=db, hypothesis=hypothesis, planned_query=planned_query, rows=rows
@@ -526,6 +481,7 @@ def _phase_execute(rs: _HypothesisRunState) -> str:
             duration_ms=(time.monotonic() - started) * 1000,
             rows=None,
             original_row_count=None,
+            host_executed_sql=host_executed_sql,
             error=err_msg,
         )
         rs.attempt_ref = receipt.receipt_id
@@ -616,17 +572,11 @@ def _phase_execute(rs: _HypothesisRunState) -> str:
         duration_ms=(time.monotonic() - started) * 1000,
         rows=rows,
         original_row_count=original_row_count,
+        host_executed_sql=host_executed_sql,
+        truncated=sql_truncated,
         fallback_info=fallback_info,
     )
     rs.attempt_ref = receipt.receipt_id
-    evaluation = evaluate_retrieval(
-        receipt,
-        required_fields=["normalized_sql"],
-        required_capabilities=required_capabilities,
-        scope_status=scope_status,
-        source_families=source_families,
-    )
-    rs.retrieval_evaluation = evaluation
     observed_evidence_ids = _result_evidence_ids(rows)
     canonicalization_error = ""
     canonical_content_fingerprints: dict[str, str] = {}
@@ -644,6 +594,24 @@ def _phase_execute(rs: _HypothesisRunState) -> str:
             f"canonical evidence hydration failed for {planned_query.query_id}: {exc}",
             level="error",
         )
+    receipt.arguments["canonical_evidence_count"] = len(canonical_evidence_ids)
+    receipt.arguments["observed_evidence_id_count"] = len(set(observed_evidence_ids))
+    receipt.arguments["observed_evidence_ids"] = observed_evidence_ids
+    receipt.result_refs.evidence_ids = canonical_evidence_ids
+    receipt.arguments["unresolved_evidence_id_count"] = max(
+        0, len(set(observed_evidence_ids)) - len(canonical_evidence_ids)
+    )
+    receipt.arguments["missing_evidence_id_count"] = sum(
+        not (row.get("evidence_id") or row.get("artifact_id")) for row in rows
+    )
+    evaluation = evaluate_retrieval(
+        receipt,
+        required_fields=["normalized_sql"],
+        required_capabilities=required_capabilities,
+        scope_status=scope_status,
+        source_families=source_families,
+    )
+    rs.retrieval_evaluation = evaluation
     assessment = assess_evidence_group(
         hypothesis=hypothesis,
         rows=canonical_rows,
@@ -658,6 +626,18 @@ def _phase_execute(rs: _HypothesisRunState) -> str:
         observed_row_count=len(rows),
         finding_ids_by_evidence=finding_ids_by_evidence,
     )
+    result_summary["raw_returned_count"] = receipt.returned_count
+    if fallback_info is None:
+        result_summary["observed_row_count"] = (
+            None if receipt.truncated else receipt.arguments.get("observed_row_count")
+        )
+        result_summary["observed_row_count_lower_bound"] = (
+            receipt.arguments.get("observed_row_count") if receipt.truncated else None
+        )
+        result_summary["total_row_count"] = (
+            None if receipt.truncated else receipt.returned_count
+        )
+    result_summary["retrieval_evaluation"] = evaluation.model_dump(mode="json")
     if fallback_info is not None:
         result_summary["original_row_count"] = fallback_info.get(
             "original_row_count", len(rows)
@@ -1060,14 +1040,11 @@ def _build_settlement_input(rs: _HypothesisRunState) -> SettlementInput:
     _scope_status, source_families = sql_absence_scope(
         rs.hypothesis, rs.planned_query.sql if rs.planned_query else ""
     )
-    absence_scope, absence_note = judge_absence_scope(
+    absence_scope, _absence_note = judge_absence_scope(
         rs.db, rs.hypothesis, rs.retrieval_evaluation, source_families=source_families
     )
 
     rows = rs.rows or []
-    unavailable_ids = _unavailable_missing_event_ids(
-        rs.missing_checks_raw or [], observed_event_ids(rs.db)
-    )
     si = build_settlement_input_from_confirm_when(
         hypothesis=rs.hypothesis,
         checker_verdict=rs.check_result.verdict,
@@ -1077,10 +1054,7 @@ def _build_settlement_input(rs: _HypothesisRunState) -> SettlementInput:
             rs.hypothesis.verification_spec.refute_conditions.get("zero_rows")
         ),
         consecutive_zero_row_inconclusive=rs.tracker.zero_row_inconclusive_count,
-        consecutive_same_missing=rs.tracker.consecutive_same_missing,
-        unavailable_missing_event_ids=unavailable_ids or None,
         absence_scope=absence_scope,
-        absence_note=absence_note,
         sufficiency_result=rs.sufficiency_result,
     )
     if rows and all(is_benign_local_auth(r) for r in rows):
@@ -1292,18 +1266,6 @@ def _phase_track_progress(rs: _HypothesisRunState) -> None:
     result_summary, tracker = rs.result_summary, rs.tracker
     row_count = int(result_summary.get("row_count") or 0)
     tracker.record(check_result.verdict, row_count)
-    missing_checks_raw = (
-        check_result.raw_response.get("missing_questions")
-        or check_result.raw_response.get("missing_checks")
-        or []
-    )
-    missing_signature = "|".join(
-        sorted(str(q).lower().strip() for q in missing_checks_raw if q)
-    ) or _rationale_signature(
-        str(check_result.report_text or check_result.raw_response.get("rationale", ""))
-    )
-    tracker.register_check(check_result.verdict, missing_signature)
-    rs.missing_checks_raw = missing_checks_raw
 
 
 def _phase_auto_resolve(rs: _HypothesisRunState) -> str:

@@ -111,7 +111,7 @@ def derive_publication_state(db: Any) -> dict[str, Any]:
     state: dict[str, Any] = {
         "publication_status": "needs_review",
         "report_complete": False,
-        "confirmed_hypothesis_count": 0,
+        "confirmed_hypothesis_count": None,
         "confirmed_without_evidence_count": 0,
         "hypothesis_execution_step_count": 0,
         "plan_step_count": 0,
@@ -237,6 +237,7 @@ def derive_publication_state(db: Any) -> dict[str, Any]:
                 "hypothesis_evidence_unavailable",
             )
         )
+        and state["confirmed_hypothesis_count"] is not None
         and state["confirmed_hypothesis_count"] > 0
         and not state["confirmed_without_evidence_count"]
     ):

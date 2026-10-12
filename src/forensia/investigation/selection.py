@@ -13,6 +13,7 @@ import yaml
 
 from forensia.db.database import CaseDB
 from forensia.investigation.work_judgment import (
+    WorkJudgment,
     blocker_message,
     count_consecutive_inconclusive,
     judge_work,
@@ -569,6 +570,7 @@ def check_eligibility(
     now: datetime | None = None,
     *,
     db: CaseDB,
+    judgment: WorkJudgment | None = None,
 ) -> tuple[bool, str]:
     """Check if a hypothesis is eligible for selection.
 
@@ -577,7 +579,7 @@ def check_eligibility(
     State; only the selection-specific gating is added there.
     """
     hid = str(hyp.get("hypothesis_id") or hyp.get("id") or "")
-    judgment = judge_work(db, [hid], selection_gate=True, now=now).get(hid)
+    judgment = judgment or judge_work(db, [hid], selection_gate=True, now=now).get(hid)
     if judgment is None:
         return False, "hypothesis not persisted"
     if judgment.runnable:
@@ -602,9 +604,21 @@ def select_focus_hypotheses(
     now = datetime.now(UTC)
 
     scored: list[tuple[float, list[PriorityComponent], dict[str, Any], bool, str]] = []
+    judgments = judge_work(
+        db,
+        [hyp["hypothesis_id"] for hyp in ctx.active_hypotheses],
+        selection_gate=True,
+        now=now,
+        session_id=session_id,
+    )
 
     for hyp in ctx.active_hypotheses:
-        eligible, block_reason = check_eligibility(hyp, now, db=db)
+        eligible, block_reason = check_eligibility(
+            hyp,
+            now,
+            db=db,
+            judgment=judgments.get(hyp["hypothesis_id"]),
+        )
         if eligible:
             total, components = compute_priority_score(
                 hyp, ctx, findings_snapshot, db=db

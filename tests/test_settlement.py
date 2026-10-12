@@ -773,8 +773,8 @@ class AutoRefuteTests(unittest.TestCase):
                 self.assertEqual(decision.verdict, "refuted")
                 self.assertIn("auto_refute_zero_rows", decision.gates_passed)
 
-    def test_zero_row_consecutive_untestable(self) -> None:
-        """3+ consecutive zero-row inconclusive without rule refute = untestable."""
+    def test_repeated_zero_rows_without_rule_stay_inconclusive(self) -> None:
+        """Repeated zero rows alone do not prove telemetry is unavailable."""
         with tempfile.TemporaryDirectory() as tmpdir:
             from forensia.core.case import Case
 
@@ -793,12 +793,13 @@ class AutoRefuteTests(unittest.TestCase):
                     has_rule_refute_when_zero_rows=False,
                 )
                 decision = settle_hypothesis(db, si)
-                self.assertEqual(decision.verdict, "untestable")
+                self.assertEqual(decision.verdict, "inconclusive")
+                self.assertNotIn("auto_untestable_zero_rows", decision.gates_passed)
 
     def test_zero_row_refute_requires_observable_absence(self) -> None:
         """Rule refute_when.zero_rows alone cannot refute: a non-observable
         absence scope (partial/unknown coverage, rejected scope, incomplete
-        retrieval) downgrades to untestable with the explicit reason."""
+        retrieval) remains inconclusive with the explicit reason."""
         with tempfile.TemporaryDirectory() as tmpdir:
             from forensia.core.case import Case
 
@@ -808,9 +809,6 @@ class AutoRefuteTests(unittest.TestCase):
                     hid="H-001",
                     description="test",
                     source_rule_ids=["rule-1"],
-                )
-                note = (
-                    "required capability coverage not available: process_exec=partial"
                 )
                 si = SettlementInput(
                     hypothesis=hyp,
@@ -819,45 +817,15 @@ class AutoRefuteTests(unittest.TestCase):
                     consecutive_zero_row_inconclusive=3,
                     has_rule_refute_when_zero_rows=True,
                     absence_scope="unknown",
-                    absence_note=note,
                 )
                 decision = settle_hypothesis(db, si)
-                self.assertEqual(decision.verdict, "untestable")
-                self.assertIn("auto_untestable_zero_rows", decision.gates_passed)
+                self.assertEqual(decision.verdict, "inconclusive")
+                self.assertNotIn("auto_untestable_zero_rows", decision.gates_passed)
                 self.assertNotIn("auto_refute_zero_rows", decision.gates_passed)
-                self.assertIn("absence is not observable", decision.reason)
-                self.assertIn(note, decision.reason)
+                self.assertNotIn("telemetry", decision.reason.lower())
 
-    def test_same_missing_refute_requires_observable_absence(self) -> None:
-        """Same-missing refutation needs the same observable-absence gate."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            from forensia.core.case import Case
-
-            case = Case.init(tmpdir)
-            with CaseDB(case) as db:
-                hyp = _make_hypothesis(
-                    hid="H-001",
-                    description="test",
-                    source_rule_ids=["rule-1"],
-                )
-                note = "retrieval scope_status=rejected"
-                si = SettlementInput(
-                    hypothesis=hyp,
-                    checker_verdict="inconclusive",
-                    check_summary="same missing",
-                    consecutive_same_missing=3,
-                    has_rule_refute_when_zero_rows=True,
-                    absence_scope="unknown",
-                    absence_note=note,
-                )
-                decision = settle_hypothesis(db, si)
-                self.assertEqual(decision.verdict, "untestable")
-                self.assertIn("auto_untestable_same_missing", decision.gates_passed)
-                self.assertNotIn("auto_refute_same_missing", decision.gates_passed)
-                self.assertIn(note, decision.reason)
-
-    def test_same_missing_consecutive_refute(self) -> None:
-        """3+ consecutive same-missing checks with an observable absence = refuted."""
+    def test_same_missing_does_not_settle_even_with_observable_scope(self) -> None:
+        """Missing-question repetition is not evidence of actual zero rows."""
         with tempfile.TemporaryDirectory() as tmpdir:
             from forensia.core.case import Case
 
@@ -872,16 +840,15 @@ class AutoRefuteTests(unittest.TestCase):
                     hypothesis=hyp,
                     checker_verdict="inconclusive",
                     check_summary="same missing",
-                    consecutive_same_missing=3,
                     has_rule_refute_when_zero_rows=True,
                     absence_scope="observable",
                 )
                 decision = settle_hypothesis(db, si)
-                self.assertEqual(decision.verdict, "refuted")
-                self.assertIn("auto_refute_same_missing", decision.gates_passed)
+                self.assertEqual(decision.verdict, "inconclusive")
+                self.assertNotIn("auto_refute_same_missing", decision.gates_passed)
 
-    def test_unavailable_event_ids_untestable(self) -> None:
-        """Missing event IDs that are unavailable in telemetry = untestable."""
+    def test_checker_missing_event_ids_do_not_prove_telemetry_unavailable(self) -> None:
+        """Checker wording alone cannot establish missing telemetry."""
         with tempfile.TemporaryDirectory() as tmpdir:
             from forensia.core.case import Case
 
@@ -894,21 +861,20 @@ class AutoRefuteTests(unittest.TestCase):
                 )
                 si = SettlementInput(
                     hypothesis=hyp,
-                    checker_verdict="inconclusive",
+                    checker_verdict="untestable",
                     check_summary="missing events",
-                    unavailable_missing_event_ids=[4688, 4689],
                 )
                 decision = settle_hypothesis(db, si)
-                self.assertEqual(decision.verdict, "untestable")
-                self.assertIn("4688", decision.reason)
+                self.assertEqual(decision.verdict, "inconclusive")
+                self.assertIn("no_auto_untestable_condition", decision.gates_failed)
 
 
 class AbsenceJudgmentTests(unittest.TestCase):
     """The settlement-side absence judgment (T03) feeding SettlementInput.
 
     Verifies ``judge_absence_scope``'s mapping from the latest
-    RetrievalEvaluation plus the Coverage states of the required capabilities
-    to ``absence_scope``/``absence_note``.
+    RetrievalEvaluation plus Coverage states of required capabilities to the
+    observable/unknown/unavailable scope classification.
     """
 
     @staticmethod

@@ -78,15 +78,12 @@ class SettlementInput:
     is_benign_auth: bool = False
     has_rule_refute_when_zero_rows: bool = False
     consecutive_zero_row_inconclusive: int = 0
-    consecutive_same_missing: int = 0
-    unavailable_missing_event_ids: list[int] | None = None
     # Scope-wise absence judgment computed by the runner from the latest
     # zero-row RetrievalEvaluation and the Coverage states of the hypothesis'
     # required capabilities.  A rule-declared zero_rows refutation is only
-    # admissible when the absence itself is observable; "unknown" or
-    # "unavailable" keeps the hypothesis untestable instead of refuted.
+    # admissible when the absence itself is observable. Unknown or unavailable
+    # retrieval alone does not classify telemetry as missing.
     absence_scope: Literal["observable", "unknown", "unavailable"] = "unknown"
-    absence_note: str = ""
     # The runner computes and persists the authoritative machine assessment
     # before settlement.  Reuse that exact snapshot so settlement cannot
     # reinterpret the same evidence with a different capability policy.
@@ -269,7 +266,7 @@ def judge_absence_scope(
     scope.  Any other state — rejected/unknown scope, invalid or unavailable
     retrieval, partial/unknown capability coverage, or no relevant coverage
     rows — returns a non-observable scope plus a note naming the deficit, and
-    the settlement gate keeps the hypothesis untestable in that case.
+    the settlement gate leaves the checker result inconclusive in that case.
     """
     required_capabilities = derive_required_capabilities(
         hypothesis.verification_spec.required_capabilities,
@@ -380,20 +377,8 @@ def decide_settlement(
     hypothesis = si.hypothesis
     sample_rows = si.sample_rows or []
 
-    # ── Path 1: Auto-untestable (missing event IDs unavailable) ──
-    if si.unavailable_missing_event_ids:
-        id_list = ", ".join(str(eid) for eid in si.unavailable_missing_event_ids)
-        return SettlementDecision(
-            verdict="untestable",
-            reason=(
-                f"Untestable: verification requires event IDs [{id_list}] "
-                "which are not present in the available telemetry — "
-                "absence of telemetry is not a disproof."
-            ),
-            gates_passed=["auto_untestable_missing_events"],
-        )
-
-    # ── Path 2: Auto-refute (3+ consecutive zero-row inconclusive) ──
+    # Repetition supports a rule-declared zero-row refutation only when the
+    # latest retrieval proves an observable empty scope.
     if (
         si.checker_verdict == "inconclusive"
         and si.consecutive_zero_row_inconclusive >= 3
@@ -409,61 +394,7 @@ def decide_settlement(
                 ),
                 gates_passed=["auto_refute_zero_rows"],
             )
-        if si.has_rule_refute_when_zero_rows:
-            return SettlementDecision(
-                verdict="untestable",
-                reason=(
-                    "Untestable: repeated 0-row inconclusive results — "
-                    "rule-declared refute_when.zero_rows is not applied "
-                    "because the absence is not observable: "
-                    f"{si.absence_note or 'absence scope unknown'}"
-                ),
-                gates_passed=["auto_untestable_zero_rows"],
-            )
-        return SettlementDecision(
-            verdict="untestable",
-            reason=(
-                "Untestable: repeated 0-row inconclusive results — "
-                "available telemetry does not contain the event types "
-                "required to verify this hypothesis."
-            ),
-            gates_passed=["auto_untestable_zero_rows"],
-        )
-
-    # ── Path 3: Auto-refute (3+ consecutive same-missing) ──
-    if si.consecutive_same_missing >= 3:
-        if si.has_rule_refute_when_zero_rows and si.absence_scope == "observable":
-            return SettlementDecision(
-                verdict="refuted",
-                reason=(
-                    "hypothesis requires evidence not present in current dataset "
-                    "(3+ consecutive same-missing check) over an observable "
-                    "absence scope (valid retrieval, available coverage)"
-                ),
-                gates_passed=["auto_refute_same_missing"],
-            )
-        if si.has_rule_refute_when_zero_rows:
-            return SettlementDecision(
-                verdict="untestable",
-                reason=(
-                    "hypothesis requires evidence not present in current dataset "
-                    "(3+ consecutive same-missing check) — rule-declared "
-                    "refute_when.zero_rows is not applied because the absence "
-                    f"is not observable: {si.absence_note or 'absence scope unknown'}"
-                ),
-                gates_passed=["auto_untestable_same_missing"],
-            )
-        return SettlementDecision(
-            verdict="untestable",
-            reason=(
-                "Untestable: hypothesis requires evidence not present in "
-                "current dataset (3+ consecutive same-missing check) — "
-                "absence of telemetry is not a disproof."
-            ),
-            gates_passed=["auto_untestable_same_missing"],
-        )
-
-    # ── Path 4: Confirmed ──
+    # ── Confirmed ──
     # Co-observation is a deterministic correlation gate, not a semantic
     # verdict.  In particular, a rule may declare a corroborating event that
     # is weaker than the primary claim (for example an account-change event
@@ -607,7 +538,7 @@ def decide_settlement(
                 gates_failed=[f"correlation: {corr_reason}"],
             )
 
-    # ── Path 5: Assessed contradiction ──
+    # ── Assessed contradiction ──
     # A checker refutation is admissible only when the deterministic
     # assessment produced at least one contradictory observation group.
     if si.checker_verdict == "refuted":
@@ -639,7 +570,7 @@ def decide_settlement(
             gates_failed=["no_auto_untestable_condition"],
         )
 
-    # ── Path 6: Inconclusive / newlead — no settlement ──
+    # ── Inconclusive / newlead — no settlement ──
     return SettlementDecision(
         verdict=si.checker_verdict or "inconclusive",
         reason="No settlement conditions met",
@@ -655,10 +586,7 @@ def build_settlement_input_from_confirm_when(
     sample_rows: list[dict[str, Any]] | None = None,
     has_rule_refute_when_zero_rows: bool = False,
     consecutive_zero_row_inconclusive: int = 0,
-    consecutive_same_missing: int = 0,
-    unavailable_missing_event_ids: list[int] | None = None,
     absence_scope: Literal["observable", "unknown", "unavailable"] = "unknown",
-    absence_note: str = "",
     sufficiency_result: SufficiencyResult | None = None,
 ) -> SettlementInput:
     """Build SettlementInput from the hypothesis' canonical support conditions.
@@ -704,9 +632,6 @@ def build_settlement_input_from_confirm_when(
         is_benign_auth=False,  # Caller must set separately
         has_rule_refute_when_zero_rows=has_rule_refute_when_zero_rows,
         consecutive_zero_row_inconclusive=consecutive_zero_row_inconclusive,
-        consecutive_same_missing=consecutive_same_missing,
-        unavailable_missing_event_ids=unavailable_missing_event_ids,
         absence_scope=absence_scope,
-        absence_note=absence_note,
         sufficiency_result=sufficiency_result,
     )
