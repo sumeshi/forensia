@@ -37,6 +37,8 @@ forensia attach ./case001
 
 Evidence、Assessment、reasoning、section、retrieval、LLM call/attemptなどの詳細を、保存済みIDから参照できます。query receiptは一意なreceipt IDで指定します。繰り返し使われる表示用query IDは参照キーにしません。LLM使用量はprovider実測、ローカル推定、不明を分けて表示します。
 
+LLMの呼出し回数は既定で無制限（`LLM_MAX_CALLS=0`）で、TUIには`Unlimited calls`と表示します。正の値を設定した場合の`calls remaining`は、その調査セッションで残っている論理呼出し回数です。通信再試行は同じ論理呼出しに含めます。無進捗時の停止、調査サイクル数、同じ失敗の再試行制限は別に適用されます。
+
 retrieval eventは予算調整前の文脈選択を記録します。provider attemptの`selected_ids`は実際の送信文に残ったID、`omitted_optional_blocks`は入力予算や接続先の文脈上限により省略したblockです。何を送信したかは、そのattemptのrequest本文から確認します。
 
 停止済みケースでは`/resume`がRuntimeを起動して調査を再開します。`/add`、`/report`、`/report --write`、steeringはRuntimeをアイドル状態で起動してから、その操作だけを送ります。`/stop`は停止済みのままです。Runtimeが接続中に失われた場合、TUIは保存済み状態を表示し、操作を新しいRuntimeへ自動送信しません。再接続するには`attach`を開き直してください。
@@ -48,6 +50,14 @@ Pythonからも[Runtime API](src/forensia/runtime/__init__.py)の`start_runtime(
 ## Markdown入力
 
 入力ごとに役割が異なります。操作者の指示、参考知識、報告書の要件はEvidenceにはならず、ホストによる実行検証やSettlementの検査を迂回できません。
+
+`examples/`はGit管理外のローカル入力用ディレクトリで、チェックアウトには含まれません。例えば`examples/investigation/`に、中立的な調査方針の`FORENSIA.md`と、内蔵の5節をまとめた報告書仕様の`REPORT.md`を用意して使います。日本語の見出しでも同じ証拠を参照するには、既存のkeypointとtable builderを明示します。入力を用意したら、以下のオプションで渡してください。
+
+```bash
+uv run forensia investigate ./input --out ./case001 --system-prompt examples/investigation/FORENSIA.md --template examples/investigation/REPORT.md
+```
+
+これらは明示指定する入力例で、既定入力の自動読込み先ではありません。内蔵の方針は[playbook](src/forensia/data/playbook/)、レポートは[5つのsection template](src/forensia/data/report/)が引き続き担当します。role、出力schema、実行制約はMarkdownとは別のホスト契約です。
 
 ### FORENSIA.md: 調査方針
 
@@ -280,6 +290,8 @@ pytestはオフラインで、使い捨てのケースに対して実行して�
 この実験で問うのは、単純なハーネスが、弱いローカルモデルを呼出し・トークン・時間の予算内で根拠のある結論へ導けるかです。決定論的なテストはソフトウェアの契約を確認します。調査品質と性能には、別途計測が必要です。
 
 公開されている[CFReDS Data Leakage Case](https://cfreds-archive.nist.gov/data_leakage_case/data-leakage-case.html)を評価用データの1つとして使います。[BENCHMARK.md](BENCHMARK.md)には、選定した問いと参照回答を、製品への指示とは分けた評価資料として置いています。リポジトリにはイメージ、抽出済みの証拠、生成済みケースを配布しません。期待する回答は、モデルのKnowledgeや報告書入力に含めないでください。
+
+ローカルの`examples/cfreds/`には、汎用の入力例をコピーして12問を追記した実行用入力を用意します。調査側へ渡す`FORENSIA.md`と、回答欄を定義する`REPORT.md`の両方に質問を持たせ、参照解答は含めません。起動方法、採点条件、現状の制約は[BENCHMARK.md](BENCHMARK.md#実行と採点)を参照してください。
 
 比較では、source内容、コード・モデルのrevision、endpoint設定、プロンプト・Knowledge・報告書仕様、予算を固定します。裏付けられた結論と見落とした問い、false positive/false negative、未解決作業、無効・反復した試行、仮説の多様性、コンテキストの重複、呼出し・トークン・時間のコスト、再開動作を記録します。より単純な構成と比較し、正しさの修正とモデル品質の変化を分けてください。モデルのばらつきが差を説明し得る場合は、複数回実行します。
 

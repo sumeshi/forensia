@@ -498,7 +498,7 @@ async def investigate(
     report_only: bool = False,
     template_root: Path | None = None,
     report_spec: str | Path | None = None,
-    max_llm_calls: int = 200,
+    max_llm_calls: int = 0,
     forensia_policy: CasePolicyInput | None = None,
     manual_resume: bool = False,
 ) -> dict[str, Any]:

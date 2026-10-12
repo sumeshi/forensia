@@ -80,6 +80,13 @@ def test_environment_overrides_dotenv_values(monkeypatch) -> None:
 
 
 def test_execution_budgets_are_validated_and_loaded() -> None:
+    with (
+        mock.patch.dict(os.environ, {}, clear=True),
+        mock.patch.object(config, "dotenv_values", return_value={}),
+    ):
+        assert (
+            config.load_settings().max_llm_calls == config.Settings().max_llm_calls == 0
+        )
     with mock.patch.dict(
         os.environ,
         {

@@ -31,7 +31,7 @@ class Settings:
     llm_outage_probe_interval_s: int = 60
     max_iterations: int = 20
     max_queries_per_hypothesis: int = 5
-    max_llm_calls: int = 200
+    max_llm_calls: int = 0
 
     def __post_init__(self) -> None:
         if self.llm_base_url is not None:
@@ -209,7 +209,7 @@ def load_settings(
         max_queries_per_hypothesis=_int(
             env, "FORENSIA_MAX_QUERIES_PER_HYPOTHESIS", 5, 1
         ),
-        max_llm_calls=_int(env, "LLM_MAX_CALLS", 200, 0),
+        max_llm_calls=_int(env, "LLM_MAX_CALLS", 0, 0),
     )
 
 
