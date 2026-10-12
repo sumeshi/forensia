@@ -50,6 +50,7 @@ from forensia.investigation.work_judgment import (
     work_progress_fingerprint,
     work_progress_snapshot,
 )
+from forensia.investigation.work_state import pause_hypothesis_work
 from forensia.knowledge.rules.loader import _get_rule_cache
 from forensia.llm import json_response
 from forensia.llm.llm_client import (
@@ -303,7 +304,7 @@ def _policy_fingerprint(ctx: _BroadPlanContext) -> str:
 
 def _candidate_linked_work(
     candidate: dict[str, Any],
-    state: SessionState,
+    db: CaseDB,
     prior_attempts: dict[str, list[dict[str, Any]]],
     *,
     additional_ids: set[str] | None = None,
@@ -315,19 +316,24 @@ def _candidate_linked_work(
         if attempt.get("status") == "admitted" and attempt.get("admitted_hypothesis_id")
     }
     hypothesis_ids.update(additional_ids or set())
-    by_id = {
-        hypothesis.id: hypothesis
-        for hypothesis in [*state.active_hypotheses, *state.resolved_hypotheses]
-    }
+    from forensia.core.verification import VerificationSpec
+
     work = []
     for hypothesis_id in sorted(hypothesis_ids):
-        hypothesis = by_id.get(hypothesis_id)
+        row = db.execute(
+            "SELECT verification_spec FROM hypotheses WHERE hypothesis_id = ?",
+            [hypothesis_id],
+        ).fetchone()
         work.append(
             {
                 "hypothesis_id": hypothesis_id,
                 "spec_fingerprint": (
-                    _fingerprint(hypothesis.verification_spec.model_dump(mode="json"))
-                    if hypothesis
+                    _fingerprint(
+                        VerificationSpec.model_validate_json(row[0]).model_dump(
+                            mode="json"
+                        )
+                    )
+                    if row and row[0]
                     else None
                 ),
             }
@@ -347,7 +353,7 @@ def _candidate_input_fingerprint(
             "candidate_fingerprint": candidate.get("candidate_fingerprint"),
             "policy_fingerprint": _policy_fingerprint(ctx),
             "linked_work": _candidate_linked_work(
-                candidate, ctx.state, prior_attempts, additional_ids=additional_ids
+                candidate, ctx.db, prior_attempts, additional_ids=additional_ids
             ),
         }
     )
@@ -458,7 +464,7 @@ def _select_candidate_drafts(
             eligible_inputs[fingerprint] = {
                 "input_fingerprint": input_fingerprint,
                 "attempt_number": len(same_input_attempts) + 1,
-                "linked_work": _candidate_linked_work(metadata, ctx.state, prior),
+                "linked_work": _candidate_linked_work(metadata, ctx.db, prior),
             }
         return True
 
@@ -556,7 +562,7 @@ async def _draft_and_admit_candidate(
     attempt_number = int(selected["attempt_number"])
     prior_attempts = selected["prior_attempts"]
     linked_work_before = selected.get("linked_work") or _candidate_linked_work(
-        candidate, ctx.state, prior_attempts
+        candidate, ctx.db, prior_attempts
     )
     input_payload = {
         "candidate_ref": candidate_ref,
@@ -793,7 +799,7 @@ async def _draft_and_admit_candidate(
                 "settled_input_fingerprint": settled_fingerprint,
                 "linked_work": _candidate_linked_work(
                     candidate,
-                    ctx.state,
+                    ctx.db,
                     prior_attempts,
                     additional_ids={merged.id},
                 ),
@@ -931,7 +937,7 @@ def _select_gap_drafts(
                 "attempt_number": len(attempts) + 1,
                 "gap": gap,
                 "prior_attempts": prior,
-                "linked_work": _candidate_linked_work(candidate, ctx.state, prior),
+                "linked_work": _candidate_linked_work(candidate, ctx.db, prior),
             }
         )
         if len(selected) >= limit:
@@ -1390,14 +1396,44 @@ async def _run_cycle_body(
 
     if not report_only:
         active_ids = [hypothesis.id for hypothesis in state.active_hypotheses]
+        judgments = judge_work(
+            db, active_ids, selection_gate=True, session_id=session_id
+        )
+        for hypothesis in list(state.active_hypotheses):
+            judgment = judgments.get(hypothesis.id)
+            if judgment is None or judgment.runnable:
+                continue
+            exhausted = next(
+                (
+                    blocker
+                    for blocker in judgment.blockers
+                    if blocker.code
+                    in {
+                        "work_exhausted",
+                        "planner_exhausted",
+                        "no_eligible_capability",
+                        "retry_budget",
+                        "inconclusive_limit",
+                    }
+                ),
+                None,
+            )
+            if exhausted is not None:
+                pause_hypothesis_work(db, hypothesis, exhausted.code)
+                state.active_hypotheses.remove(hypothesis)
+                state.resolved_hypotheses.append(hypothesis)
+                _emit(
+                    "investigate/plan",
+                    f"paused {hypothesis.id}: {exhausted.code}",
+                    kind="hypothesis.work_paused",
+                    status="stopped",
+                    severity="warning",
+                    reason=exhausted.code,
+                    hypothesis_id=hypothesis.id,
+                )
         runnable_ids = sorted(
             hypothesis_id
-            for hypothesis_id, judgment in judge_work(
-                db,
-                active_ids,
-                selection_gate=True,
-                session_id=session_id,
-            ).items()
+            for hypothesis_id, judgment in judgments.items()
             if judgment.runnable
         )
         if runnable_ids:

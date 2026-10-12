@@ -93,7 +93,8 @@ class GapHypothesisOutput(BaseModel):
 def evaluation_snapshot(db: CaseDB) -> dict[str, Any]:
     """Capture durable semantic state at the loop's state-commit point."""
     sources = db.execute(
-        "SELECT source_id, artifact_family, ingest_status, row_count, error_code "
+        "SELECT source_id, artifact_family, ingest_status, row_count, error_code, "
+        "parser_name, parser_version "
         "FROM evidence_sources ORDER BY source_id"
     ).fetchall()
     coverage = db.execute(
@@ -173,7 +174,29 @@ def report_cycle_progress(previous: dict[str, Any], current: dict[str, Any]) -> 
     current_open = current.get("open_work")
     if previous_open is None and current_open is None:
         return False
-    if set(previous_open or ()) != set(current_open or ()):
+
+    def work_keys(refs: Any) -> set[tuple[Any, ...]]:
+        return (
+            {
+                ("hypothesis", hypothesis_id)
+                for ref in refs or ()
+                for hypothesis_id in ref[0]
+            }
+            | {
+                ("gap", gap_id)
+                for ref in refs or ()
+                for gap_id in ref[1]
+                if not (ref[0] and gap_id.startswith("GAP-STOP-"))
+            }
+            | {
+                ("task", task_id)
+                for ref in refs or ()
+                for task_id in ref[2]
+                if not (ref[0] and task_id.startswith("TASK-STOP-"))
+            }
+        )
+
+    if work_keys(previous_open) != work_keys(current_open):
         return True
     for name in ("observations", "contradictions"):
         added = set(current.get(name) or ()) - set(previous.get(name) or ())

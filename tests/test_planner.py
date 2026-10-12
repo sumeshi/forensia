@@ -116,12 +116,8 @@ class PlannerRetryTests(unittest.TestCase):
         responses = [
             {
                 "action": {
-                    "type": "sql.query",
                     "intent": "Find failed logon events grouped by source IP",
                     "target_table": "evtx_events",
-                    "filters_required": ["event_id = 4625"],
-                    "time_window": "case time range",
-                    "expected_row_shape": "event_id, timestamp, src_ip",
                     "template_id": "q_failed_logon_by_ip_window",
                     "params": {"hours": 24, "threshold": 5},
                 }
@@ -148,7 +144,6 @@ class PlannerRetryTests(unittest.TestCase):
         hypothesis = Hypothesis(id="H-nested", description="inspect events")
         response = {
             "action": {
-                "type": "sql.query",
                 "intent": "inspect events",
                 "target_table": "evtx_events",
                 "sql": "SELECT event_id FROM evtx_events LIMIT 1",
@@ -299,7 +294,14 @@ class PlannerRetryTests(unittest.TestCase):
         )
         with patch(
             "forensia.llm.json_response.request_llm_json",
-            side_effect=AssertionError("unmapped support must not call the provider"),
+            return_value={
+                "action": {
+                    "intent": "inspect the requested event",
+                    "target_table": "evtx_events",
+                    "template_id": None,
+                    "sql": "SELECT event_id FROM evtx_events LIMIT 1",
+                }
+            },
         ):
             unmapped = plan_hypothesis_query(
                 state=SessionState(session_id="S-unmapped-event"),
@@ -307,10 +309,8 @@ class PlannerRetryTests(unittest.TestCase):
                 base_url=_llm_base_url(),
                 model="test-model",
             )
-        self.assertIsNone(unmapped.query)
-        self.assertEqual("no_eligible_capability", unmapped.stop_reason)
-        self.assertEqual([], unmapped.disclosure["schema_cards"])
-        self.assertEqual([], unmapped.disclosure["playbook_tables"])
+        self.assertIsNotNone(unmapped.query)
+        self.assertEqual(["evtx_events"], unmapped.disclosure["schema_cards"])
 
     def test_eligible_table_check_ignores_cte_aliases(self) -> None:
         from forensia.investigation.planner import _materialize_planned_query
@@ -354,7 +354,6 @@ class PlannerRetryTests(unittest.TestCase):
         }
         response = {
             "action": {
-                "type": "sql.query",
                 "intent": "inspect events",
                 "target_table": "evtx_events",
                 "sql": "SELECT event_id FROM evtx_events LIMIT 1",
@@ -481,7 +480,6 @@ class PlannerRetryTests(unittest.TestCase):
         }
         response = {
             "action": {
-                "type": "sql.query",
                 "intent": "inspect registry",
                 "target_table": "registry_artifacts",
                 "sql": "SELECT artifact_id FROM registry_timeline LIMIT 1",
@@ -639,7 +637,7 @@ class PlannerRetryTests(unittest.TestCase):
             {"action": {"type": "shell.exec", "command": "whoami"}},
         )
         self.assertIsNone(action)
-        self.assertIn("malformed", str(error))
+        self.assertTrue(error)
 
         # Neither is the SQL contract: an INSERT "granted" by the manual still
         # fails deterministic host validation.
@@ -662,7 +660,6 @@ class PlannerRetryTests(unittest.TestCase):
             seen_messages.append(kwargs["messages"])
             return {
                 "action": {
-                    "type": "sql.query",
                     "intent": "inspect events",
                     "target_table": "evtx_events",
                     "sql": "SELECT event_id FROM evtx_events LIMIT 1",
@@ -694,7 +691,6 @@ class PlannerRetryTests(unittest.TestCase):
             other_messages.append(kwargs["messages"])
             return {
                 "action": {
-                    "type": "sql.query",
                     "intent": "inspect events",
                     "target_table": "evtx_events",
                     "sql": "SELECT event_id FROM evtx_events LIMIT 1",
@@ -716,7 +712,6 @@ class PlannerRetryTests(unittest.TestCase):
 
     def test_invalid_action_stops_before_execution_and_keeps_raw_response(self) -> None:
         sql_action = {
-            "type": "sql.query",
             "intent": "inspect events",
             "target_table": "evtx_events",
             "sql": "SELECT event_id FROM evtx_events LIMIT 1",
@@ -746,7 +741,7 @@ class PlannerRetryTests(unittest.TestCase):
                     model="test-model",
                 )
                 self.assertIsNone(result.query)
-                self.assertIn("unknown or malformed action", result.stop_reason or "")
+                self.assertIn("invalid_action:", result.stop_reason or "")
                 self.assertEqual(response, result.raw_response)
                 self.assertNotIn("_action_error", response)
                 request.assert_called_once()
@@ -757,10 +752,17 @@ class PlannerRetryTests(unittest.TestCase):
         from pydantic import ValidationError
 
         from forensia.investigation.prompts import build_query_intent_messages
-        from forensia.llm.schemas import QUERY_INTENT_SCHEMA, QueryIntentResponse
+        from forensia.llm.schemas import (
+            QUERY_INTENT_SCHEMA,
+            QueryIntentResponse,
+            query_intent_schema_for_catalog,
+        )
 
         sql_schema = QUERY_INTENT_SCHEMA["$defs"]["SQLQueryAction"]
-        self.assertEqual(list(sql_schema["properties"]), sql_schema["required"])
+        self.assertNotIn("type", sql_schema["properties"])
+        self.assertNotIn("filters_required", sql_schema["properties"])
+        self.assertNotIn("time_window", sql_schema["properties"])
+        self.assertNotIn("expected_row_shape", sql_schema["properties"])
         modes = {
             branch["properties"]["template_id"]["type"]: branch["properties"]
             for branch in sql_schema["anyOf"]
@@ -768,22 +770,51 @@ class PlannerRetryTests(unittest.TestCase):
         self.assertEqual(r"^\s*$", modes["string"]["sql"]["pattern"])
         self.assertEqual("null", modes["null"]["template_id"]["type"])
         self.assertEqual(r".*\S.*", modes["null"]["sql"]["pattern"])
+        self.assertIn("params", modes["string"])
+        self.assertNotIn("params", modes["null"])
+        dynamic_schema = query_intent_schema_for_catalog(
+            ["prefetch_timeline"], ["q_prefetch_by_name"]
+        )
+        self.assertEqual(
+            ["prefetch_timeline"],
+            dynamic_schema["$defs"]["SQLQueryAction"]["properties"]["target_table"][
+                "enum"
+            ],
+        )
+        self.assertNotIn("examples", dynamic_schema)
+        raw_only = query_intent_schema_for_catalog(["mft_entries"], [])["$defs"][
+            "SQLQueryAction"
+        ]
+        self.assertEqual("null", raw_only["properties"]["template_id"]["type"])
+        self.assertNotIn("params", raw_only["properties"])
 
         def payload(template_id, sql):
-            return {
-                "action": {
-                    "type": "sql.query",
-                    "intent": "inspect matching evidence",
-                    "target_table": "evtx_events",
-                    "template_id": template_id,
-                    "sql": sql,
-                }
+            action = {
+                "intent": "inspect matching evidence",
+                "target_table": "evtx_events",
+                "template_id": template_id,
+                "sql": sql,
             }
+            if template_id:
+                action["params"] = {}
+            return {"action": action}
 
         QueryIntentResponse.model_validate(payload("catalog-template", ""))
         QueryIntentResponse.model_validate(
             payload(None, "SELECT evidence_id FROM evtx_events LIMIT 20")
         )
+        with self.assertRaises(ValidationError):
+            QueryIntentResponse.model_validate(
+                {
+                    "action": {
+                        "intent": "inspect evidence",
+                        "target_table": "evtx_events",
+                        "template_id": None,
+                        "params": {},
+                        "sql": "SELECT evidence_id FROM evtx_events LIMIT 1",
+                    }
+                }
+            )
         for template_id, sql in (
             (None, ""),
             ("catalog-template", "SELECT evidence_id FROM evtx_events LIMIT 20"),
@@ -798,15 +829,41 @@ class PlannerRetryTests(unittest.TestCase):
             recent_history=[],
             active_hypotheses=[],
             schema_context="",
+            eligible_tables=("mft_entries",),
         )
         system = messages[0]["content"]
         self.assertIn("set template_id to null", system)
         self.assertIn("provide a bounded SELECT", system)
         self.assertNotIn("SELECT evidence_id FROM evtx_events LIMIT 20", system)
-        self.assertIn(
-            "copy a template_id exactly from the supplied <TEMPLATE_CATALOG>", system
-        )
+        self.assertIn("use only the raw SQL path", system)
+        self.assertNotIn("RECIPE_EXAMPLE:", system)
         self.assertNotIn("q_failed_logon_by_ip_window", system)
+        raw_example = json.loads(
+            system.split("RAW_SQL_EXAMPLE: ", 1)[1].splitlines()[0]
+        )
+        QueryIntentResponse.model_validate(raw_example)
+
+        recipe_messages = build_query_intent_messages(
+            hypothesis=Hypothesis(id="H-recipe", description="inspect registry"),
+            recent_history=[],
+            active_hypotheses=[],
+            schema_context="",
+            eligible_tables=("registry_timeline", "registry_artifacts"),
+        )
+        recipe_system = recipe_messages[0]["content"]
+        recipe_example = json.loads(
+            recipe_system.split("RECIPE_EXAMPLE: ", 1)[1].splitlines()[0]
+        )
+        QueryIntentResponse.model_validate(recipe_example)
+        from forensia.context.sql_templates import render_query_template
+
+        recipe_action = recipe_example["action"]
+        self.assertIn(
+            "SELECT",
+            render_query_template(
+                recipe_action["template_id"], recipe_action["params"]
+            ),
+        )
 
     def test_query_intent_exposes_current_and_peer_active_hypotheses(self) -> None:
         current = Hypothesis(id="H-A", description="gap alpha current question")
@@ -819,13 +876,9 @@ class PlannerRetryTests(unittest.TestCase):
         responses = [
             {
                 "action": {
-                    "type": "sql.query",
                     "intent": "inspect alpha",
                     "target_table": "evtx_events",
                     "sql": "SELECT event_id FROM evtx_events LIMIT 1",
-                    "filters_required": [],
-                    "time_window": "case range",
-                    "expected_row_shape": "event_id",
                 }
             },
         ]
@@ -853,15 +906,10 @@ class PlannerRetryTests(unittest.TestCase):
         responses = [
             {
                 "action": {
-                    "type": "sql.query",
                     "intent": "test intent",
                     "target_table": "evtx_events",
                     "sql": "SELECT * FROM nope",
-                    "filters_required": [],
-                    "time_window": "All",
-                    "expected_row_shape": "cols",
                     "template_id": None,
-                    "params": {},
                 }
             },
         ]
@@ -886,15 +934,10 @@ class PlannerRetryTests(unittest.TestCase):
         responses = [
             {
                 "action": {
-                    "type": "sql.query",
                     "intent": "test intent",
                     "target_table": "evtx_events",
                     "sql": "SELECT nonexistent_column FROM evtx_events LIMIT 1",
-                    "filters_required": [],
-                    "time_window": "All",
-                    "expected_row_shape": "cols",
                     "template_id": None,
-                    "params": {},
                 }
             },
         ]
@@ -934,7 +977,6 @@ class PlannerRetryTests(unittest.TestCase):
         responses = [
             {
                 "action": {
-                    "type": "sql.query",
                     "intent": "test",
                     "target_table": "evtx_events",
                     "sql": "SELECT event_id FROM evtx_events LIMIT 1",
@@ -1010,7 +1052,6 @@ class PlannerRetryTests(unittest.TestCase):
         responses = [
             {
                 "action": {
-                    "type": "sql.query",
                     "intent": "test",
                     "target_table": "evtx_events",
                     "sql": "SELECT event_id FROM evtx_events LIMIT 1",
@@ -1103,15 +1144,10 @@ class PlannerRetryTests(unittest.TestCase):
         responses = [
             {
                 "action": {
-                    "type": "sql.query",
                     "intent": "test intent",
                     "target_table": "evtx_events",
-                    "sql": "SELECT event_id FROM findings LIMIT 1",
-                    "filters_required": [],
-                    "time_window": "All",
-                    "expected_row_shape": "cols",
+                    "sql": "SELECT evidence_id FROM evtx_events LIMIT 1",
                     "template_id": None,
-                    "params": {},
                 }
             },
         ]

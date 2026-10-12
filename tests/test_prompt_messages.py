@@ -133,7 +133,6 @@ class PromptMessageTests(unittest.TestCase):
         )
         self.assertNotIn("SELECT evidence_id FROM evtx_events LIMIT 20", system)
         self.assertIn("report the unmet requirement", system)
-        self.assertIn('Return {"action": {...}}', system)
 
     """Prompt message content: truncation, guidance blocks, language handling."""
 

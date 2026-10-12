@@ -6,14 +6,14 @@ import hashlib
 import json
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from forensia.context.case_profile import CaseEvidenceProfile
 from forensia.context.retrieval import evaluate_retrieval
 from forensia.context.sql_templates import MAX_SQL_ROWS, bounded_select_sql
 from forensia.core.case import Case
-from forensia.core.control import check_stop
+from forensia.core.control import InvestigationStopped, check_stop
 from forensia.core.log import log as _log
 from forensia.core.progress_event import progress_event
 from forensia.core.session import (
@@ -53,9 +53,9 @@ from forensia.investigation.investigation_session import (
     append_settlement_feedback,
 )
 from forensia.investigation.planner import (
+    HypothesisPlanResult,
     persist_hypothesis_plan_result,
     plan_hypothesis_query,
-    planner_retry_allowed,
 )
 from forensia.investigation.progress import (
     HypothesisProgressTracker,
@@ -78,6 +78,7 @@ from forensia.investigation.verification.sufficiency import (
     create_evidence_links_for_query,
     record_unlinkable_observation,
 )
+from forensia.investigation.work_state import pause_hypothesis_work
 from forensia.knowledge.coverage import (
     derive_required_capabilities,
 )
@@ -279,7 +280,8 @@ class _HypothesisRunState:
     evidence_assessment: EvidenceAssessment | None = None
     retrieval_evaluation: Any = None
     sufficiency_result: SufficiencyResult | None = None
-    planner_retry_granted: bool = False
+    plan_attempt: int = 0
+    correction_budget: list[int] = field(default_factory=lambda: [1])
     attempt_ref: str = ""
     attempt_fingerprints: dict[str, str] | None = None
     repeat_gate: dict[str, Any] | None = None
@@ -292,6 +294,8 @@ async def _phase_plan(rs: _HypothesisRunState) -> str:
     session_id = rs.session_id
     query_index, llm_status_fn = rs.query_index, rs.llm_status_fn
     case_profile = rs.case_profile
+    rs.plan_attempt += 1
+    rs.hypothesis_plan = None
     try:
         hypothesis_plan = await _call_with_outage_recovery(
             plan_hypothesis_query,
@@ -306,8 +310,9 @@ async def _phase_plan(rs: _HypothesisRunState) -> str:
             time_range=case.time_range,
             case_profile=case_profile,
             case_policy=rs.ctx.forensia_policy,
+            correction_budget=rs.correction_budget,
         )
-    except LLMBudgetExceededError:
+    except LLMBudgetExceededError, InvestigationStopped:
         raise
     except Exception as exc:
         err_msg = f"LLM failed for {hypothesis.id}: {exc}"
@@ -320,7 +325,12 @@ async def _phase_plan(rs: _HypothesisRunState) -> str:
             phase="error",
             body=f"[internal-error] {err_msg}",
         )
-        return "break"
+        hypothesis_plan = HypothesisPlanResult(
+            query=None,
+            stop_reason=f"planner_failed: {type(exc).__name__}: {str(exc)[:300]}",
+            raw_response={},
+        )
+    rs.hypothesis_plan = hypothesis_plan
     flow = persist_hypothesis_plan_result(
         db=db,
         session_id=session_id,
@@ -329,11 +339,12 @@ async def _phase_plan(rs: _HypothesisRunState) -> str:
         query_index=query_index,
         plan=hypothesis_plan,
         state=state,
+        attempt_number=rs.plan_attempt,
+        correction_budget=rs.correction_budget,
         emit=rs.emit_fn,
     )
     if flow != "ok":
         return flow
-    rs.hypothesis_plan = hypothesis_plan
     return "ok"
 
 
@@ -1372,29 +1383,43 @@ async def _investigate_one_hypothesis(
         check_stop()
         rs.query_index += 1
         query_index = rs.state.focus_depth = rs.query_index
+        rs.correction_budget = [1]
+        rs.plan_attempt = 0
         flow = await _phase_plan(rs)
-        if flow == "break":
-            break
         if flow == "continue":
-            if planner_retry_allowed(state, hypothesis, rs.planner_retry_granted):
+            rs.correction_budget[0] -= 1
+            if emit_fn:
+                emit_fn(
+                    "investigate/plan",
+                    f"[plan] retrying {hypothesis.id} after planner validation failure",
+                    iteration=plan_cycle,
+                    kind="hypothesis.plan_retry",
+                    status="running",
+                    reason="planner_retry_granted",
+                    hypothesis_id=hypothesis.id,
+                    step_id=state.last_planner_error["step_id"],
+                )
+            flow = await _phase_plan(rs)
+        if flow != "ok":
+            if rs.hypothesis_plan is not None and rs.hypothesis_plan.stop_reason:
+                reason = rs.hypothesis_plan.stop_reason
+                pause_hypothesis_work(db, hypothesis, reason)
+                state.active_hypotheses = [
+                    item for item in state.active_hypotheses if item.id != hypothesis.id
+                ]
+                state.resolved_hypotheses.append(hypothesis)
                 if emit_fn:
                     emit_fn(
                         "investigate/plan",
-                        f"[plan] retrying {hypothesis.id} after planner validation failure",
+                        f"[plan] paused {hypothesis.id}: {reason}",
                         iteration=plan_cycle,
-                        kind="hypothesis.plan_retry",
-                        status="running",
+                        kind="hypothesis.work_paused",
+                        status="stopped",
                         severity="warning",
-                        reason="planner_retry_granted",
+                        reason=reason.split(":", 1)[0],
                         hypothesis_id=hypothesis.id,
-                        step_id=(
-                            f"{session_id}-{plan_cycle:02d}-plan-hypothesis-"
-                            f"{hypothesis.id}-{query_index:02d}"
-                        ),
                     )
-                limit += 1
-                rs.planner_retry_granted = True
-            continue
+            break
         execute_flow = _phase_execute(rs)
         if execute_flow == "break":
             break

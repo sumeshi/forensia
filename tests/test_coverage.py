@@ -12,6 +12,8 @@ from forensia.db.evidence_sources import register_evidence_source
 from forensia.knowledge.coverage import (
     _load_yaml,
     derive_required_capabilities,
+    derive_search_families,
+    disclosure_tables_for_spec,
     get_coverage_summary,
     observation_catalog,
     observation_condition_error,
@@ -44,6 +46,17 @@ class RequiredCapabilityDerivationTests(unittest.TestCase):
                 support_conditions={"co_observed_event_ids": [4688]},
             ),
             ["process_execution"],
+        )
+
+    def test_unclassified_structured_event_id_keeps_evtx_search_bounded(self) -> None:
+        conditions = {"co_observed_event_ids": [98765]}
+        self.assertEqual(derive_required_capabilities([], conditions), [])
+        self.assertEqual(derive_search_families([], conditions), ("evtx",))
+        self.assertEqual(
+            disclosure_tables_for_spec(
+                {"required_capabilities": [], "support_conditions": conditions}
+            ),
+            (("evtx_events",), ("evtx_events",)),
         )
         # Structured conditions are the only inference input; without them
         # nothing is inferred (and no prose inference exists).

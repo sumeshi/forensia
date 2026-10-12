@@ -41,6 +41,7 @@ from forensia.investigation.verification.sufficiency import (
 )
 from forensia.knowledge.coverage import (
     derive_required_capabilities,
+    disclosure_tables_for_spec,
     verification_feasibility_error,
 )
 
@@ -63,6 +64,8 @@ _BLOCKER_MESSAGES = {
     "retry_budget": "retry budget exhausted",
     "inconclusive_limit": "repeated inconclusive limit",
     "work_exhausted": "previous attempt made no semantic progress: {owner}",
+    "planner_exhausted": "query planning exhausted: {owner}",
+    "no_eligible_capability": "no declared search family for this work",
     "prerequisite": "waiting for prerequisite {owner}",
     "external_task": "waiting for external investigation task",
     "capability_unavailable": "required evidence capability unavailable",
@@ -345,6 +348,10 @@ def judge_work(
         blockers: list[Blocker] = [
             Blocker("capability_unavailable", cap) for cap in not_ready_in_cap_order
         ]
+        if (capabilities or support) and not disclosure_tables_for_spec(spec_payload)[
+            0
+        ]:
+            blockers.append(Blocker("no_eligible_capability", hid))
         persisted_reason = str(blocked_reason or "").strip()
         if persisted_reason:
             blockers.append(Blocker("blocked", persisted_reason))
@@ -387,6 +394,30 @@ def judge_work(
                 ),
             ):
                 gate_blockers.append(Blocker("work_exhausted", hid))
+            if session_id:
+                latest_plan = db.execute(
+                    "SELECT output_json FROM trace.investigation_steps WHERE "
+                    "session_id = ? AND hypothesis_id = ? AND phase = 'plan-hypothesis' "
+                    "ORDER BY created_at DESC, step_id DESC LIMIT 1",
+                    [session_id, hid],
+                ).fetchone()
+                if latest_plan:
+                    output = normalize_value(latest_plan[0])
+                    plan = (
+                        output.get("_plan_status", {})
+                        if isinstance(output, dict)
+                        else {}
+                    )
+                    current_work = work_progress_snapshot(
+                        db, hid, case_snapshot=case_snapshot
+                    )
+                    if (
+                        plan.get("stop_reason")
+                        and plan.get("retry_available") is False
+                        and current_work is not None
+                        and plan.get("work_identity") == current_work["identity"]
+                    ):
+                        gate_blockers.append(Blocker("planner_exhausted", hid))
             blockers = [*gate_blockers, *blockers]
         judgments[hid] = WorkJudgment(
             hypothesis_id=hid,

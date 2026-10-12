@@ -187,6 +187,8 @@ context設定は接続先の実上限へ合わせ、出力予約も含めて予�
 
 型付き観測だけから決まる最初の検索は、ホストがAssessmentと同じ比較処理で対象Evidence IDを選び、既存のbounded SELECTとして実行します。結果件数の上限は一致する証拠に適用し、原本の先頭だけを調べて不一致と扱いません。追加検索はLLMへ任せ、そのSpecと宣言された相関先のtable・schema・recipeだけを開示して検査します。Receiptのprimary verification／corroborationは作業の目的を示す記録であり、支持・反証の判定は引き続きAssessmentが所有します。0件の検索は活動の不存在を証明しません。
 
+追加検索の出力は、目的、対象table、SQLまたはrecipeとparamsに限定します。schema非対応の接続先にも同じ契約と完成例を本文で渡します。形式修復・文脈縮約・ホスト検証後の修正は、1つの検索計画で最大1回の修正枠を共有します。検証エラーにはfieldと原因を含め、修正できなければ理由と再評価条件を保存して作業枠を解放します。SQL実行上限を形式不正の再生成回数には使いません。明示的なEVTX条件から検索familyを決められる場合、capability分類が空でもEVTXの範囲で検索できますが、Coverageの充足を意味しません。
+
 EVTXの意味付けにはevent ID・channel・providerを使います。未知の文脈のレコードは閲覧できますが、番号だけで既知の活動へ分類しません。PrefetchのDLL参照やMFT時刻差も観測であり、それだけで不正なロードや反フォレンジックを確定しません。
 
 型付きの観測条件で自動確定できるのは、VerificationSpecから導出する観測文だけです。実行痕跡から意図や因果関係まで述べた解釈は未確定に留めます。Prefetchの各実行時刻は同じ原本レコードからの派生であり、別々の独立証拠には数えません。観測条件には原本の`exec_times`などを使い、`min_count`は異なるEvidence IDの数を指定します。
@@ -284,6 +286,8 @@ doctorはインストール済みの宣言、同梱した報告書テンプレ�
 pytestはオフラインで、使い捨てのケースに対して実行してください。モデル・プロバイダーとの境界をmockし、実際の保存処理、CLIの動作、生成物を確認します。Evidence/provenance、Assessment/Sufficiency/Settlement、実行上限、作業の受付、停止、再開のテストを保持します。各不変条件には主となるテストを1つ定めます。廃止したAPIのテストは削除し、実装の形を固定するだけの定数、SQL文字列、内部counter、文章のassertionを避けてください。実モデルによる品質・性能実験はpytestの外で行います。
 
 宣言を変更した場合は[audit_schema_coverage.py](scripts/audit_schema_coverage.py)を実行します。[regenerate_playbook.py](scripts/regenerate_playbook.py)はYAMLからplaybookの指定部分を再生成し、`--check`でずれを検出します。[cycle_summary.py](scripts/eval/cycle_summary.py)はCase/Traceに記録された指標をsession・cycleごとに表示します。receiptがない値はunknownとして扱います。
+
+[scripts/eval/run.py](scripts/eval/run.py)の`query_metrics`は、計画の採用・拒否理由、primary／corroboration別の実行ReceiptとAssessment到達数をTraceから集計します。HTTP成功やJSONのparse成功を検索実行として数えません。
 
 ## 評価
 

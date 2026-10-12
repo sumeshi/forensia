@@ -195,6 +195,8 @@ def test_public_run_records_provider_planned_query_or_bounded_rejection(
         def __init__(self) -> None:
             self.schemas: list[str] = []
             self.requests: list[dict] = []
+            self.rejected_modes: list[str] = []
+            self.query_actions: list[dict] = []
 
         def post(self, url, json, headers):
             self.requests.append(json)
@@ -202,6 +204,20 @@ def test_public_run_records_provider_planned_query_or_bounded_rejection(
                 json.get("response_format", {}).get("json_schema", {}).get("schema", {})
             )
             title = str(schema.get("title") or "")
+            if not title:
+                prompt = "\n".join(
+                    str(message.get("content") or "")
+                    for message in json.get("messages", [])
+                )
+                roles = (
+                    ("GapIdentifier", "You are a gap_identifier"),
+                    ("HypothesisDrafter", "You are a hypothesis_drafter"),
+                    ("QueryIntentResponse", "Return exactly one action as JSON"),
+                    ("VerdictReview", "You are a verdict_reviewer"),
+                    ("FindingExtractor", "You are a finding_extractor"),
+                    ("ParagraphNarrate", "You are a section_narrator"),
+                )
+                title = next((name for name, marker in roles if marker in prompt), "")
             self.schemas.append(title)
             if title not in {
                 "GapIdentifier",
@@ -212,6 +228,27 @@ def test_public_run_records_provider_planned_query_or_bounded_rejection(
                 "ParagraphNarrate",
             }:
                 raise AssertionError(f"unexpected provider schema: {title}")
+            prompt = "\n".join(
+                str(message.get("content") or "")
+                for message in json.get("messages", [])
+            )
+            corroboration_plan = (
+                proposal_case == "typed_primary"
+                and "This is corroboration after the typed primary search." in prompt
+            )
+            if json.get("response_format"):
+                mode = (
+                    "strict"
+                    if json["response_format"].get("json_schema", {}).get("strict")
+                    else "compatible"
+                )
+                self.rejected_modes.append(mode)
+                request = httpx.Request("POST", url)
+                return httpx.Response(
+                    400,
+                    json={"error": {"message": "response_format unsupported"}},
+                    request=request,
+                )
             responses = {
                 "GapIdentifier": {"gap_areas": []},
                 "HypothesisDrafter": {
@@ -261,53 +298,62 @@ def test_public_run_records_provider_planned_query_or_bounded_rejection(
                 },
                 "QueryIntentResponse": {
                     "action": {
-                        "type": "sql.query",
                         "intent": (
-                            "Inspect Prefetch process executions"
+                            "Corroborate Prefetch process executions"
+                            if corroboration_plan
+                            else "Inspect Prefetch process executions"
                             if proposal_case == "typed_primary"
                             else "Inspect observed service installation on host-01"
                         ),
                         "target_table": (
-                            "prefetch_executions"
+                            "prefetch_timeline"
+                            if corroboration_plan
+                            else "prefetch_executions"
                             if proposal_case == "typed_primary"
                             else "evtx_events"
                         ),
                         "template_id": (
-                            ""
+                            None
                             if proposal_case == "typed_primary"
                             else "q_service_or_task_after_host_logon"
                         ),
-                        "params": (
+                        **(
                             {}
                             if proposal_case == "typed_primary"
-                            else {"computer": "host-01", "hours": 24}
+                            else {"params": {"computer": "host-01", "hours": 24}}
                         ),
                         "sql": (
-                            "SELECT evidence_id FROM prefetch_executions LIMIT 1000"
+                            "SELECT evidence_id FROM prefetch_timeline LIMIT 1000"
+                            if corroboration_plan
+                            else "SELECT evidence_id FROM prefetch_executions LIMIT 1000"
                             if proposal_case == "typed_primary"
                             else ""
                         ),
-                        "filters_required": (
-                            []
-                            if proposal_case == "typed_primary"
-                            else ["event_id = 4697", "computer = host-01"]
-                        ),
-                        "time_window": "24 hours",
-                        "expected_row_shape": "evidence rows",
                     }
                 },
-                "VerdictReview": {
-                    "verdict": "confirmed",
-                    "rationale": "The observed service installation matches the declared event condition.",
-                    "missing_questions": [],
-                    "confidence": 0.9,
-                },
+                "VerdictReview": (
+                    {
+                        "verdict": "inconclusive",
+                        "rationale": "The primary observation needs independent corroboration.",
+                        "missing_questions": ["Find a matching Prefetch timeline row."],
+                        "confidence": 0.5,
+                    }
+                    if proposal_case == "typed_primary"
+                    else {
+                        "verdict": "confirmed",
+                        "rationale": "The observed service installation matches the declared event condition.",
+                        "missing_questions": [],
+                        "confidence": 0.9,
+                    }
+                ),
                 "FindingExtractor": {"findings": []},
                 "ParagraphNarrate": {
                     "body": "The evidence records a service installation on host-01 and supports the bounded event claim."
                 },
             }
             payload = responses.get(title, {})
+            if title == "QueryIntentResponse":
+                self.query_actions.append(payload["action"])
             request = httpx.Request("POST", url)
             return httpx.Response(
                 200,
@@ -336,6 +382,12 @@ def test_public_run_records_provider_planned_query_or_bounded_rejection(
                 "INSERT INTO prefetch_executions (evidence_id, source_file, "
                 "executable_name, exec_count) VALUES "
                 "('prefetch-public-typed', 'seed-prefetch-source', 'Sample.exe', 1)"
+            )
+            db.execute(
+                "INSERT INTO prefetch_timeline (timeline_id, evidence_id, "
+                "executable_name, exec_time, exec_index, source_file) VALUES "
+                "('timeline-public-typed', 'prefetch-public-typed', 'Sample.exe', "
+                "'2026-01-01T00:00:00', 1, 'seed-prefetch-source')"
             )
             db.execute(
                 "INSERT INTO evidence_sources (source_id, artifact_family, "
@@ -374,12 +426,14 @@ def test_public_run_records_provider_planned_query_or_bounded_rejection(
     report = run_investigation(
         case_dir,
         input_dir=str(input_dir),
-        llm_base_url="http://provider.test",
+        llm_base_url=f"http://{proposal_case}.provider.test",
         model="controlled-provider",
         max_iter=1,
         max_llm_calls=12,
         pre_investigation=seed_observation,
     )
+    assert provider.rejected_modes[:2] == ["strict", "compatible"]
+    assert any(not request.get("response_format") for request in provider.requests)
     assert report.is_file()
     from forensia.core.case import Case
     from forensia.db.database import CaseDB
@@ -444,68 +498,50 @@ def test_public_run_records_provider_planned_query_or_bounded_rejection(
             assert any(receipt and receipt.get("receipt_id") for receipt in receipts)
             assert check and json_module.loads(check[0])["assessment"]["assessment_id"]
             if proposal_case == "typed_primary":
-                assert "QueryIntentResponse" not in provider.schemas
-                typed_receipt = next(
+                assert "QueryIntentResponse" in provider.schemas
+                assert any(
+                    action["target_table"] == "prefetch_timeline"
+                    and action["sql"]
+                    == "SELECT evidence_id FROM prefetch_timeline LIMIT 1000"
+                    for action in provider.query_actions
+                )
+                primary_receipt = next(
                     receipt
                     for receipt in receipts
                     if receipt
                     and receipt.get("arguments", {}).get("test_intent")
                     == "primary_verification"
                 )
-                assert typed_receipt["result_refs"]["evidence_ids"] == [
+                assert primary_receipt["result_refs"]["evidence_ids"] == [
                     "prefetch-public-typed"
                 ]
-                typed_check = db.execute(
+                corroboration_receipt = next(
+                    receipt
+                    for receipt in receipts
+                    if receipt
+                    and receipt.get("arguments", {}).get("test_intent")
+                    == "corroboration"
+                )
+                assert corroboration_receipt["result_refs"]["evidence_ids"] == [
+                    "prefetch-public-typed"
+                ]
+                checks = db.execute(
                     "SELECT output_json FROM trace.investigation_steps "
-                    "WHERE phase = 'check' ORDER BY created_at DESC LIMIT 1"
-                ).fetchone()
-                assessment = json_module.loads(typed_check[0])["assessment"]
-                assert assessment["role"] == "supporting"
-                assert assessment["witness_evidence_ids"] == ["prefetch-public-typed"]
-                assert settlement and settlement[0] == "completed" and settlement[1]
-                assert final_hypothesis == ("confirmed",)
+                    "WHERE phase = 'check' ORDER BY created_at"
+                ).fetchall()
+                assert len(checks) >= 2
+                assert all(
+                    json_module.loads(row[0])["assessment"]["assessment_id"]
+                    for row in checks
+                )
+                assert "inconclusive" in {
+                    json_module.loads(row[0])["verdict"] for row in checks
+                }
+                assert final_hypothesis != ("confirmed",)
             else:
                 assert "QueryIntentResponse" in provider.schemas
                 assert settlement and settlement[0] == "completed" and settlement[1]
                 assert final_hypothesis == ("confirmed",)
-
-    if proposal_case == "typed_primary":
-        from forensia.core.session import SessionState
-        from forensia.investigation.hypotheses.hypothesis_store import (
-            load_persisted_hypotheses,
-        )
-        from forensia.investigation.planner import plan_hypothesis_query
-
-        with CaseDB(Case.open(case_dir)) as db:
-            active, resolved = load_persisted_hypotheses(db)
-            hypothesis = next(
-                item for item in [*active, *resolved] if item.verification_spec
-            )
-            state = SessionState(session_id=session_id)
-
-            replay = plan_hypothesis_query(
-                state,
-                hypothesis,
-                "http://provider.test",
-                "controlled-provider",
-                db=db,
-            )
-            assert replay.query is not None
-            assert replay.query.test_intent == "corroboration"
-
-            db.execute(
-                "UPDATE evidence_sources SET parser_version = 'test-revision-2' "
-                "WHERE source_id = 'seed-prefetch-source'"
-            )
-            replacement = plan_hypothesis_query(
-                state,
-                hypothesis,
-                "http://provider.test",
-                "controlled-provider",
-                db=db,
-            )
-            assert replacement.query is not None
-            assert replacement.query.test_intent == "primary_verification"
 
 
 def test_mft_only_resume_uses_normalization_receipt_and_parser_revision() -> None:

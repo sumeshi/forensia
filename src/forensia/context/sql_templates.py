@@ -294,6 +294,8 @@ def query_template_catalog() -> list[dict[str, Any]]:
             "template_id": spec.template_id,
             "description": spec.description,
             "required_params": list(spec.required_params),
+            "parameters": spec.parameters,
+            "tables": sorted(_query_template_tables()[spec.template_id]),
         }
         for spec in _load_query_templates().values()
     ]

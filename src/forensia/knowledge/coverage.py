@@ -822,6 +822,34 @@ def derive_required_capabilities(
     return sorted(inferred)
 
 
+def derive_search_families(
+    required_capabilities: list[str] | None = None,
+    support_conditions: dict[str, Any] | None = None,
+) -> tuple[str, ...]:
+    """Derive bounded artifact families from declared capabilities and typed scope.
+
+    An explicit co-observed event-ID condition identifies the EVTX search family
+    even when the catalog has no capability classification for those IDs.
+    """
+    families: set[str] = set()
+    declarations = load_artifact_capabilities().get("families", {})
+    for capability in required_capabilities or []:
+        for family, config in declarations.items():
+            if capability in (config.get("capabilities") or {}):
+                families.add(str(family))
+    conditions = support_conditions or {}
+    observation = conditions.get("observation")
+    if isinstance(observation, dict):
+        family = str(observation.get("family") or "").strip().lower()
+        if family in declarations:
+            families.add(family)
+    event_ids = conditions.get("co_observed_event_ids") or []
+    if any(str(value).strip().isdigit() for value in event_ids):
+        if "evtx" in declarations:
+            families.add("evtx")
+    return tuple(sorted(families))
+
+
 def infer_capabilities(text: str) -> list[str]:
     """Infer relevant capabilities from known tables and declared Event IDs."""
     normalized = text.lower()
@@ -897,12 +925,16 @@ def disclosure_tables_for_spec(spec: Any) -> tuple[tuple[str, ...], tuple[str, .
         declared = spec.required_capabilities
     else:
         return (), ()
-    observation = conditions.get("observation")
-    if isinstance(observation, dict):
-        family = str(observation.get("family") or "").strip().lower()
-        family_config = load_artifact_capabilities().get("families", {}).get(family, {})
-        tables = tuple(str(table) for table in family_config.get("tables") or [])
-        return tables, tables[:1]
-    return capability_disclosure_tables(
-        derive_required_capabilities(list(declared), conditions)
-    )
+    capabilities = derive_required_capabilities(list(declared), conditions)
+    tables, primary = capability_disclosure_tables(capabilities)
+    declarations = load_artifact_capabilities().get("families", {})
+    for family in derive_search_families(capabilities, conditions):
+        family_tables = tuple(
+            str(table) for table in declarations[family].get("tables") or []
+        )
+        for table in family_tables:
+            if table not in tables:
+                tables += (table,)
+        if family_tables and family_tables[0] not in primary:
+            primary += (family_tables[0],)
+    return tables, primary

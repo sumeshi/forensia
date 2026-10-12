@@ -80,12 +80,59 @@ def _template_catalog_block(entries: list[dict[str, Any]]) -> str:
     ]
     for entry in entries:
         lines.append(
-            f"- id={entry['template_id']} | params={entry['required_params']} | "
+            f"- id={entry['template_id']} | params={json.dumps(entry['parameters'])} | "
             f"{entry['description']}"
         )
     lines.append("</INDEX>")
     lines.append("</TEMPLATE_CATALOG>")
     return "\n".join(lines) + "\n"
+
+
+def _query_intent_examples(
+    tables: tuple[str, ...] | list[str], templates: list[dict[str, Any]]
+) -> str:
+    """Render complete actions using the same bounded catalog shown above."""
+    if not tables:
+        return ""
+    table = tables[0]
+    record_id = "artifact_id" if table.startswith("registry") else "evidence_id"
+    actions = [
+        {
+            "action": {
+                "intent": "inspect matching evidence",
+                "target_table": table,
+                "template_id": None,
+                "sql": f"SELECT {record_id} FROM {table} LIMIT 20",
+            }
+        }
+    ]
+    if templates:
+        template = templates[0]
+        params = {
+            name: template["parameters"][name].get("default")
+            or (
+                template["parameters"][name].get("minimum", 1)
+                if template["parameters"][name]["type"] == "integer"
+                else "example"
+            )
+            for name in template["required_params"]
+        }
+        actions.append(
+            {
+                "action": {
+                    "intent": "inspect matching evidence",
+                    "target_table": template["tables"][0],
+                    "template_id": template["template_id"],
+                    "params": params,
+                    "sql": "",
+                }
+            }
+        )
+    labels = ("RAW_SQL_EXAMPLE", "RECIPE_EXAMPLE")
+    return "\n".join(
+        f"{labels[index]}: {json.dumps(action, ensure_ascii=False)}"
+        for index, action in enumerate(actions)
+    )
 
 
 def _org_knowledge_block(
@@ -376,9 +423,9 @@ def build_query_intent_messages(
     planning_tables = (
         eligible_tables if eligible_tables is not None else disclosure_tables
     )
-    template_catalog_md = _template_catalog_block(
-        query_template_catalog_for_tables(planning_tables or ())
-    )
+    template_catalog = query_template_catalog_for_tables(planning_tables or ())
+    template_catalog_md = _template_catalog_block(template_catalog)
+    action_examples = _query_intent_examples(planning_tables, template_catalog)
     playbook_tables = set(planning_tables) or None
     profile_event_ids = (
         set(case_profile.event_ids)
@@ -452,8 +499,14 @@ def build_query_intent_messages(
         f"{_time_range_guidance(time_range)}"
         f"{_case_profile_guidance(case_profile.summary if case_profile else None)}"
         f"{_org_knowledge_block(description=getattr(hypothesis, 'description', ''), extra_words=knowledge_extra, db=db, session_id=session_id, phase='hypothesis_plan')}"
-        f"<TASK>You are the bounded query action planner. This action is {test_intent}. Choose one action and, for sql.query, provide either an exact executable template_catalog ID with params or a bounded SELECT fallback. Cookbook/RECIPE_INDEX IDs are reference-only and must be adapted into raw SQL with template_id=null. The host validates and executes it; do not delegate SQL composition to another model.</TASK>\n"
-        "<INPUT_SCHEMA>\n"
+        f"<TASK>You are the bounded query action planner. This action is {test_intent}. "
+        + (
+            "Choose one action using either an exact executable template_catalog ID with params or a bounded SELECT fallback. Cookbook/RECIPE_INDEX IDs are reference-only and must be adapted into raw SQL with template_id=null. "
+            if template_catalog
+            else "The executable template catalog is empty; use only a bounded raw SELECT with template_id=null. "
+        )
+        + "The host validates and executes it; do not delegate SQL composition to another model.</TASK>\n"
+        + "<INPUT_SCHEMA>\n"
         f"hypothesis: {json.dumps(_hypothesis_prompt_projection(hypothesis), ensure_ascii=False, default=str)}\n"
         f"{render_prior_attempts(recent_history)}"
         f"time_range: {json.dumps(time_range, ensure_ascii=False, default=str)}\n"
@@ -462,17 +515,23 @@ def build_query_intent_messages(
         f"schema: {schema_context}\n"
         "</INPUT_SCHEMA>\n"
         "<OUTPUT_SCHEMA>\n"
-        "Return exactly one bounded SQL query action:\n"
-        'Return {"action": {...}} with type="sql.query", intent, target_table '
-        "from eligible_tables, template_id, params, sql, filters_required, "
-        "time_window, and expected_row_shape. Raw SQL must select canonical "
-        "evidence_id (or Registry artifact_id) and use only eligible_tables.\n"
-        "Template path: use the same sql.query fields, copy a template_id exactly from the supplied <TEMPLATE_CATALOG>, set its params, and set sql to an empty string."
-        "</OUTPUT_SCHEMA>\n"
+        "Return exactly one action as JSON. Fields: intent (string), target_table "
+        "(string from eligible_tables), template_id (string for a catalog recipe, "
+        "otherwise null), sql (non-empty SELECT for raw SQL, otherwise empty); "
+        "params is an object only for recipes. Raw SQL must select canonical "
+        "evidence_id (or Registry artifact_id) and use eligible_tables.\n"
+        "Types and complete examples (one JSON object per line): intent string; "
+        "target_table string from eligible_tables; template_id string or null; "
+        "sql string; params object only when template_id is a string.\n"
+        f"{action_examples}\n" + "</OUTPUT_SCHEMA>\n"
         "<RULES>\n"
-        "The sql.query action MUST include a complete intent, known target_table, and exactly one execution path: for a template, copy an executable ID from <TEMPLATE_CATALOG>, set params, and set sql to an empty string; for raw SQL, set template_id to null and provide a bounded SELECT. If the catalog contains no applicable template, use raw SQL. RECIPE_INDEX IDs are never valid template_id values. Do not emit unknown actions, free-form tools, or an empty/ambiguous action.\n"
-        "If EXECUTION_ERROR is present, you MUST change the query — at minimum change the table list, the WHERE clause, or eliminate the failing JOIN. Never repeat the same SQL that caused an execution error.\n"
-        "Address prior_check_feedback within eligible_tables. If required evidence is outside the eligible catalog, report the unmet requirement instead of proposing an unauthorized query.\n"
+        + (
+            "The action MUST include a complete intent, known target_table, and one path: copy an executable template ID from <TEMPLATE_CATALOG>, provide params, and set sql to empty; or set template_id to null and provide a bounded SELECT. RECIPE_INDEX IDs are never valid template IDs. Do not emit an empty or ambiguous action.\n"
+            if template_catalog
+            else "The executable template catalog is empty, so use only the raw SQL path: set template_id to null and provide a bounded SELECT. Do not include params or invent a template ID.\n"
+        )
+        + "If EXECUTION_ERROR is present, you MUST change the query — at minimum change the table list, the WHERE clause, or eliminate the failing JOIN. Never repeat the same SQL that caused an execution error.\n"
+        + "Address prior_check_feedback within eligible_tables. If required evidence is outside the eligible catalog, report the unmet requirement instead of proposing an unauthorized query.\n"
         + (
             "This is corroboration after the typed primary search. Do not repeat that primary query. Use only tables listed in the selected schema cards; cross-family corroboration is allowed only when those tables are listed. Keep the purpose and evidence family explicit.\n"
             if test_intent == "corroboration"

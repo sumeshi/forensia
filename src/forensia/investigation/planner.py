@@ -63,8 +63,13 @@ def normalize_query_intent_action(
 
     try:
         action = QueryIntentResponse.model_validate(payload).action
-    except ValidationError:
-        return None, "unknown or malformed action"
+    except ValidationError as exc:
+        errors = exc.errors(include_url=False, include_input=False)
+        return None, "; ".join(
+            f"{'.'.join(str(part) for part in error['loc']) or 'action'}: "
+            f"{error['type']} — {error['msg']}"
+            for error in errors[:3]
+        )[:500]
 
     return action, None
 
@@ -80,17 +85,17 @@ def _materialize_planned_query(
         planned_query.sql = render_query_template(tid, planned_query.params)
     else:
         planned_query.sql = validate_select_sql(planned_query.sql)
+    used_tables = query_referenced_tables(planned_query.sql)
+    target = str(payload.get("target_table") or "").casefold()
+    if target not in used_tables:
+        raise ValueError("target_table must name a table used by the query")
     if eligible_tables is not None:
-        used_tables = query_referenced_tables(planned_query.sql)
         allowed = {str(table).casefold() for table in eligible_tables}
-        target = str(payload.get("target_table") or "").casefold()
         if not used_tables or not used_tables <= allowed:
             rejected = ", ".join(sorted(used_tables - allowed)) or "no artifact table"
             raise ValueError(
                 f"query table is outside this work's eligible catalog: {rejected}"
             )
-        if target not in used_tables:
-            raise ValueError("target_table must name a table used by the query")
     if db is not None:
         planned_query.sql = validate_select_sql_with_dryrun(planned_query.sql, db)
     return planned_query
@@ -184,6 +189,7 @@ class HypothesisPlanResult:
     #: Knowledge sections are recorded per prompt in the Trace retrieval
     #: events; this rides the existing plan step payload.
     disclosure: dict[str, Any] | None = None
+    test_intent: str | None = None
 
 
 def _eligible_planner_tables(
@@ -225,6 +231,8 @@ def persist_hypothesis_plan_result(
     query_index: int,
     plan: HypothesisPlanResult,
     state: SessionState,
+    attempt_number: int = 1,
+    correction_budget: list[int] | None = None,
     emit: Callable[..., None] | None = None,
 ) -> str:
     """Persist query planning without changing the admitted hypothesis."""
@@ -232,15 +240,27 @@ def persist_hypothesis_plan_result(
         _save_step,
         append_hypothesis_reasoning,
     )
+    from forensia.investigation.work_judgment import work_progress_snapshot
 
+    work = work_progress_snapshot(db, hypothesis.id)
+    retry_available = bool(
+        plan.stop_reason
+        and plan.stop_reason.startswith("invalid_action:")
+        and correction_budget is not None
+        and correction_budget[0] > 0
+    )
+    step_suffix = f"{hypothesis.id}-{query_index:02d}-{attempt_number:02d}"
+    step_id = f"{session_id}-{iteration:02d}-plan-hypothesis-{step_suffix}"
     output = dict(plan.raw_response)
     output["_plan_status"] = {
         "query_materialized": plan.query is not None,
         "stop_reason": plan.stop_reason,
+        "retry_available": retry_available,
+        "work_identity": work["identity"] if work is not None else None,
         "test_intent": (
             plan.query.test_intent
             if plan.query is not None
-            else plan.raw_response.get("test_intent")
+            else plan.test_intent or plan.raw_response.get("test_intent")
         ),
     }
     if plan.disclosure is not None:
@@ -251,9 +271,13 @@ def persist_hypothesis_plan_result(
         iteration=iteration,
         phase="plan-hypothesis",
         hypothesis_id=hypothesis.id,
-        input_json={"hypothesis": hypothesis.model_dump(), "query_index": query_index},
+        input_json={
+            "hypothesis": hypothesis.model_dump(),
+            "query_index": query_index,
+            "attempt_number": attempt_number,
+        },
         output_json=output,
-        suffix=f"{hypothesis.id}-{query_index:02d}",
+        suffix=step_suffix,
     )
     if plan.query:
         return "ok"
@@ -272,6 +296,7 @@ def persist_hypothesis_plan_result(
     state.last_planner_error = {
         "hypothesis_id": hypothesis.id,
         "reason": reason[:500],
+        "step_id": step_id,
         "rejected_action": json.dumps(
             plan.raw_response, ensure_ascii=False, default=str
         )[:500],
@@ -283,27 +308,15 @@ def persist_hypothesis_plan_result(
             iteration=iteration,
             kind="hypothesis.plan_rejected",
             status="failed",
-            severity="warning",
-            reason="planner_validation_failed",
+            severity="error" if reason.startswith("planner_failed:") else "warning",
+            reason="planner_validation_failed"
+            if reason.startswith("invalid_action:")
+            else reason.split(":", 1)[0],
             hypothesis_id=hypothesis.id,
-            step_id=(
-                f"{session_id}-{iteration:02d}-plan-hypothesis-"
-                f"{hypothesis.id}-{query_index:02d}"
-            ),
+            step_id=step_id,
         )
     logger.warning("%s planner validation rejected the plan: %s", hypothesis.id, reason)
-    return "continue"
-
-
-def planner_retry_allowed(
-    state: SessionState, hypothesis: Hypothesis, already_granted: bool
-) -> bool:
-    """Allow one bounded retry only for the hypothesis that failed planning."""
-    return bool(
-        state.last_planner_error
-        and state.last_planner_error.get("hypothesis_id") == hypothesis.id
-        and not already_granted
-    )
+    return "continue" if retry_available else "break"
 
 
 def request_query_intent(
@@ -313,6 +326,7 @@ def request_query_intent(
     model: str,
     status_callback: Callable[[str], None] | None = None,
     json_schema: dict[str, Any] = QUERY_INTENT_SCHEMA,
+    correction_budget: list[int] | None = None,
 ) -> _QueryIntentResult:
     """Make one bounded query decision from the supplied Case/Trace context."""
     parsed = json_response.request_llm_json(
@@ -322,6 +336,7 @@ def request_query_intent(
         json_schema=json_schema,
         telemetry_phase="hypothesis-plan",
         status_callback=status_callback,
+        correction_budget=correction_budget,
     )
     action, error = normalize_query_intent_action(parsed)
     return _QueryIntentResult(action, parsed, error)
@@ -489,6 +504,7 @@ def plan_hypothesis_query(
     time_range: dict[str, str] | None = None,
     case_profile: CaseEvidenceProfile | None = None,
     case_policy: Any | None = None,
+    correction_budget: list[int] | None = None,
 ) -> HypothesisPlanResult:
     """Plan the next query for a single hypothesis.
 
@@ -658,6 +674,7 @@ def plan_hypothesis_query(
             if eligible_tables is not None
             else QUERY_INTENT_SCHEMA
         ),
+        correction_budget=correction_budget,
     )
     action = intent_response.action
     error = intent_response.error
@@ -699,4 +716,5 @@ def plan_hypothesis_query(
         stop_reason=f"invalid_action: {error}" if error else None,
         raw_response=intent_response.raw_response,
         disclosure=disclosure_record,
+        test_intent=test_intent,
     )

@@ -106,6 +106,88 @@ def test_finalization_scope_is_not_allocated_to_an_investigation_cycle(
     assert finalization[0]["logical_calls"] == 1
 
 
+def test_query_metrics_count_materialization_receipts_and_linked_assessments(
+    telemetry,
+) -> None:
+    from scripts.eval.run import _query_trace_metrics
+
+    rows = [
+        (
+            "plan-ok",
+            "plan-hypothesis",
+            {
+                "_plan_status": {
+                    "query_materialized": True,
+                    "test_intent": "primary_verification",
+                }
+            },
+        ),
+        (
+            "plan-bad",
+            "plan-hypothesis",
+            {
+                "_plan_status": {
+                    "query_materialized": False,
+                    "stop_reason": "invalid_action: bad shape",
+                    "test_intent": None,
+                }
+            },
+        ),
+        (
+            "do-primary",
+            "do",
+            {
+                "tool_receipt": {
+                    "arguments": {"test_intent": "primary_verification"},
+                    "status": "empty",
+                },
+                "attempt": {"attempt_ref": "receipt-1", "status": "empty"},
+            },
+        ),
+        (
+            "do-corroboration",
+            "do",
+            {
+                "tool_receipt": {
+                    "arguments": {"test_intent": "corroboration"},
+                    "status": "ok",
+                },
+                "attempt": {"attempt_ref": "receipt-2", "status": "ok"},
+            },
+        ),
+        (
+            "check-primary",
+            "check",
+            {
+                "attempt_ref": "receipt-1",
+                "assessment": {"assessment_id": "assessment-1"},
+            },
+        ),
+    ]
+    for step_id, phase, output in rows:
+        telemetry.db.execute(
+            "INSERT INTO trace.investigation_steps (step_id, session_id, phase, output_json) "
+            "VALUES (?, 'S-1', ?, ?)",
+            [step_id, phase, json.dumps(output)],
+        )
+
+    metrics = _query_trace_metrics(telemetry.db.conn)
+    assert metrics["plan_hypothesis"]["materialized"] == 1
+    assert metrics["plan_hypothesis"]["rejected_by_reason"] == {
+        "invalid_action: bad shape": 1
+    }
+    assert metrics["receipt_execution"]["primary_verification"] == {
+        "receipts": 1,
+        "receipt_statuses": {"empty": 1},
+        "assessments": 1,
+    }
+    assert metrics["receipt_execution"]["corroboration"] == {
+        "receipts": 1,
+        "receipt_statuses": {"ok": 1},
+        "assessments": 0,
+    }
+
+
 def test_logical_call_cap_counts_failed_calls_and_blocks_before_transport(
     tmp_path,
 ) -> None:

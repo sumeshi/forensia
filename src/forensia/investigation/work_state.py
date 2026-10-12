@@ -248,19 +248,8 @@ def classify_active_hypotheses_on_stop(
                 if owners:
                     reason += ": " + ", ".join(owners)
 
-            hypothesis.status = classification
-            db.execute(
-                "UPDATE hypotheses SET status = ?, blocked_reason = ?, "
-                "updated_at = now() WHERE hypothesis_id = ? AND status IN ('active', 'needs_review')",
-                [classification, reason, hypothesis_id],
-            )
-
-            _upsert_terminal_work(
-                db,
-                hypothesis_id=hypothesis_id,
-                description=hypothesis.description,
-                classification=classification,
-                reason=reason,
+            _persist_work_classification_in_transaction(
+                db, hypothesis, classification, reason
             )
 
         # A hypothesis may become terminal before the stop transition (for
@@ -324,6 +313,40 @@ def classify_active_hypotheses_on_stop(
             """
         )
     return counts
+
+
+def _persist_work_classification_in_transaction(
+    db: CaseDB, hypothesis: Hypothesis, classification: str, reason: str
+) -> None:
+    db.execute(
+        "UPDATE hypotheses SET status = ?, blocked_reason = ?, "
+        "updated_at = now() WHERE hypothesis_id = ? AND status IN ('active', 'needs_review')",
+        [classification, reason, hypothesis.id],
+    )
+    _upsert_terminal_work(
+        db,
+        hypothesis_id=hypothesis.id,
+        description=hypothesis.description,
+        classification=classification,
+        reason=reason,
+    )
+    hypothesis.status = classification
+
+
+def pause_hypothesis_work(db: CaseDB, hypothesis: Hypothesis, reason: str) -> None:
+    """Release a work slot without turning planning failure into a verdict."""
+    classification = (
+        "deferred" if reason.startswith("invalid_action:") else "needs_review"
+    )
+    judgment = judge_work(db, [hypothesis.id]).get(hypothesis.id)
+    if reason.startswith(("no_eligible_capability", "invalid_typed_primary")) or (
+        judgment is not None and judgment.blockers
+    ):
+        classification = "blocked"
+    with db.transaction():
+        _persist_work_classification_in_transaction(
+            db, hypothesis, classification, reason
+        )
 
 
 def reopen_retryable_work(db: CaseDB, *, manual_resume: bool = False) -> list[str]:

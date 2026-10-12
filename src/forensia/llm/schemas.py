@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -24,16 +24,8 @@ class SQLQueryAction(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    type: Literal["sql.query"]
     intent: str = Field(min_length=1)
-    target_table: Literal[
-        "evtx_events",
-        "mft_entries",
-        "mft_timeline",
-        "prefetch_executions",
-        "registry_artifacts",
-        "registry_timeline",
-    ]
+    target_table: str = Field(min_length=1)
     # Recipe path: a bounded template id chosen from the catalog.
     template_id: str | None = Field(
         default=None,
@@ -45,14 +37,15 @@ class SQLQueryAction(BaseModel):
         default="",
         description="Empty when template_id is set (whitespace-only is also empty to the host); otherwise a non-blank bounded SELECT.",
     )
-    filters_required: list[str] = Field(default_factory=list)
-    time_window: str = ""
-    expected_row_shape: str = ""
 
     @model_validator(mode="after")
     def _one_execution_path(self) -> SQLQueryAction:
         if bool(self.template_id) == bool(self.sql.strip()):
             raise ValueError("Choose exactly one of template_id or bounded SELECT")
+        if self.template_id and "params" not in self.model_fields_set:
+            raise ValueError("params is required for template execution")
+        if self.sql.strip() and "params" in self.model_fields_set:
+            raise ValueError("params is only valid for template execution")
         return self
 
 
@@ -75,7 +68,7 @@ QUERY_INTENT_SCHEMA: dict[str, Any] = QueryIntentResponse.model_json_schema()
 _sql_action_schema = QUERY_INTENT_SCHEMA["$defs"]["SQLQueryAction"]
 _sql_properties = _sql_action_schema["properties"]
 _sql_required = list(_sql_properties)
-_sql_action_schema["required"] = _sql_required
+_sql_action_schema["required"] = [key for key in _sql_required if key != "params"]
 _sql_action_schema["anyOf"] = []
 for _template_mode in (True, False):
     _branch_properties = dict(_sql_properties)
@@ -91,6 +84,7 @@ for _template_mode in (True, False):
             "pattern": r"^\s*$",
             "description": _sql_properties["sql"]["description"],
         }
+        _branch_properties["params"] = _sql_properties["params"]
     else:
         _branch_properties["template_id"] = {
             "type": "null",
@@ -101,11 +95,14 @@ for _template_mode in (True, False):
             "pattern": r".*\S.*",
             "description": _sql_properties["sql"]["description"],
         }
+        _branch_properties.pop("params")
     _sql_action_schema["anyOf"].append(
         {
             "type": "object",
             "additionalProperties": False,
-            "required": _sql_required,
+            "required": [
+                key for key in _sql_required if _template_mode or key != "params"
+            ],
             "properties": _branch_properties,
         }
     )
@@ -128,6 +125,9 @@ def query_intent_schema_for_catalog(
             branch_props["template_id"]["enum"] = template_enum
         else:
             branch_props["template_id"]["enum"] = [None]
+    if not template_enum:
+        raw_branch = action.pop("anyOf")[-1]
+        action.update(raw_branch)
     return schema
 
 

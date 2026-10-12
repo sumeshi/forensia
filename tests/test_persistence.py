@@ -595,15 +595,15 @@ class PersistenceTests(unittest.TestCase):
             self.assertTrue(
                 report_cycle_progress(
                     {"open_work": ()},
-                    {"open_work": ("H-1",)},
+                    {"open_work": ((("H-1",), (), ()),)},
                 )
             )
         with self.subTest("prose totals are irrelevant"):
             self.assertFalse(
                 report_cycle_progress(
-                    {"open_work": ("H-1",), "observations": ("row:1",)},
+                    {"open_work": ((("H-1",), (), ()),), "observations": ("row:1",)},
                     {
-                        "open_work": ("H-1",),
+                        "open_work": ((("H-1",), (), ()),),
                         "observations": ("row:1",),
                         "total_gaps": 99,
                         "total_body_chars": 99,
@@ -617,18 +617,44 @@ class PersistenceTests(unittest.TestCase):
                     {"identity": "bbbb", "open_work": (), "observations": ()},
                 )
             )
+        with self.subTest("attaching a stop Task and Gap is not new work"):
+            self.assertFalse(
+                report_cycle_progress(
+                    {"open_work": ((("H-1",), (), ()),)},
+                    {"open_work": ((("H-1",), ("GAP-STOP-1",), ("TASK-STOP-1",)),)},
+                )
+            )
+            self.assertTrue(
+                report_cycle_progress(
+                    {"open_work": ((("H-1",), (), ()),)},
+                    {"open_work": ((("H-1",), ("G-required",), ("T-required",)),)},
+                )
+            )
+        with self.subTest("parser revision is new source context"):
+            with tempfile.TemporaryDirectory() as tmpdir:
+                with CaseDB(Case.init(tmpdir)) as db:
+                    db.execute(
+                        "INSERT INTO evidence_sources (source_id, artifact_family, ingest_status, parser_version) VALUES ('source-a', 'evtx', 'normalized', '1')"
+                    )
+                    before = evaluation_snapshot(db)
+                    db.execute(
+                        "UPDATE evidence_sources SET parser_version = '2' WHERE source_id = 'source-a'"
+                    )
+                    self.assertTrue(
+                        report_cycle_progress(before, evaluation_snapshot(db))
+                    )
         with self.subTest("unchanged state round-trip"):
             self.assertFalse(
                 report_cycle_progress(
                     {
                         "identity": "aaaa",
-                        "open_work": ("H-1",),
+                        "open_work": ((("H-1",), (), ()),),
                         "observations": ("row:1",),
                         "contradictions": ("row:2",),
                     },
                     {
                         "identity": "aaaa",
-                        "open_work": ("H-1",),
+                        "open_work": ((("H-1",), (), ()),),
                         "observations": ("row:1",),
                         "contradictions": ("row:2",),
                     },

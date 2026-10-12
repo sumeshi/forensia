@@ -15,6 +15,8 @@ import tempfile
 import unittest
 from unittest import mock
 
+import pytest
+
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
 
@@ -580,6 +582,14 @@ class InvestigateWiringTests(unittest.TestCase):
                         }
                     ]
                 }
+                db.execute(
+                    "INSERT INTO hypotheses (hypothesis_id, description, status, verification_spec) VALUES (?, ?, 'active', ?)",
+                    [
+                        hypothesis.id,
+                        hypothesis.description,
+                        hypothesis.verification_spec.model_dump_json(),
+                    ],
+                )
                 original = investigation_cycle._candidate_input_fingerprint(
                     candidate, ctx, prior
                 )
@@ -600,8 +610,15 @@ class InvestigateWiringTests(unittest.TestCase):
                     candidate, ctx, prior
                 )
                 self.assertEqual(original, unrelated)
+                state.resolved_hypotheses = []
+                self.assertEqual(
+                    original,
+                    investigation_cycle._candidate_input_fingerprint(
+                        candidate, ctx, prior
+                    ),
+                )
 
-                changed = state.resolved_hypotheses[0].model_copy(
+                changed = hypothesis.model_copy(
                     update={
                         "verification_spec": hypothesis.verification_spec.model_copy(
                             update={"refute_conditions": {"zero_rows": True}}
@@ -609,6 +626,10 @@ class InvestigateWiringTests(unittest.TestCase):
                     }
                 )
                 state.resolved_hypotheses = [changed]
+                db.execute(
+                    "UPDATE hypotheses SET verification_spec = ? WHERE hypothesis_id = ?",
+                    [changed.verification_spec.model_dump_json(), hypothesis.id],
+                )
                 spec_changed = investigation_cycle._candidate_input_fingerprint(
                     candidate, ctx, prior
                 )
@@ -1025,6 +1046,23 @@ class InvestigateWiringTests(unittest.TestCase):
                     ) as run_hypothesis,
                 ):
                     for plan_cycle in (1, 2):
+                        if plan_cycle == 2:
+                            for index in range(7):
+                                blocked = Hypothesis(
+                                    id=f"H-NOCATALOG-{index}",
+                                    description="Unmapped capability requires review",
+                                )
+                                db.execute(
+                                    "INSERT INTO hypotheses (hypothesis_id, description, status, "
+                                    "verification_spec) VALUES (?, ?, 'active', ?)",
+                                    [
+                                        blocked.id,
+                                        blocked.description,
+                                        '{"spec_version":"1","required_capabilities":["unmapped"]}',
+                                    ],
+                                )
+                                state.active_hypotheses.append(blocked)
+                            self.assertEqual(8, len(state.active_hypotheses))
                         asyncio.run(
                             investigation_cycle._run_cycle_body(
                                 state=state,
@@ -1043,6 +1081,13 @@ class InvestigateWiringTests(unittest.TestCase):
                         )
 
                 self.assertEqual([2], broad_calls)
+                self.assertEqual(
+                    8,
+                    db.execute(
+                        "SELECT COUNT(*) FROM investigation_tasks WHERE status = 'open'"
+                    ).fetchone()[0],
+                )
+                self.assertNotIn(stalled, state.active_hypotheses)
                 self.assertEqual(
                     ["H-STALL", "H-NEW"],
                     [
@@ -1782,7 +1827,10 @@ def test_report_gap_and_terminal_events_are_persisted_with_durable_refs() -> Non
             assert terminal_event[2]
 
 
-def test_invalid_hypothesis_planner_emits_retry_event_and_retries_once() -> None:
+@pytest.mark.parametrize("correction_raises", [False, True])
+def test_invalid_hypothesis_planner_emits_retry_event_and_retries_once(
+    correction_raises,
+) -> None:
     from types import SimpleNamespace
 
     from forensia.core.session import Hypothesis, SessionState
@@ -1809,6 +1857,8 @@ def test_invalid_hypothesis_planner_emits_retry_event_and_retries_once() -> None
             def invalid_plan(*_args, **_kwargs):
                 nonlocal calls
                 calls += 1
+                if correction_raises and calls == 2:
+                    raise RuntimeError("correction could not be parsed")
                 return planner._QueryIntentResult(
                     action=None,
                     raw_response={"action": {"type": "unsupported.action"}},
@@ -1843,13 +1893,19 @@ def test_invalid_hypothesis_planner_emits_retry_event_and_retries_once() -> None
                         progress_callback=lambda event: record_progress_event(
                             db, event
                         ),
-                        max_queries_per_hypothesis=1,
+                        max_queries_per_hypothesis=5,
                         plan_cycle=1,
                         max_iter=1,
                         report_only=False,
                     )
                 )
 
+            assert db.execute(
+                "SELECT status FROM hypotheses WHERE hypothesis_id = ?", [hypothesis.id]
+            ).fetchone() == ("needs_review" if correction_raises else "deferred",)
+            assert db.execute(
+                "SELECT COUNT(*) FROM trace.investigation_steps WHERE phase = 'do'"
+            ).fetchone() == (0,)
             events = db.execute(
                 "SELECT kind, status, reason, refs FROM trace.progress_events "
                 "WHERE kind IN ('hypothesis.plan_rejected', 'hypothesis.plan_retry') "
@@ -1872,10 +1928,21 @@ def test_invalid_hypothesis_planner_emits_retry_event_and_retries_once() -> None
                     "SELECT 1 FROM trace.investigation_steps WHERE step_id = ?",
                     [refs["step_id"]],
                 ).fetchone()
-            assert all(
-                (event[1], event[2]) == ("failed", "planner_validation_failed")
-                for event in rejected
-            )
+            assert [(event[1], event[2]) for event in rejected] == [
+                ("failed", "planner_validation_failed"),
+                (
+                    "failed",
+                    "planner_failed"
+                    if correction_raises
+                    else "planner_validation_failed",
+                ),
+            ]
+            plans = db.execute(
+                "SELECT output_json FROM trace.investigation_steps WHERE phase = 'plan-hypothesis' ORDER BY created_at"
+            ).fetchall()
+            assert len(plans) == 2
+            latest = json.loads(plans[-1][0])["_plan_status"]
+            assert latest["retry_available"] is False
             assert all(
                 (event[1], event[2]) == ("running", "planner_retry_granted")
                 for event in retries

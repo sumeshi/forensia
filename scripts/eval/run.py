@@ -472,6 +472,72 @@ def _cycle_rows(conn: duckdb.DuckDBPyConnection) -> list[dict[str, Any]]:
     ]
 
 
+def _query_trace_metrics(conn: duckdb.DuckDBPyConnection) -> dict[str, Any]:
+    """Summarize plan outcomes, dispatched ToolReceipts, and linked Assessments."""
+    plan_counts: Counter[str] = Counter()
+    rejected_reasons: Counter[str] = Counter()
+    plan_intents: dict[str, dict[str, int]] = {}
+    for (output_json,) in conn.execute(
+        "SELECT output_json FROM trace.investigation_steps WHERE phase = 'plan-hypothesis'"
+    ).fetchall():
+        status = (_json(output_json) or {}).get("_plan_status") or {}
+        outcome = (
+            "materialized" if status.get("query_materialized") is True else "rejected"
+        )
+        plan_counts[outcome] += 1
+        intent = str(status.get("test_intent") or "unknown")
+        plan_intents.setdefault(intent, {"materialized": 0, "rejected": 0})[
+            outcome
+        ] += 1
+        if outcome == "rejected":
+            rejected_reasons[str(status.get("stop_reason") or "unknown")] += 1
+
+    executions = {
+        intent: {"receipts": 0, "receipt_statuses": {}, "assessments": 0}
+        for intent in ("primary_verification", "corroboration")
+    }
+    receipt_refs: dict[str, str] = {}
+    for (output_json,) in conn.execute(
+        "SELECT output_json FROM trace.investigation_steps WHERE phase = 'do'"
+    ).fetchall():
+        output = _json(output_json) or {}
+        receipt = output.get("tool_receipt")
+        if not isinstance(receipt, dict):
+            continue
+        intent = (receipt.get("arguments") or {}).get("test_intent")
+        if intent not in executions:
+            continue
+        executions[intent]["receipts"] += 1
+        status = str(
+            receipt.get("status")
+            or (output.get("attempt") or {}).get("status")
+            or "unknown"
+        )
+        statuses = executions[intent]["receipt_statuses"]
+        statuses[status] = statuses.get(status, 0) + 1
+        attempt_ref = (output.get("attempt") or {}).get("attempt_ref")
+        if attempt_ref:
+            receipt_refs[str(attempt_ref)] = intent
+
+    for (output_json,) in conn.execute(
+        "SELECT output_json FROM trace.investigation_steps WHERE phase = 'check'"
+    ).fetchall():
+        output = _json(output_json) or {}
+        intent = receipt_refs.get(str(output.get("attempt_ref") or ""))
+        if intent and isinstance(output.get("assessment"), dict):
+            executions[intent]["assessments"] += 1
+
+    return {
+        "plan_hypothesis": {
+            "total": sum(plan_counts.values()),
+            "materialized": plan_counts["materialized"],
+            "rejected_by_reason": dict(sorted(rejected_reasons.items())),
+            "by_test_intent": dict(sorted(plan_intents.items())),
+        },
+        "receipt_execution": executions,
+    }
+
+
 def extract_cycles(case_dir: Path) -> dict[str, Any]:
     """Read only per-cycle Trace measurements from the current case database."""
     case_dir = case_dir.resolve()
@@ -875,6 +941,7 @@ def extract_case(case_dir: Path) -> dict[str, Any]:
 
             result["candidate_workflow"] = _candidate_summary(conn)
             result["cycles"] = _cycle_rows(conn)
+            result["query_metrics"] = _query_trace_metrics(conn)
             result["reader_status"] = "complete"
     except (duckdb.Error, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
         result["reader_status"] = "incomplete"
@@ -971,7 +1038,7 @@ def _markdown(data: dict[str, Any]) -> str:
                 "",
             ]
         )
-        for group in ("case_counts", "quality", "usage", "storage"):
+        for group in ("case_counts", "quality", "usage", "storage", "query_metrics"):
             values = case.get(group, {})
             if not values:
                 continue

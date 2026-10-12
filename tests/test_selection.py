@@ -198,18 +198,18 @@ class RequiredCapabilityTests(unittest.TestCase):
                 db.execute(
                     "INSERT INTO evidence_coverage "
                     "(capability, source_family, state) "
-                    "VALUES ('declared_cap', 'evtx', 'available')"
+                    "VALUES ('process_execution', 'evtx', 'available')"
                 )
                 db.execute(
                     "UPDATE hypotheses SET verification_spec = "
                     '\'{"spec_version": "1", '
-                    '"required_capabilities": ["declared_cap"], '
+                    '"required_capabilities": ["process_execution"], '
                     "\"support_conditions\": {}}' WHERE hypothesis_id = 'H-SPEC'"
                 )
                 declared = self._db_hypothesis(
                     {
                         "spec_version": "1",
-                        "required_capabilities": ["declared_cap"],
+                        "required_capabilities": ["process_execution"],
                         "support_conditions": {},
                     }
                 )
@@ -228,13 +228,13 @@ class RequiredCapabilityTests(unittest.TestCase):
                     "status, verification_spec) "
                     "VALUES ('H-SPEC', 'spec hypothesis', 'active', "
                     '\'{"spec_version": "1", '
-                    '"required_capabilities": ["declared_cap"], '
+                    '"required_capabilities": ["process_execution"], '
                     '"support_conditions": {}}\')'
                 )
                 declared = self._db_hypothesis(
                     {
                         "spec_version": "1",
-                        "required_capabilities": ["declared_cap"],
+                        "required_capabilities": ["process_execution"],
                         "support_conditions": {},
                     }
                 )
@@ -320,11 +320,11 @@ class SelectionIntegrationTests(unittest.TestCase):
                 db.execute(
                     "UPDATE hypotheses SET verification_spec = ? "
                     "WHERE hypothesis_id = 'H-STALL'",
-                    ['{"spec_version":"1","required_capabilities":["new-cap"]}'],
+                    ['{"spec_version":"1","required_capabilities":["logon"]}'],
                 )
                 db.execute(
                     "INSERT INTO evidence_coverage (capability, source_family, state) "
-                    "VALUES ('new-cap', 'evtx', 'available')"
+                    "VALUES ('logon', 'evtx', 'available')"
                 )
                 self.assertTrue(
                     judge_work(
