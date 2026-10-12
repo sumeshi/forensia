@@ -95,8 +95,11 @@ class InvestigationStateTests(unittest.TestCase):
         from forensia.context.investigation_candidates import (
             build_investigation_candidates,
         )
+        from forensia.core.session import Hypothesis
         from forensia.investigation.investigation_cycle import (
             _BroadPlanContext,
+            _candidate_input_fingerprint,
+            _candidate_linked_work,
             _select_candidate_drafts,
             _select_gap_drafts,
         )
@@ -163,6 +166,61 @@ class InvestigationStateTests(unittest.TestCase):
                     ctx,
                     [{"keypoint_id": "host_execution_activity"}],
                     limit=1,
+                )
+                for index, item in enumerate(selected):
+                    hypothesis = Hypothesis(
+                        id=f"H-{index}",
+                        description="Observed activity",
+                        confirm_when={"co_observed_event_ids": [4624]},
+                    )
+                    db.execute(
+                        "INSERT INTO hypotheses (hypothesis_id, verification_spec) VALUES (?, ?)",
+                        [hypothesis.id, hypothesis.verification_spec.model_dump_json()],
+                    )
+                    candidate = item["candidate"]
+                    settled_fingerprint = _candidate_input_fingerprint(
+                        candidate,
+                        ctx,
+                        _candidate_linked_work(
+                            candidate, db, {}, additional_ids={hypothesis.id}
+                        ),
+                    )
+                    db.execute(
+                        "INSERT INTO trace.investigation_steps "
+                        "(step_id, phase, input_json, output_json, created_at) "
+                        "VALUES (?, 'plan-broad-candidate', ?, ?, now())",
+                        [
+                            f"admitted-{index}",
+                            json.dumps(
+                                {
+                                    "candidate_ref": candidate["candidate_ref"],
+                                    "candidate_fingerprint": candidate[
+                                        "candidate_fingerprint"
+                                    ],
+                                    "input_fingerprint": item["input_fingerprint"],
+                                }
+                            ),
+                            json.dumps(
+                                {
+                                    "status": "admitted",
+                                    "admitted_hypothesis_id": hypothesis.id,
+                                    "settled_input_fingerprint": settled_fingerprint,
+                                }
+                            ),
+                        ],
+                    )
+                next_selected, next_counts = _select_candidate_drafts(ctx, limit=3)
+
+                self.assertEqual(len(next_selected), 3)
+                self.assertEqual(next_counts["already_linked_count"], 3)
+                self.assertEqual(next_counts["eligibility_evaluated_count"], 6)
+                self.assertFalse(next_counts["eligibility_complete"])
+                self.assertTrue(
+                    {
+                        item["candidate"]["candidate_ref"] for item in selected
+                    }.isdisjoint(
+                        item["candidate"]["candidate_ref"] for item in next_selected
+                    )
                 )
 
         self.assertEqual(
@@ -233,7 +291,7 @@ class InvestigationStateTests(unittest.TestCase):
                     _candidate_input_fingerprint,
                 )
 
-                fingerprint = _candidate_input_fingerprint(candidate, ctx, {})
+                fingerprint = _candidate_input_fingerprint(candidate, ctx, [])
                 db.execute(
                     "INSERT INTO trace.investigation_steps "
                     "(step_id, session_id, iteration, phase, input_json, output_json, created_at) "

@@ -356,17 +356,13 @@ def _candidate_linked_work(
 def _candidate_input_fingerprint(
     candidate: dict[str, Any],
     ctx: _BroadPlanContext,
-    prior_attempts: dict[str, list[dict[str, Any]]],
-    *,
-    additional_ids: set[str] | None = None,
+    linked_work: list[dict[str, str | None]],
 ) -> str:
     return _fingerprint(
         {
             "candidate_fingerprint": candidate.get("candidate_fingerprint"),
             "policy_fingerprint": _policy_fingerprint(ctx),
-            "linked_work": _candidate_linked_work(
-                candidate, ctx.db, prior_attempts, additional_ids=additional_ids
-            ),
+            "linked_work": linked_work,
         }
     )
 
@@ -424,6 +420,11 @@ def _select_candidate_drafts(
     ctx: _BroadPlanContext, limit: int
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     prior = _prior_candidate_attempts(ctx.db)
+    # Eligibility must not issue SQL while the candidate result is being read.
+    linked_work_by_candidate = {
+        ref: _candidate_linked_work({"candidate_ref": ref}, ctx.db, prior)
+        for ref in prior
+    }
     eligible_inputs: dict[str, dict[str, Any]] = {}
     exhausted_count = 0
     already_linked_count = 0
@@ -436,7 +437,8 @@ def _select_candidate_drafts(
         fingerprint = str(metadata.get("candidate_fingerprint") or "")
         if not candidate_ref or not fingerprint:
             return False
-        input_fingerprint = _candidate_input_fingerprint(metadata, ctx, prior)
+        linked_work = linked_work_by_candidate.get(candidate_ref, [])
+        input_fingerprint = _candidate_input_fingerprint(metadata, ctx, linked_work)
         candidate_attempts = [
             attempt
             for attempt in prior.get(candidate_ref, [])
@@ -476,7 +478,7 @@ def _select_candidate_drafts(
             eligible_inputs[fingerprint] = {
                 "input_fingerprint": input_fingerprint,
                 "attempt_number": len(same_input_attempts) + 1,
-                "linked_work": _candidate_linked_work(metadata, ctx.db, prior),
+                "linked_work": linked_work,
             }
         return True
 
@@ -802,9 +804,10 @@ async def _draft_and_admit_candidate(
                 - correction_budget[0],
                 "draft_calls_used": draft_calls_used,
             }
-        settled_fingerprint = _candidate_input_fingerprint(
-            candidate, ctx, prior_attempts, additional_ids={merged.id}
+        linked_work = _candidate_linked_work(
+            candidate, ctx.db, prior_attempts, additional_ids={merged.id}
         )
+        settled_fingerprint = _candidate_input_fingerprint(candidate, ctx, linked_work)
         save_outcome(
             {
                 "status": "admitted",
@@ -814,12 +817,7 @@ async def _draft_and_admit_candidate(
                     merged.verification_spec.model_dump(mode="json")
                 ),
                 "settled_input_fingerprint": settled_fingerprint,
-                "linked_work": _candidate_linked_work(
-                    candidate,
-                    ctx.db,
-                    prior_attempts,
-                    additional_ids={merged.id},
-                ),
+                "linked_work": linked_work,
                 "attempt_number": attempt_number,
                 "correction_calls_used": prior_correction_calls
                 + 1
@@ -917,7 +915,8 @@ def _select_gap_drafts(
                 or "Existing case gap without a current Finding candidate."
             )[:500],
         }
-        input_fingerprint = _candidate_input_fingerprint(candidate, ctx, prior)
+        linked_work = _candidate_linked_work(candidate, ctx.db, prior)
+        input_fingerprint = _candidate_input_fingerprint(candidate, ctx, linked_work)
         attempts = [
             attempt
             for attempt in prior.get(candidate_ref, [])
@@ -954,7 +953,7 @@ def _select_gap_drafts(
                 "attempt_number": len(attempts) + 1,
                 "gap": gap,
                 "prior_attempts": prior,
-                "linked_work": _candidate_linked_work(candidate, ctx.db, prior),
+                "linked_work": linked_work,
             }
         )
         if len(selected) >= limit:

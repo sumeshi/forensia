@@ -590,32 +590,33 @@ class InvestigateWiringTests(unittest.TestCase):
                         hypothesis.verification_spec.model_dump_json(),
                     ],
                 )
-                original = investigation_cycle._candidate_input_fingerprint(
-                    candidate, ctx, prior
-                )
+
+                def fingerprint(candidate):
+                    linked_work = investigation_cycle._candidate_linked_work(
+                        candidate, db, prior
+                    )
+                    return investigation_cycle._candidate_input_fingerprint(
+                        candidate, ctx, linked_work
+                    )
+
+                original = fingerprint(candidate)
                 state.active_hypotheses = []
                 state.resolved_hypotheses = [
                     hypothesis.model_copy(
                         update={"status": "confirmed", "verdict": "confirmed"}
                     )
                 ]
-                status_only = investigation_cycle._candidate_input_fingerprint(
-                    candidate, ctx, prior
-                )
+                status_only = fingerprint(candidate)
                 self.assertEqual(original, status_only)
                 state.active_hypotheses = [
                     Hypothesis(id="H-unrelated", description="Unrelated active work")
                 ]
-                unrelated = investigation_cycle._candidate_input_fingerprint(
-                    candidate, ctx, prior
-                )
+                unrelated = fingerprint(candidate)
                 self.assertEqual(original, unrelated)
                 state.resolved_hypotheses = []
                 self.assertEqual(
                     original,
-                    investigation_cycle._candidate_input_fingerprint(
-                        candidate, ctx, prior
-                    ),
+                    fingerprint(candidate),
                 )
 
                 changed = hypothesis.model_copy(
@@ -630,18 +631,14 @@ class InvestigateWiringTests(unittest.TestCase):
                     "UPDATE hypotheses SET verification_spec = ? WHERE hypothesis_id = ?",
                     [changed.verification_spec.model_dump_json(), hypothesis.id],
                 )
-                spec_changed = investigation_cycle._candidate_input_fingerprint(
-                    candidate, ctx, prior
-                )
+                spec_changed = fingerprint(candidate)
                 self.assertNotEqual(original, spec_changed)
                 source_changed_candidate = {
                     **candidate,
                     "candidate_ref": "cand-revision-b",
                     "candidate_fingerprint": "cf-revision-b",
                 }
-                source_changed = investigation_cycle._candidate_input_fingerprint(
-                    source_changed_candidate, ctx, prior
-                )
+                source_changed = fingerprint(source_changed_candidate)
                 self.assertNotEqual(original, source_changed)
 
     def test_broad_plan_failure_replaces_running_receipt_with_terminal_failure(
