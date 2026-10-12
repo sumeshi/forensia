@@ -64,7 +64,7 @@ class PromptMessageTests(unittest.TestCase):
             + json.dumps(path)
             + "."
         )
-        self.assertIn(description, text)
+        self.assertIn(json.dumps(path), text)
         observed = json.loads(
             text.split("<OBSERVED_CANDIDATE>\n", 1)[1].split(
                 "\n</OBSERVED_CANDIDATE>", 1
@@ -436,16 +436,6 @@ class PromptMessageTests(unittest.TestCase):
         )
         self.assertIn('"exec_times": ["2025-01-02T03:04:05"]', joined)
         self.assertIn('"is_deleted": false', joined)
-        self.assertIn(
-            "At least 1 mft observation has file_path equals "
-            '"C:/ProgramData/updater.exe".',
-            joined,
-        )
-        self.assertNotIn(
-            "At least 2 mft observations have file_path equals "
-            '"C:/ProgramData/updater.exe".',
-            joined,
-        )
         with patch.object(prompts, "_org_knowledge_block", return_value=""):
             duplicate_messages, _ = prompts.build_hypothesis_drafter_messages(
                 {"keypoint_id": "persistence"},
@@ -525,6 +515,7 @@ class PromptMessageTests(unittest.TestCase):
         from forensia.knowledge.coverage import canonical_observation_claim
 
         candidate = {
+            "scope": {"source_family": "mft"},
             "evidence": [
                 {
                     "evidence_id": "mft-m1",
@@ -536,7 +527,7 @@ class PromptMessageTests(unittest.TestCase):
                     "_source": "mft_entries",
                     "file_path": "C:/ProgramData/updater.exe",
                 },
-            ]
+            ],
         }
         with patch.object(prompts, "_org_knowledge_block", return_value=""):
             messages, schema = prompts.build_hypothesis_drafter_messages(
@@ -551,8 +542,7 @@ class PromptMessageTests(unittest.TestCase):
             "At least 2 mft observations have file_path equals "
             '"C:/ProgramData/updater.exe".',
         )
-        for example in examples:
-            self.assertIn(example, prompt_text)
+        self.assertIn('"min_count": 2', prompt_text)
         observation_schema = schema["properties"]["hypothesis"]["properties"][
             "confirm_when"
         ]["properties"]["observation"]
@@ -590,11 +580,21 @@ class PromptMessageTests(unittest.TestCase):
                 },
                 **({"min_count": count} if count > 1 else {}),
             }
-            hypothesis = Hypothesis(
-                id=f"H-PROMPT-{count}",
-                description=description,
-                confirm_when=support,
+            from forensia.investigation.investigation_cycle import (
+                _parse_hypothesis_from_drafter,
             )
+
+            self.assertNotIn(
+                "description", schema["properties"]["hypothesis"]["properties"]
+            )
+            hypothesis, parse_error = _parse_hypothesis_from_drafter(
+                {"hypothesis": {"confirm_when": support}},
+                allowed_rule_ids=set(),
+                observation_only=True,
+            )
+            self.assertIsNone(parse_error)
+            self.assertIsNotNone(hypothesis)
+            hypothesis.id = f"H-PROMPT-{count}"
             self.assertEqual(
                 description,
                 canonical_observation_claim(hypothesis.verification_spec),
@@ -630,7 +630,7 @@ class PromptMessageTests(unittest.TestCase):
             settled = decide_settlement(
                 build_settlement_input_from_confirm_when(
                     hypothesis=hypothesis,
-                    checker_verdict="confirmed",
+                    checker_verdict="inconclusive",
                     check_summary="typed observation",
                     sample_rows=rows,
                     sufficiency_result=sufficiency,

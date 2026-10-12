@@ -182,9 +182,11 @@ class PlannerRetryTests(unittest.TestCase):
                 },
             }
         )
+        from forensia.knowledge.coverage import canonical_observation_claim
+
         hypothesis = Hypothesis(
             id="H-mft-primary",
-            description="An executable was created",
+            description=canonical_observation_claim(spec),
             verification_spec=spec,
         )
         with tempfile.TemporaryDirectory() as tmpdir:

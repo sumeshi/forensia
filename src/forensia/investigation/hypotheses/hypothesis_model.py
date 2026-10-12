@@ -375,15 +375,34 @@ def hypothesis_similarity(left: str, right: str) -> float:
     return max(surface_score, semantic_score)
 
 
+def _hypothesis_key(hypothesis: Hypothesis) -> str:
+    if "observation" in hypothesis.verification_spec.support_conditions:
+        from forensia.evidence.links import verification_spec_fingerprint
+
+        return "observation:" + verification_spec_fingerprint(
+            hypothesis.verification_spec
+        )
+    return _normalize_hypothesis_description(hypothesis.description)
+
+
 def _best_hypothesis_match(
     hypotheses: list[Hypothesis],
-    description: str,
+    candidate: Hypothesis,
 ) -> tuple[Hypothesis | None, float]:
-    """Find the best fuzzy match for a description among the given hypotheses."""
+    """Match typed claims by their Spec and interpretations by wording."""
     best_hypothesis: Hypothesis | None = None
     best_score = 0.0
+    typed = "observation" in candidate.verification_spec.support_conditions
     for hypothesis in hypotheses:
-        score = hypothesis_similarity(hypothesis.description, description)
+        other_typed = "observation" in hypothesis.verification_spec.support_conditions
+        if typed or other_typed:
+            score = float(
+                typed
+                and other_typed
+                and _hypothesis_key(hypothesis) == _hypothesis_key(candidate)
+            )
+        else:
+            score = hypothesis_similarity(hypothesis.description, candidate.description)
         if score > best_score:
             best_score = score
             best_hypothesis = hypothesis

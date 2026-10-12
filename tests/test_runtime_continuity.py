@@ -506,8 +506,9 @@ def test_runtime_process_crash_recovers_receipts_and_session_lease(tmp_path):
             db,
             Hypothesis(
                 id="H-001",
-                description="TEST.EXE was executed.",
+                description='At least 1 prefetch observation has executable_name equals "TEST.EXE".',
                 verification_spec=VerificationSpec(
+                    evidence_requirements={"min_independent_groups": 2},
                     support_conditions={
                         "observation": {
                             "family": "prefetch",
@@ -516,7 +517,7 @@ def test_runtime_process_crash_recovers_receipts_and_session_lease(tmp_path):
                             "operator": "equals",
                             "value": "TEST.EXE",
                         }
-                    }
+                    },
                 ),
             ),
             origin="test",

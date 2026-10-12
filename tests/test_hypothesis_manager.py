@@ -89,7 +89,7 @@ class TestHypothesisAdmissionConformance(unittest.TestCase):
         ):
             candidate = Hypothesis(
                 id=f"draft-{family}",
-                description=f"Observed {field} in {family} evidence",
+                description=f'At least 1 {family} observation has {field} contains "example".',
                 confirm_when={
                     "observation": {
                         "family": family,
@@ -101,6 +101,23 @@ class TestHypothesisAdmissionConformance(unittest.TestCase):
                 },
             )
             self.assertEqual((True, "accepted"), admit_new_hypothesis(candidate, state))
+            state.active_hypotheses.append(candidate.model_copy(deep=True))
+            alternative = candidate.model_copy(deep=True)
+            alternative.id += "-alternative"
+            alternative.verification_spec.support_conditions["observation"]["value"] = (
+                "different"
+            )
+            alternative.description = (
+                f'At least 1 {family} observation has {field} contains "different".'
+            )
+            self.assertEqual(
+                (True, "accepted"), admit_new_hypothesis(alternative, state)
+            )
+            candidate.description = "The executable stole confidential files"
+            self.assertEqual(
+                (False, "observation-claim-scope-unproven"),
+                admit_new_hypothesis(candidate, state),
+            )
 
         invalid = Hypothesis(
             id="draft-invalid-observation",
@@ -124,7 +141,7 @@ class TestHypothesisAdmissionConformance(unittest.TestCase):
         state = SessionState(session_id="S-boolean-observation")
         valid = Hypothesis(
             id="draft-mft-deleted",
-            description="An MFT record marks the file as deleted",
+            description="At least 1 mft observation has is_deleted equals true.",
             confirm_when={
                 "observation": {
                     "family": "mft",

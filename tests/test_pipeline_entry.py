@@ -189,7 +189,13 @@ def test_public_run_records_provider_planned_query_or_bounded_rejection(
     import httpx
 
     import forensia.llm.llm_client as llm_client
+    from forensia.core.evidence import make_prefetch_evidence_id
     from forensia.pipeline import run_investigation
+
+    prefetch_source = "b" * 64
+    prefetch_evidence_id = make_prefetch_evidence_id(
+        prefetch_source, "Sample.exe", "12345678"
+    )
 
     class Provider:
         def __init__(self) -> None:
@@ -231,10 +237,6 @@ def test_public_run_records_provider_planned_query_or_bounded_rejection(
             prompt = "\n".join(
                 str(message.get("content") or "")
                 for message in json.get("messages", [])
-            )
-            corroboration_plan = (
-                proposal_case == "typed_primary"
-                and "This is corroboration after the typed primary search." in prompt
             )
             if json.get("response_format"):
                 mode = (
@@ -298,60 +300,27 @@ def test_public_run_records_provider_planned_query_or_bounded_rejection(
                 },
                 "QueryIntentResponse": {
                     "action": {
-                        "intent": (
-                            "Corroborate Prefetch process executions"
-                            if corroboration_plan
-                            else "Inspect Prefetch process executions"
-                            if proposal_case == "typed_primary"
-                            else "Inspect observed service installation on host-01"
-                        ),
-                        "target_table": (
-                            "prefetch_timeline"
-                            if corroboration_plan
-                            else "prefetch_executions"
-                            if proposal_case == "typed_primary"
-                            else "evtx_events"
-                        ),
-                        "template_id": (
-                            None
-                            if proposal_case == "typed_primary"
-                            else "q_service_or_task_after_host_logon"
-                        ),
-                        **(
-                            {}
-                            if proposal_case == "typed_primary"
-                            else {"params": {"computer": "host-01", "hours": 24}}
-                        ),
-                        "sql": (
-                            "SELECT evidence_id FROM prefetch_timeline LIMIT 1000"
-                            if corroboration_plan
-                            else "SELECT evidence_id FROM prefetch_executions LIMIT 1000"
-                            if proposal_case == "typed_primary"
-                            else ""
-                        ),
+                        "intent": "Inspect observed service installation on host-01",
+                        "target_table": "evtx_events",
+                        "template_id": "q_service_or_task_after_host_logon",
+                        "params": {"computer": "host-01", "hours": 24},
+                        "sql": "",
                     }
                 },
-                "VerdictReview": (
-                    {
-                        "verdict": "inconclusive",
-                        "rationale": "The primary observation needs independent corroboration.",
-                        "missing_questions": ["Find a matching Prefetch timeline row."],
-                        "confidence": 0.5,
-                    }
-                    if proposal_case == "typed_primary"
-                    else {
-                        "verdict": "confirmed",
-                        "rationale": "The observed service installation matches the declared event condition.",
-                        "missing_questions": [],
-                        "confidence": 0.9,
-                    }
-                ),
+                "VerdictReview": {
+                    "verdict": "confirmed",
+                    "rationale": "The observed service installation matches the declared event condition.",
+                    "missing_questions": [],
+                    "confidence": 0.9,
+                },
                 "FindingExtractor": {"findings": []},
                 "ParagraphNarrate": {
                     "body": "The evidence records a service installation on host-01 and supports the bounded event claim."
                 },
             }
             payload = responses.get(title, {})
+            if title == "HypothesisDrafter" and proposal_case == "typed_primary":
+                payload["hypothesis"].pop("description")
             if title == "QueryIntentResponse":
                 self.query_actions.append(payload["action"])
             request = httpx.Request("POST", url)
@@ -380,27 +349,22 @@ def test_public_run_records_provider_planned_query_or_bounded_rejection(
         if proposal_case == "typed_primary":
             db.execute(
                 "INSERT INTO prefetch_executions (evidence_id, source_file, "
-                "executable_name, exec_count) VALUES "
-                "('prefetch-public-typed', 'seed-prefetch-source', 'Sample.exe', 1)"
-            )
-            db.execute(
-                "INSERT INTO prefetch_timeline (timeline_id, evidence_id, "
-                "executable_name, exec_time, exec_index, source_file) VALUES "
-                "('timeline-public-typed', 'prefetch-public-typed', 'Sample.exe', "
-                "'2026-01-01T00:00:00', 1, 'seed-prefetch-source')"
+                "executable_name, exec_count, last_exec_time) VALUES "
+                "(?, ?, 'Sample.exe', 1, '2026-01-01T00:00:00')",
+                [prefetch_evidence_id, prefetch_source],
             )
             db.execute(
                 "INSERT INTO evidence_sources (source_id, artifact_family, "
                 "display_path, ingest_status, parser_name, parser_version, row_count) "
-                "VALUES ('seed-prefetch-source', 'prefetch', 'sample.pf', "
-                "'normalized', 'prefetch', 'test', 1)"
+                "VALUES (?, 'prefetch', 'sample.pf', 'normalized', 'prefetch', 'test', 1)",
+                [prefetch_source],
             )
             db.execute(
                 "INSERT INTO findings (finding_id, rule_id, title, summary, severity, "
                 "confidence, status, evidence) VALUES ('F-prefetch-seed', "
                 "'seed-prefetch-rule', 'Prefetch execution', 'sample.exe observed', "
                 "'medium', 0.8, 'accepted', ?)",
-                [json_module.dumps([{"evidence_id": "prefetch-public-typed"}])],
+                [json_module.dumps([{"evidence_id": prefetch_evidence_id}])],
             )
             return
         db.execute(
@@ -494,50 +458,38 @@ def test_public_run_records_provider_planned_query_or_bounded_rejection(
             receipts = [
                 json_module.loads(row[0]).get("tool_receipt") for row in do_outputs
             ]
-            assert "VerdictReview" in provider.schemas
             assert any(receipt and receipt.get("receipt_id") for receipt in receipts)
             assert check and json_module.loads(check[0])["assessment"]["assessment_id"]
             if proposal_case == "typed_primary":
-                assert "QueryIntentResponse" in provider.schemas
-                assert any(
-                    action["target_table"] == "prefetch_timeline"
-                    and action["sql"]
-                    == "SELECT evidence_id FROM prefetch_timeline LIMIT 1000"
-                    for action in provider.query_actions
-                )
-                primary_receipt = next(
-                    receipt
-                    for receipt in receipts
-                    if receipt
-                    and receipt.get("arguments", {}).get("test_intent")
-                    == "primary_verification"
-                )
-                assert primary_receipt["result_refs"]["evidence_ids"] == [
-                    "prefetch-public-typed"
+                assert "VerdictReview" not in provider.schemas
+                assert "QueryIntentResponse" not in provider.schemas
+                assert "FindingExtractor" not in provider.schemas
+                assert len(receipts) == 1
+                assert receipts[0]["result_refs"]["evidence_ids"] == [
+                    prefetch_evidence_id
                 ]
-                corroboration_receipt = next(
-                    receipt
-                    for receipt in receipts
-                    if receipt
-                    and receipt.get("arguments", {}).get("test_intent")
-                    == "corroboration"
+                assert final_hypothesis == ("confirmed",)
+                saved = db.execute(
+                    "SELECT description, sufficiency_status FROM hypotheses"
+                ).fetchone()
+                assert (
+                    saved[0]
+                    == 'At least 1 prefetch observation has executable_name equals "sample.exe".'
                 )
-                assert corroboration_receipt["result_refs"]["evidence_ids"] == [
-                    "prefetch-public-typed"
-                ]
-                checks = db.execute(
-                    "SELECT output_json FROM trace.investigation_steps "
-                    "WHERE phase = 'check' ORDER BY created_at"
-                ).fetchall()
-                assert len(checks) >= 2
-                assert all(
-                    json_module.loads(row[0])["assessment"]["assessment_id"]
-                    for row in checks
+                assert saved[1] == "sufficient"
+                markdown = (case_dir / "reports/report.md").read_text()
+                assert saved[0] in markdown
+                assert prefetch_evidence_id in markdown
+                validation = json_module.loads(
+                    (case_dir / "reports/report_validation.json").read_text()
                 )
-                assert "inconclusive" in {
-                    json_module.loads(row[0])["verdict"] for row in checks
-                }
-                assert final_hypothesis != ("confirmed",)
+                assert validation["fatal_errors"] == []
+                from forensia.report.report_validation import derive_publication_state
+
+                assert (
+                    derive_publication_state(db)["claim_scope"]
+                    == "confirmed_observations"
+                )
             else:
                 assert "QueryIntentResponse" in provider.schemas
                 assert settlement and settlement[0] == "completed" and settlement[1]

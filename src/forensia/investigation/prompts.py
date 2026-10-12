@@ -27,7 +27,6 @@ from forensia.db.query import normalize_value
 from forensia.investigation.case_policy import case_policy_block
 from forensia.knowledge.catalog import load_benign_context_rules
 from forensia.knowledge.coverage import (
-    canonical_observation_claim,
     disclosure_tables_for_spec,
     observation_catalog,
 )
@@ -645,6 +644,7 @@ def build_verdict_review_messages(
         "}\n"
         "</OUTPUT_SCHEMA>\n"
         "<RULES>\n"
+        "row_count counts citable rows; observed_row_count counts retrieved rows. Missing IDs or partial retrieval are not evidence of absence. Read retrieval_evaluation before interpreting a zero row_count.\n"
         f"{fallback_notice}"
         "When verdict=inconclusive, missing_questions MUST contain at least 1 specific item naming the missing evidence (e.g. 'event_id 4663', 'mft_entries WHERE file_path LIKE %.docx%', 'browser executable in prefetch_executions'). Do NOT leave it empty.\n"
         "For confirmed, refuted, or newlead, return an empty missing_questions array.\n"
@@ -925,7 +925,7 @@ def build_hypothesis_drafter_messages(
         }
         for family, definition in sorted(typed_observations.items())
     ]
-    typed_claim_examples = []
+    typed_condition_examples = []
     for count in (1, 2):
         for (
             family,
@@ -945,10 +945,8 @@ def build_hypothesis_drafter_messages(
                 },
                 **({"min_count": count} if count > 1 else {}),
             }
-            claim = canonical_observation_claim({"support_conditions": condition})
-            if claim:
-                typed_claim_examples.append(claim)
-                break
+            typed_condition_examples.append(condition)
+            break
     from forensia.db.schema import declared_schema
 
     canonical_table = (
@@ -1139,10 +1137,10 @@ def build_hypothesis_drafter_messages(
         "`greater_than` requires a number or ISO datetime. Boolean fields require a "
         "JSON boolean and support only `equals`.\n"
         + (
-            "Valid description examples (generated from the listed evidence):\n"
-            + "\n".join(f"- {claim}" for claim in typed_claim_examples)
+            "Valid condition examples (from the listed evidence):\n"
+            + json.dumps(typed_condition_examples, ensure_ascii=False)
             + "\n"
-            if typed_claim_examples
+            if typed_condition_examples
             else ""
         )
         + "</AVAILABLE_TYPED_OBSERVATIONS>\n"
@@ -1200,8 +1198,12 @@ def build_hypothesis_drafter_messages(
         "<OUTPUT_SCHEMA>\n"
         "{\n"
         '  "hypothesis": {\n'
-        '    "description": "str (one investigative claim that can be confirmed or refuted by SQL evidence)",\n'
-        '    "required_entities": '
+        + (
+            ""
+            if observation_only
+            else '    "description": "str (one investigative claim tested by these conditions)",\n'
+        )
+        + '    "required_entities": '
         + json.dumps((allowed_entities or [])[:12], ensure_ascii=False)
         + ",\n"
         '    "source_rule_ids": ["an id from the host-supplied matched_rule_ids, or empty list"],\n'
@@ -1226,15 +1228,15 @@ def build_hypothesis_drafter_messages(
         + family_scope_block
         + typed_observations_block
         + "<RULES>\n"
-        "Treat supplied observations as leads, not proof. For an observed candidate, describe a question that tests that candidate and use only fields/ref IDs shown there. Do not infer facts from match counts, severity, titles, or rule names.\n"
+        "Treat supplied observations as leads, not proof. For an observed candidate, test that candidate using only fields/ref IDs shown there. Do not infer facts from match counts, severity, titles, or rule names.\n"
         "Use source_rule_ids only from the host-supplied matched_rule_ids. They identify observed matches and are not evidence support.\n"
         "For a gap without an observed candidate, stay within its stated objective, gap, keypoint, and available evidence. Do not invent an event, entity, or source.\n"
         "required_entities must be valid snake_case evidence column names. Keep verification conditions explicit and use only event ID/context combinations supplied by the host.\n"
         "Typed observations use fields from canonical evidence records, not derived timeline projections such as prefetch_timeline.exec_time or mft_timeline.timestamp.\n"
         + (
-            "This candidate uses one canonical artifact family. Use only its listed columns and capability. confirm_when is observation-only in this mode; the schema rejects event/correlation mixes. Keep the description equal to the shown canonical observation wording. A broader causal interpretation must remain unconfirmed for review, not be replaced by this narrow observation.\n"
+            "This candidate uses one canonical artifact family. Use only its listed columns and capability. confirm_when is observation-only in this mode; the schema rejects event/correlation mixes. Return conditions only, without description. The host renders the precise observation from the validated conditions. This observation does not resolve a broader causal question.\n"
             if observation_only
-            else "If confirm_when uses observation, do not mix it with event or correlation conditions. Use only the listed family, capability, and fields. The host requires canonical observation wording; do not use placeholders or add causal or broader prose. If the supplied hypothesis needs broader interpretation, preserve it for review instead of rewriting it as a narrower typed observation. min_count defaults to 1 and counts distinct canonical evidence IDs.\n"
+            else "If confirm_when uses observation, do not mix it with event or correlation conditions. Use only the listed family, capability, and fields. A typed observation description must state only the observation; broader interpretations are rejected at admission. Preserve the original question for review instead of claiming that a narrow observation resolves it. min_count defaults to 1 and counts distinct canonical evidence IDs.\n"
         )
         + "confirm_when and refute_when must be JSON objects. Output JSON only.\n"
         "</RULES>\n"

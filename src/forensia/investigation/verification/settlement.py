@@ -28,9 +28,9 @@ from forensia.investigation.verification.sufficiency import (
     evaluate_sufficiency,
 )
 from forensia.knowledge.coverage import (
-    canonical_observation_claim,
     derive_required_capabilities,
     get_coverage_summary,
+    observation_claim_scope_error,
     relevant_coverage_states,
 )
 
@@ -363,7 +363,7 @@ def decide_settlement(
     persistence remains the runner's responsibility.
 
     Gates for confirmed:
-    1. Checker verdict must be confirmed
+    1. Typed claim is evaluable, or semantic checker proposes confirmed
     2. Supporting EvidenceLink ≥ 1
     3. Machine sufficiency == sufficient
     4. Required entities have concrete values
@@ -376,6 +376,18 @@ def decide_settlement(
     """
     hypothesis = si.hypothesis
     sample_rows = si.sample_rows or []
+
+    spec = hypothesis.verification_spec
+    support_conditions = spec.support_conditions
+    if "observation" in support_conditions:
+        scope_error = observation_claim_scope_error(hypothesis.description, spec)
+        if scope_error:
+            return SettlementDecision(
+                verdict="inconclusive",
+                reason=f"Typed observation scope unproven: {scope_error}",
+                allowed=False,
+                gates_failed=[scope_error],
+            )
 
     # Repetition supports a rule-declared zero-row refutation only when the
     # latest retrieval proves an observable empty scope.
@@ -400,38 +412,9 @@ def decide_settlement(
     # is weaker than the primary claim (for example an account-change event
     # adjacent to a password reset).  Never use that correlation alone to
     # override a checker that explicitly found the claim inconclusive.
-    is_checker_confirmed = si.checker_verdict == "confirmed"
-    spec = hypothesis.verification_spec
-    support_conditions = spec.support_conditions
-    refute_conditions = spec.refute_conditions
-    has_typed_observation = (
-        "observation" in support_conditions or "observation" in refute_conditions
+    is_checker_confirmed = (
+        "observation" in support_conditions or si.checker_verdict == "confirmed"
     )
-    if is_checker_confirmed and "observation" in support_conditions:
-        canonical_claim = canonical_observation_claim(spec)
-        if (
-            not canonical_claim
-            or str(hypothesis.description or "").strip() != canonical_claim
-        ):
-            return SettlementDecision(
-                verdict="inconclusive",
-                reason=(
-                    "Typed observation scope unproven: hypothesis description "
-                    "does not match its canonical observation claim"
-                ),
-                allowed=False,
-                gates_failed=["observation_claim_scope_unproven"],
-            )
-    if si.checker_verdict == "refuted" and has_typed_observation:
-        return SettlementDecision(
-            verdict="inconclusive",
-            reason=(
-                "Typed observation refutation does not establish that an "
-                "existential observation is absent"
-            ),
-            allowed=False,
-            gates_failed=["observation_refutation_scope_unproven"],
-        )
 
     if is_checker_confirmed:
         gates_passed: list[str] = []

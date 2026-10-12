@@ -65,6 +65,7 @@ from forensia.investigation.verification.assessment import (
     EvidenceAssessment,
     assess_evidence_group,
 )
+from forensia.investigation.verification.check_normalize import CheckResult
 from forensia.investigation.verification.checker import check_query_result
 from forensia.investigation.verification.settlement import (
     SettlementInput,
@@ -731,19 +732,30 @@ async def _phase_check(rs: _HypothesisRunState) -> str:
     rows = rs.rows or []
     emit_fn = rs.emit_fn
     try:
-        check_result = check_query_result(
-            case=case,
-            db=db,
-            session_id=session_id,
-            planned_query=planned_query,
-            hypothesis=hypothesis,
-            finding_candidates=candidates,
-            result_summary=result_summary,
-            base_url=base_url,
-            model=model,
-            status_callback=llm_status_fn or (lambda msg: _log("LLM", msg)),
-            fallback_info=fallback_info,
-        )
+        if "observation" in hypothesis.verification_spec.support_conditions:
+            check_result = CheckResult(
+                query_id=planned_query.query_id,
+                verdict="inconclusive",
+                finding_updates=[],
+                suspicious_evidence=[],
+                new_hypotheses=[],
+                report_text="Typed observation awaits deterministic settlement.",
+                raw_response={"origin": "verification_spec:deterministic"},
+            )
+        else:
+            check_result = check_query_result(
+                case=case,
+                db=db,
+                session_id=session_id,
+                planned_query=planned_query,
+                hypothesis=hypothesis,
+                finding_candidates=candidates,
+                result_summary=result_summary,
+                base_url=base_url,
+                model=model,
+                status_callback=llm_status_fn or (lambda msg: _log("LLM", msg)),
+                fallback_info=fallback_info,
+            )
     except LLMBudgetExceededError:
         raise
     except Exception as exc:
@@ -990,21 +1002,17 @@ async def _phase_check(rs: _HypothesisRunState) -> str:
 
 
 def _apply_sufficiency_guard(rs: _HypothesisRunState) -> None:
-    """Persist machine sufficiency and reconcile it before state settlement."""
+    """Persist machine sufficiency without deciding the hypothesis verdict."""
     check_result = rs.check_result
     original_verdict = check_result.verdict
-    suff_result, final_verdict, reason, required_capabilities = (
-        assess_and_persist_sufficiency(
-            rs.db,
-            hypothesis_id=rs.hypothesis.id,
-            evidence_requirements=rs.hypothesis.verification_spec.evidence_requirements,
-            llm_verdict=original_verdict,
-            verification_spec=rs.hypothesis.verification_spec,
-            session_id=rs.session_id,
-        )
+    suff_result, reason, required_capabilities = assess_and_persist_sufficiency(
+        rs.db,
+        hypothesis_id=rs.hypothesis.id,
+        evidence_requirements=rs.hypothesis.verification_spec.evidence_requirements,
+        verification_spec=rs.hypothesis.verification_spec,
+        session_id=rs.session_id,
     )
     rs.sufficiency_result = suff_result
-    check_result.verdict = final_verdict
     append_hypothesis_reasoning(
         rs.db,
         rs.hypothesis.id,
@@ -1012,7 +1020,6 @@ def _apply_sufficiency_guard(rs: _HypothesisRunState) -> None:
         rs.plan_cycle,
         "sufficiency",
         reason,
-        verdict=final_verdict,
         query_id=rs.planned_query.query_id if rs.planned_query else None,
     )
     _save_step(
@@ -1022,26 +1029,18 @@ def _apply_sufficiency_guard(rs: _HypothesisRunState) -> None:
         "sufficiency",
         rs.hypothesis.id,
         {
-            "llm_verdict": original_verdict,
+            "checker_proposal": original_verdict,
             "required_capabilities": required_capabilities,
         },
         {
             "machine_status": suff_result.status,
             "score": suff_result.score,
-            "final_verdict": final_verdict,
             "reasons": suff_result.reasons,
             "missing_requirements": suff_result.missing_requirements,
             "human_review_required": suff_result.human_review_required,
         },
         suffix=str(rs.query_index),
     )
-    if final_verdict != original_verdict:
-        _log(
-            "SUFFICIENCY",
-            f"{rs.hypothesis.id} {original_verdict} -> {final_verdict}: {reason}",
-        )
-    if rs.state.history and rs.state.history[-1].hypothesis_id == rs.hypothesis.id:
-        rs.state.history[-1].verdict = final_verdict
 
 
 def _build_settlement_input(rs: _HypothesisRunState) -> SettlementInput:
@@ -1091,48 +1090,49 @@ def _phase_apply_verdict(rs: _HypothesisRunState) -> None:
 
     _apply_sufficiency_guard(rs)
     final_verdict = check_result.verdict
-    if final_verdict in {"confirmed", "refuted", "untestable"}:
-        si = _build_settlement_input(rs)
-        decision = settle_hypothesis(
-            db=db,
-            si=si,
-            evidence_requirements=hypothesis.verification_spec.evidence_requirements,
-        )
-        pre_settlement_verdict = final_verdict
-        _log(
-            "SETTLEMENT",
-            f"{hypothesis.id} verdict={decision.verdict} passed={decision.gates_passed} failed={decision.gates_failed}",
-        )
-        final_verdict = decision.verdict
-        check_result.verdict = final_verdict
-        append_settlement_feedback(
-            db,
-            hypothesis.id,
-            session_id,
-            plan_cycle,
-            planned_query.query_id if planned_query else None,
-            pre_settlement_verdict,
-            decision,
-        )
-        if ctx.progress_callback:
-            ctx.progress_callback(
-                progress_event(
-                    "investigation.settlement",
-                    "completed",
-                    severity="success" if decision.allowed else "warning",
-                    reason=str(decision.reason or ""),
-                    refs={
-                        "hypothesis_id": hypothesis.id,
-                        "query_id": planned_query.query_id if planned_query else "",
-                    },
-                    stage="settlement",
-                    iteration=plan_cycle,
-                    session_id=session_id,
-                    summary=f"settlement retained verdict {decision.verdict}",
-                )
+    si = _build_settlement_input(rs)
+    decision = settle_hypothesis(
+        db=db,
+        si=si,
+        evidence_requirements=hypothesis.verification_spec.evidence_requirements,
+    )
+    pre_settlement_verdict = final_verdict
+    _log(
+        "SETTLEMENT",
+        f"{hypothesis.id} verdict={decision.verdict} passed={decision.gates_passed} failed={decision.gates_failed}",
+    )
+    final_verdict = decision.verdict
+    check_result.verdict = final_verdict
+    append_settlement_feedback(
+        db,
+        hypothesis.id,
+        session_id,
+        plan_cycle,
+        planned_query.query_id if planned_query else None,
+        pre_settlement_verdict,
+        decision,
+    )
+    if ctx.progress_callback:
+        ctx.progress_callback(
+            progress_event(
+                "investigation.settlement",
+                "completed",
+                severity="success" if decision.allowed else "warning",
+                reason=str(decision.reason or ""),
+                refs={
+                    "hypothesis_id": hypothesis.id,
+                    "query_id": planned_query.query_id if planned_query else "",
+                },
+                stage="settlement",
+                iteration=plan_cycle,
+                session_id=session_id,
+                summary=f"settlement retained verdict {decision.verdict}",
             )
-        if not decision.allowed:
-            _log("SETTLEMENT", f"{hypothesis.id} confirmed BLOCKED: {decision.reason}")
+        )
+    if not decision.allowed:
+        _log("SETTLEMENT", f"{hypothesis.id} confirmed BLOCKED: {decision.reason}")
+    if state.history and state.history[-1].hypothesis_id == hypothesis.id:
+        state.history[-1].verdict = final_verdict
 
     if check_result.new_hypotheses:
         admitted = []
@@ -1214,7 +1214,7 @@ def _phase_apply_verdict(rs: _HypothesisRunState) -> None:
             state=state,
             hypothesis_id=hypothesis.id,
             verdict=final_verdict,
-            summary=check_result.report_text,
+            summary=decision.reason,
             session_id=session_id,
             sample_rows=rows,
         )
@@ -1279,15 +1279,18 @@ def _phase_track_progress(rs: _HypothesisRunState) -> None:
     tracker.record(check_result.verdict, row_count)
 
 
-def _phase_auto_resolve(rs: _HypothesisRunState) -> str:
-    """Deterministic auto-resolution: untestable/auto-refute/confirm.
+def _phase_resolve_repeated_absence(rs: _HypothesisRunState) -> str:
+    """Re-evaluate the shared absence gate after recording a repeated empty result.
 
     R8-01: ALL settlement paths route through the unified ``settle_hypothesis``
     gate.  Direct calls to ``resolve_hypothesis`` are prohibited.
     """
+    if rs.tracker.zero_row_inconclusive_count < 3:
+        return "ok"
     hypothesis = rs.hypothesis
     state, db, session_id = rs.state, rs.db, rs.session_id
 
+    # Repetition is the only new input since the preceding settlement.
     # Build the unified settlement input
     si = _build_settlement_input(rs)
     decision = settle_hypothesis(
@@ -1432,6 +1435,6 @@ async def _investigate_one_hypothesis(
         if rs.check_result.verdict in {"confirmed", "refuted", "untestable"}:
             break
         _phase_track_progress(rs)
-        if _phase_auto_resolve(rs) == "break" or query_index >= limit:
+        if _phase_resolve_repeated_absence(rs) == "break" or query_index >= limit:
             break
     return rs.state, rs.focus_sections

@@ -2,7 +2,7 @@
 
 <CRITICAL_RULES>
 - 'confirmed': required_entities are co-observed in same rows, OR all confirm_when.co_observed_event_ids are present with correct temporal ordering.
-- 'refuted': zero rows return after a thorough search (2+ targeted queries), OR observed entities directly contradict the hypothesis claim.
+- 'refuted': assessed evidence contradicts the hypothesis, or valid empty retrieval proves the declared absence scope with sufficient Coverage. Repeating empty searches is not proof of absence.
 - 'inconclusive': some entities observed but key ones missing. You MUST explicitly name the specific missing entity type in the rationale. DO NOT use vague phrasing.
 - 'newlead': genuinely new attack surface or actor is identified. Use sparingly — only when the finding opens an entirely new line of investigation.
 </CRITICAL_RULES>
@@ -11,7 +11,7 @@
 - Zero-evidence rule: 0 rows means 'confirmed' is FORBIDDEN. Period. Use 'refuted' if the hypothesis claim is clearly disproven; use 'inconclusive' only if genuinely ambiguous.
 - DO NOT use these prohibited phrases in verdict rationale: 'direct causation not proven', 'full attack chain not visible', 'cannot be ruled out', 'warrants further analysis', 'cannot confirm or deny'.
 - Account names ending with '$' are machine accounts (computer accounts), NOT user accounts. Do NOT label them as suspicious_user or attacker.
-- confirm_when all-events rule: If confirm_when.co_observed_event_ids specifies event IDs (e.g., [4624, 4672]), all listed event IDs must be observed for auto-confirm. Partial overlap is only a partial signal. Zero evidence after 2+ targeted queries = 'refuted', not 'inconclusive'.
+- confirm_when all-events rule: If confirm_when.co_observed_event_ids specifies event IDs (e.g., [4624, 4672]), all listed event IDs must be observed for auto-confirm. Partial overlap is only a partial signal. Only the host's Assessment and Settlement can establish a refutation. A zero citable row_count with a nonzero observed_row_count indicates unusable retrieval, not absence.
 </FORBIDDEN_PATTERNS>
 
 Confidence mapping for report text:

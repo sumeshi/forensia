@@ -400,47 +400,14 @@ def evaluate_sufficiency(
     )
 
 
-def reconcile_verdicts(
-    machine_result: SufficiencyResult,
-    llm_verdict: str,
-) -> tuple[str, str]:
-    """Reconcile machine sufficiency with LLM semantic verdict.
-
-    Returns (final_verdict, reconciliation_reason).
-    """
-    m = machine_result.status
-    v = llm_verdict
-
-    if v == "confirmed" and m == "sufficient":
-        return "confirmed", "Both LLM and machine agree"
-
-    if v == "confirmed" and m != "sufficient":
-        return "inconclusive", f"LLM says confirmed but machine assessment is {m}"
-
-    if v == "refuted" and machine_result.contradictory_groups > 0:
-        return "refuted", "LLM refuted with contradictory evidence support"
-
-    if v == "refuted" and m == "unobservable":
-        return "untestable", "Cannot observe to confirm or deny"
-
-    if v == "refuted" and m in {"insufficient", "partial", "needs_review"}:
-        return "inconclusive", f"LLM says refuted but machine assessment is {m}"
-
-    if m == "sufficient" and v == "inconclusive":
-        return "needs_review", "Machine sufficient but LLM inconclusive"
-
-    return v, f"Using LLM verdict (machine={m})"
-
-
 def assess_and_persist_sufficiency(
     db: CaseDB,
     *,
     hypothesis_id: str,
     evidence_requirements: dict[str, Any] | None,
-    llm_verdict: str,
     verification_spec: dict[str, Any] | Any,
     session_id: str | None = None,
-) -> tuple[SufficiencyResult, str, str, list[str]]:
+) -> tuple[SufficiencyResult, str, list[str]]:
     """Run the authoritative machine assessment and persist its projections.
 
     ``verification_spec`` is required: capabilities derive from the canonical
@@ -492,11 +459,7 @@ def assess_and_persist_sufficiency(
                 f"{reason}={count}" for reason, count in sorted(stale_counts.items())
             )
         )
-    final_verdict, reconciliation_reason = reconcile_verdicts(result, llm_verdict)
-    if final_verdict == "needs_review":
-        final_verdict = "inconclusive"
-        result.human_review_required = True
-    reason = "; ".join([*result.reasons, reconciliation_reason])
+    reason = "; ".join(result.reasons)
     db.execute(
         "UPDATE hypotheses SET sufficiency_status = ?, sufficiency_score = ?, "
         "sufficiency_reason = ?, sufficiency_policy_id = ?, "
@@ -510,7 +473,7 @@ def assess_and_persist_sufficiency(
             hypothesis_id,
         ],
     )
-    return result, final_verdict, reason, required_capabilities
+    return result, reason, required_capabilities
 
 
 def create_hypothesis_evidence_link(

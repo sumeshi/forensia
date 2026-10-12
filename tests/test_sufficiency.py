@@ -31,7 +31,6 @@ from forensia.investigation.verification.sufficiency import (
     create_hypothesis_evidence_link,
     evaluate_sufficiency,
     load_unlinkable_observations_for_session,
-    reconcile_verdicts,
     record_unlinkable_observation,
 )
 from forensia.knowledge.coverage import canonical_observation_claim
@@ -893,10 +892,14 @@ class SufficiencyEvaluationTests(unittest.TestCase):
         exact_confirmation = settle(canonical_claim or "", "confirmed")
         self.assertEqual("confirmed", exact_confirmation.verdict)
         self.assertTrue(exact_confirmation.allowed)
+        for proposed_verdict in ("inconclusive", "refuted", "newlead"):
+            self.assertEqual(
+                "confirmed", settle(canonical_claim or "", proposed_verdict).verdict
+            )
 
         refutation = settle(canonical_claim or "", "refuted", role="contradictory")
         self.assertEqual("inconclusive", refutation.verdict)
-        self.assertIn("does not establish", refutation.reason)
+        self.assertIn("no_supporting_evidence_link", refutation.reason)
 
     def test_observation_without_canonical_row_id_cannot_become_a_witness(self) -> None:
         assessment = assess_evidence_group(
@@ -1102,82 +1105,6 @@ class SufficiencyEvaluationTests(unittest.TestCase):
         self.assertEqual(assessment.role, "contextual")
 
 
-class VerdictReconciliationTests(unittest.TestCase):
-    """Test LLM/machine verdict reconciliation."""
-
-    def test_llm_confirmed_machine_sufficient(self) -> None:
-        machine = SufficiencyResult(
-            status="sufficient",
-            score=0.8,
-            reasons=[],
-            independent_groups=2,
-            families=["evtx", "prefetch"],
-            contradictory_groups=0,
-            missing_requirements=[],
-            human_review_required=False,
-        )
-        verdict, reason = reconcile_verdicts(machine, "confirmed")
-        self.assertEqual(verdict, "confirmed")
-        self.assertIn("agree", reason)
-
-    def test_llm_confirmed_machine_insufficient(self) -> None:
-        machine = SufficiencyResult(
-            status="insufficient",
-            score=0.2,
-            reasons=[],
-            independent_groups=0,
-            families=[],
-            contradictory_groups=0,
-            missing_requirements=[],
-            human_review_required=False,
-        )
-        verdict, reason = reconcile_verdicts(machine, "confirmed")
-        self.assertEqual(verdict, "inconclusive")
-        self.assertIn("insufficient", reason)
-
-    def test_llm_refuted_machine_unobservable(self) -> None:
-        machine = SufficiencyResult(
-            status="unobservable",
-            score=0.0,
-            reasons=[],
-            independent_groups=0,
-            families=[],
-            contradictory_groups=0,
-            missing_requirements=[],
-            human_review_required=False,
-        )
-        verdict, reason = reconcile_verdicts(machine, "refuted")
-        self.assertEqual(verdict, "untestable")
-
-    def test_machine_sufficient_llm_inconclusive(self) -> None:
-        machine = SufficiencyResult(
-            status="sufficient",
-            score=0.7,
-            reasons=[],
-            independent_groups=2,
-            families=["evtx"],
-            contradictory_groups=0,
-            missing_requirements=[],
-            human_review_required=False,
-        )
-        verdict, reason = reconcile_verdicts(machine, "inconclusive")
-        self.assertEqual(verdict, "needs_review")
-
-    def test_default_uses_llm_verdict(self) -> None:
-        machine = SufficiencyResult(
-            status="partial",
-            score=0.4,
-            reasons=[],
-            independent_groups=1,
-            families=["evtx"],
-            contradictory_groups=0,
-            missing_requirements=[],
-            human_review_required=False,
-        )
-        verdict, _ = reconcile_verdicts(machine, "newlead")
-        self.assertEqual(verdict, "newlead")
-
-
 class EvidenceLinkPersistenceTests(unittest.TestCase):
     """Test hypothesis_evidence table operations."""
 
@@ -1367,11 +1294,10 @@ class CurrentLinkTests(unittest.TestCase):
         *,
         verification_spec: dict[str, Any] | None = None,
     ) -> SufficiencyResult:
-        result, _verdict, _reason, _caps = assess_and_persist_sufficiency(
+        result, _reason, _caps = assess_and_persist_sufficiency(
             db,
             hypothesis_id="H-CUR",
             evidence_requirements={},
-            llm_verdict="confirmed",
             verification_spec=verification_spec or {"spec_version": "1"},
         )
         return result
@@ -1857,11 +1783,10 @@ class CrossQueryIndependenceTests(unittest.TestCase):
         *,
         evidence_requirements: dict | None = None,
     ) -> SufficiencyResult:
-        result, _verdict, _reason, _caps = assess_and_persist_sufficiency(
+        result, _reason, _caps = assess_and_persist_sufficiency(
             db,
             hypothesis_id="H-XQ",
             evidence_requirements=evidence_requirements or {},
-            llm_verdict="confirmed",
             verification_spec={
                 "spec_version": "1",
                 "support_conditions": {

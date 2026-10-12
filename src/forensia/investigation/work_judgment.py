@@ -220,7 +220,7 @@ def count_consecutive_inconclusive(db: CaseDB, hypothesis_id: str) -> int:
     """Count consecutive inconclusive verdicts from recent reasoning."""
     rows = db.execute(
         "SELECT verdict FROM trace.hypothesis_reasoning "
-        "WHERE hypothesis_id = ? AND phase = 'sufficiency' "
+        "WHERE hypothesis_id = ? AND phase = 'settlement' "
         "ORDER BY created_at DESC LIMIT 10",
         [hypothesis_id],
     ).fetchall()

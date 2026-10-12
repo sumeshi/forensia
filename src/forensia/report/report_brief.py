@@ -186,7 +186,7 @@ def _query_hypotheses_by_status(
     return fetch_records(
         db,
         """
-        SELECT hypothesis_id, description, status, verdict, summary, source_rule_ids, required_entities
+        SELECT hypothesis_id, description, status, verdict, summary, source_rule_ids, required_entities, verification_spec
         FROM hypotheses
         WHERE status = ?
         ORDER BY updated_at DESC, hypothesis_id
@@ -276,10 +276,15 @@ def _annotate_confirmed_hypotheses(
         rule_seeded = bool(rule_ids)
         benign_context = _rule_ids_have_benign_context(db, rule_ids)
         item = dict(item)
+        spec = normalize_value(item.get("verification_spec")) or {}
+        observation = "observation" in spec.get("support_conditions", {})
+        item["claim_kind"] = "observation" if observation else "interpretation"
         item["rule_seeded"] = rule_seeded
         item["benign_context"] = benign_context
         item["narrative_strength"] = (
-            "strong" if rule_seeded and not benign_context else "weak"
+            "strong"
+            if rule_seeded and not benign_context and not observation
+            else "weak"
         )
         annotated.append(item)
     return annotated

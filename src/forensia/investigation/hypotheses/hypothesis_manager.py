@@ -19,9 +19,9 @@ from forensia.investigation.hypotheses.hypothesis_model import (
     _extract_refuted_tokens,
     _filter_valid_entities,
     _gap_references_refuted,
+    _hypothesis_key,
     _merge_hypothesis_fields,
     _merge_string_lists,
-    _normalize_hypothesis_description,
     _propose_confirm_when,
     hypothesis_evidence_strength,
 )
@@ -89,13 +89,9 @@ def _merge_active_hypotheses_in_transaction(
     skipped_for_cap: list[str] = []
     alias_map: dict[str, str] = {}
     active_by_description = {
-        _normalize_hypothesis_description(item.description): item
-        for item in current
-        if item.id not in resolved_ids
+        _hypothesis_key(item): item for item in current if item.id not in resolved_ids
     }
-    resolved_by_description = {
-        _normalize_hypothesis_description(item.description): item for item in resolved
-    }
+    resolved_by_description = {_hypothesis_key(item): item for item in resolved}
     for item in updates:
         if item.status in {"confirmed", "refuted"}:
             continue
@@ -114,13 +110,11 @@ def _merge_active_hypotheses_in_transaction(
         # FIRST: Check against resolved hypotheses — prevents the same claim
         # from existing as both confirmed AND refuted.
         resolved_existing = same_id_resolved or resolved_by_description.get(
-            _normalize_hypothesis_description(item.description)
+            _hypothesis_key(item)
         )
         resolved_score: float | None = None
         if resolved_existing is None:
-            best_resolved, best_resolved_score = _best_hypothesis_match(
-                resolved, item.description
-            )
+            best_resolved, best_resolved_score = _best_hypothesis_match(resolved, item)
             if best_resolved is not None and best_resolved_score > 0.85:
                 resolved_existing = best_resolved
                 resolved_score = best_resolved_score
@@ -137,11 +131,9 @@ def _merge_active_hypotheses_in_transaction(
                 resolved[:] = [entry for entry in resolved if entry.id != merged.id]
                 resolved_ids.discard(merged.id)
                 by_id[merged.id] = merged
-                active_by_description[
-                    _normalize_hypothesis_description(merged.description)
-                ] = merged
+                active_by_description[_hypothesis_key(merged)] = merged
                 resolved_by_description.pop(
-                    _normalize_hypothesis_description(resolved_existing.description),
+                    _hypothesis_key(resolved_existing),
                     None,
                 )
                 alias_map[item.id] = merged.id
@@ -155,9 +147,7 @@ def _merge_active_hypotheses_in_transaction(
             # Default: bind to resolved. The resolved hypothesis's verdict
             # stands — do NOT create a duplicate active hypothesis.
             alias_map[item.id] = merged.id
-            resolved_by_description[
-                _normalize_hypothesis_description(merged.description)
-            ] = merged
+            resolved_by_description[_hypothesis_key(merged)] = merged
             _upsert_hypothesis(
                 db,
                 merged,
@@ -185,12 +175,10 @@ def _merge_active_hypotheses_in_transaction(
         # similarity with an existing active hypothesis.
         existing = by_id.get(incoming_id)
         if existing is None:
-            existing = active_by_description.get(
-                _normalize_hypothesis_description(item.description)
-            )
+            existing = active_by_description.get(_hypothesis_key(item))
         if existing is None:
             best_active, best_active_score = _best_hypothesis_match(
-                list(by_id.values()), item.description
+                list(by_id.values()), item
             )
             if best_active is not None and best_active_score > 0.85:
                 existing = best_active
@@ -218,9 +206,7 @@ def _merge_active_hypotheses_in_transaction(
             by_id[merged.id] = merged
             if existing.id != merged.id:
                 by_id.pop(existing.id, None)
-            active_by_description[
-                _normalize_hypothesis_description(merged.description)
-            ] = merged
+            active_by_description[_hypothesis_key(merged)] = merged
             if not reopened:
                 _upsert_hypothesis(db, merged, origin=origin, session_id=session_id)
             continue
@@ -251,9 +237,7 @@ def _merge_active_hypotheses_in_transaction(
             target_keypoint_id=item.target_keypoint_id,
         )
         by_id[assigned_id] = hypothesis
-        active_by_description[
-            _normalize_hypothesis_description(hypothesis.description)
-        ] = hypothesis
+        active_by_description[_hypothesis_key(hypothesis)] = hypothesis
         _upsert_hypothesis(db, hypothesis, origin=origin, session_id=session_id)
     if skipped_for_cap:
         _log(
@@ -670,18 +654,9 @@ def _claim_spec_conformance_error(candidate: Hypothesis) -> str | None:
     if not support:
         return "empty-verification-spec"
     if "observation" in support:
-        from forensia.knowledge.coverage import observation_condition_error
+        from forensia.knowledge.coverage import observation_claim_scope_error
 
-        validation_error = observation_condition_error(support)
-        if validation_error:
-            return validation_error
-        if re.search(
-            r"\b(?:repeated|multiple)\s+(?:\w+\s+){0,2}(?:events?|logons?|attempts?|connections?|executions?)\b",
-            description,
-            re.I,
-        ):
-            return "claim-spec-min-count-missing"
-        return None
+        return observation_claim_scope_error(description, candidate.verification_spec)
     event_ids = support.get("co_observed_event_ids")
     if not isinstance(event_ids, list) or not event_ids:
         return "non-testable-verification-spec"
@@ -933,7 +908,7 @@ def admit_new_hypothesis(
 
     # --- 1. Check against RESOLVED hypotheses ----------------------------
     resolved_match, resolved_score = _best_hypothesis_match(
-        state.resolved_hypotheses, description
+        state.resolved_hypotheses, candidate
     )
     if resolved_match is not None and resolved_score >= threshold:
         _log(
@@ -946,7 +921,7 @@ def admit_new_hypothesis(
 
     # --- 2. Check against ACTIVE hypotheses ------------------------------
     active_match, active_score = _best_hypothesis_match(
-        state.active_hypotheses, description
+        state.active_hypotheses, candidate
     )
     if active_match is not None and active_score >= threshold:
         _log(
@@ -962,7 +937,10 @@ def admit_new_hypothesis(
         h.description for h in state.resolved_hypotheses if h.status == "refuted"
     ]
     refuted_tokens = _extract_refuted_tokens(refuted_descriptions)
-    if _gap_references_refuted(description, refuted_tokens):
+    if (
+        "observation" not in candidate.verification_spec.support_conditions
+        and _gap_references_refuted(description, refuted_tokens)
+    ):
         _log(
             "HYPOTHESIS",
             f"admission REJECTED (refuted-claim): "

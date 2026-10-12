@@ -330,6 +330,22 @@ def canonical_observation_claim(spec: VerificationSpec | dict[str, Any]) -> str 
     )
 
 
+def observation_claim_scope_error(
+    description: str, spec: VerificationSpec
+) -> str | None:
+    """Validate the derived display and evaluable scope of a typed claim."""
+    if "observation" not in spec.support_conditions:
+        return None
+    error = observation_condition_error(spec.support_conditions)
+    if error:
+        return error
+    if spec.scope or spec.correlation:
+        return "unsupported-observation-scope"
+    if description.strip() != canonical_observation_claim(spec):
+        return "observation-claim-scope-unproven"
+    return None
+
+
 def verification_feasibility_error(
     db: CaseDB,
     condition: dict[str, Any],

@@ -231,15 +231,13 @@ class TestReportQualityContract(unittest.TestCase):
                     ) VALUES ('H-NOLINK', 'active', NULL, 'Test', '', now(), now())
                     """
                 )
-                result, verdict, _reason, _caps = assess_and_persist_sufficiency(
+                result, _reason, _caps = assess_and_persist_sufficiency(
                     db,
                     hypothesis_id="H-NOLINK",
                     evidence_requirements={},
-                    llm_verdict="confirmed",
                     verification_spec={"spec_version": "1"},
                 )
                 self.assertNotEqual("sufficient", result.status)
-                self.assertEqual("inconclusive", verdict)
 
     def test_writer_emits_non_publishable_validation_artifact(self) -> None:
         """The writer must persist machine-readable fatal validation state."""

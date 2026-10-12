@@ -8,7 +8,6 @@ from forensia.db.database import CaseDB
 from forensia.db.query import fetch_records
 from forensia.report.answers.event_semantics import LOG_CLEAR_EVENT_SQL
 from forensia.report.evidence_refs import (
-    EVIDENCE_ID_PATTERN,
     EvidenceResolver,
     _extract_needed_evidence,
     _report_keypoint_rows,
@@ -87,7 +86,7 @@ def _hypothesis_reasoning_rows(
     """Shared resolver for hypothesis rows joined with their latest reasoning."""
     placeholders = ", ".join("?" for _ in params)
     rendered_where = where.format(placeholders=placeholders) if params else where
-    return fetch_records(
+    rows = fetch_records(
         db,
         f"""
         {hypothesis_latest_reasoning_cte()}
@@ -103,6 +102,27 @@ def _hypothesis_reasoning_rows(
         params,
     )
 
+    from forensia.evidence.links import load_evidence_links
+
+    for row in rows:
+        roles = (
+            {"supporting", "corroborating"}
+            if row["status"] == "confirmed"
+            else {"contradictory"}
+            if row["status"] == "refuted"
+            else {"supporting", "corroborating", "contextual", "contradictory"}
+        )
+        row["evidence_ids"] = sorted(
+            {
+                link.evidence_id
+                for link in load_evidence_links(
+                    db, row["hypothesis_id"], current_only=True
+                )
+                if link.assessment_id and link.role in roles
+            }
+        )
+    return rows
+
 
 def _needed_evidence_row(row: dict[str, Any]) -> dict[str, Any]:
     return {
@@ -113,6 +133,7 @@ def _needed_evidence_row(row: dict[str, Any]) -> dict[str, Any]:
         "summary": row["summary"],
         "updated_at": row["updated_at"],
         "needed_evidence": _extract_needed_evidence(row.get("latest_reasoning")),
+        "evidence_ids": row.get("evidence_ids") or [],
     }
 
 
@@ -230,23 +251,11 @@ REPORT_META_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
     ),
     "resolved_hypotheses_with_evidence": (
         "Confirmed and refuted hypotheses with verdict, description, and evidence references.",
-        lambda db: [
-            {
-                **row,
-                "evidence_ids": list(
-                    set(
-                        EVIDENCE_ID_PATTERN.findall(
-                            str(row.get("latest_reasoning") or "")
-                        )
-                    )
-                ),
-            }
-            for row in _hypothesis_reasoning_rows(
-                db,
-                where="WHERE h.status IN ('confirmed', 'refuted')",
-                limit=30,
-            )
-        ],
+        lambda db: _hypothesis_reasoning_rows(
+            db,
+            where="WHERE h.status IN ('confirmed', 'refuted')",
+            limit=30,
+        ),
     ),
     "untestable_hypotheses_summary": (
         "Hypotheses that could not be tested due to missing telemetry.",

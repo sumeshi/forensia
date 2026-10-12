@@ -101,6 +101,7 @@ def _parse_hypothesis_from_drafter(
     parsed: dict[str, Any],
     *,
     allowed_rule_ids: set[str],
+    observation_only: bool = False,
 ) -> tuple[Hypothesis | None, str | None]:
     """Parse drafter LLM output into a Hypothesis object.
 
@@ -112,6 +113,17 @@ def _parse_hypothesis_from_drafter(
     if not isinstance(hyp_raw, dict):
         return None, "hypothesis-object-missing"
     hyp_raw = dict(hyp_raw)
+    if observation_only:
+        from forensia.knowledge.coverage import canonical_observation_claim
+
+        if "description" in hyp_raw:
+            return None, "observation-description-not-allowed"
+        claim = canonical_observation_claim(
+            {"support_conditions": hyp_raw.get("confirm_when")}
+        )
+        if not claim:
+            return None, "invalid-observation-condition"
+        hyp_raw["description"] = claim
     hyp_raw.setdefault("id", "draft")
     hyp_raw.setdefault("source_rule_ids", [])
     supplied_rule_ids = hyp_raw.get("source_rule_ids") or []
@@ -543,10 +555,15 @@ async def _call_broad_drafter(
     hypothesis, rejection_reason = _parse_hypothesis_from_drafter(
         h_parsed,
         allowed_rule_ids=allowed_rule_ids,
+        observation_only="description"
+        not in h_schema["properties"]["hypothesis"]["properties"],
     )
     if hypothesis:
         keypoint_id = gap.get("keypoint_id", "")
-        if keypoint_id:
+        if (
+            keypoint_id
+            and "observation" not in hypothesis.verification_spec.support_conditions
+        ):
             hypothesis.target_keypoint_id = keypoint_id
         hypothesis.id = f"draft-{ctx.plan_cycle}-{draft_index}"
     return hypothesis, rejection_reason

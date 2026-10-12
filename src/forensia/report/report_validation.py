@@ -242,7 +242,15 @@ def derive_publication_state(db: Any) -> dict[str, Any]:
         and not state["confirmed_without_evidence_count"]
     ):
         state["evidence_confidence"] = "established"
-        state["claim_scope"] = "confirmed_conclusions"
+        typed_count = db.execute(
+            "SELECT COUNT(*) FROM hypotheses WHERE status = 'confirmed' "
+            "AND json_exists(verification_spec, '$.support_conditions.observation')"
+        ).fetchone()[0]
+        state["claim_scope"] = (
+            "confirmed_observations"
+            if typed_count == state["confirmed_hypothesis_count"]
+            else "confirmed_conclusions"
+        )
 
     if state["report_complete"]:
         state["publication_status"] = "complete"

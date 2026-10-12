@@ -535,6 +535,17 @@ def plan_hypothesis_query(
         spec_payload = (
             spec_obj.model_dump(mode="json") if spec_obj is not None else None
         )
+    from forensia.core.verification import VerificationSpec
+    from forensia.knowledge.coverage import observation_claim_scope_error
+
+    if spec_payload:
+        scope_error = observation_claim_scope_error(
+            hypothesis.description, VerificationSpec.model_validate(spec_payload)
+        )
+        if scope_error:
+            return HypothesisPlanResult(
+                query=None, raw_response={}, stop_reason=scope_error
+            )
     declared_conditions = (
         spec_payload.get("support_conditions")
         if isinstance(spec_payload, dict)

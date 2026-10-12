@@ -406,10 +406,6 @@ def hypothesis_drafter_schema(
                     "description": {
                         "type": "string",
                         "minLength": 30,
-                        "description": (
-                            "For a typed observation condition, use the exact "
-                            "canonical observation statement shown in the prompt."
-                        ),
                     },
                     "required_entities": {
                         "type": "array",
@@ -432,6 +428,9 @@ def hypothesis_drafter_schema(
     if allowed_entities == []:
         required_entities["maxItems"] = 0
     if observation_only:
+        hypothesis_schema = schema["properties"]["hypothesis"]
+        hypothesis_schema["required"].remove("description")
+        hypothesis_schema["properties"].pop("description")
         confirm_properties = confirm["properties"]
         confirm["properties"] = {
             key: value
