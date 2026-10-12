@@ -28,7 +28,11 @@ from forensia.knowledge.catalog import (
 )
 from forensia.knowledge.questions import question_spec_for_answer_spec
 from forensia.knowledge.resources import schema_dir
-from forensia.report.evidence_refs import _report_keypoint_rows, _sql_like_any
+from forensia.report.evidence_refs import (
+    _extract_evidence_ids_from_value,
+    _report_keypoint_rows,
+    _sql_like_any,
+)
 from forensia.report.render.formats import load_report_formats
 from forensia.report.render.markdown import (
     _is_human_report_hidden_column,
@@ -74,19 +78,11 @@ def _coerce_answer_items(value: Any) -> list[Any]:
 def _answer_columns(items: list[Any], preferred: Any = None) -> list[str]:
     columns = _coerce_string_list(preferred)
     seen = set(columns)
-    hidden_reference_fields = {
-        "evidence_id",
-        "finding_id",
-        "evidence_ids",
-        "finding_ids",
-    }
     for item in items:
         if not isinstance(item, dict):
             continue
         for key in item.keys():
             key_text = str(key)
-            if columns and key_text in hidden_reference_fields:
-                continue
             if key_text not in seen:
                 seen.add(key_text)
                 columns.append(key_text)
@@ -196,7 +192,9 @@ def _resolve_max_rows() -> int:
     return get_settings().structured_markdown_max_rows
 
 
-def _render_answer_cell(value: Any, format_spec: dict[str, Any]) -> str:
+def _render_answer_cell(
+    value: Any, format_spec: dict[str, Any], *, reference: bool = False
+) -> str:
     max_list_items = max(1, int(format_spec["max_list_items"]))
     max_cell_chars = max(30, int(format_spec["max_cell_chars"]))
     if isinstance(value, (list, tuple)):
@@ -213,7 +211,7 @@ def _render_answer_cell(value: Any, format_spec: dict[str, Any]) -> str:
         .replace("\n", " ")
         .strip()
     )
-    if len(text) > max_cell_chars:
+    if not reference and len(text) > max_cell_chars:
         suffix = str(format_spec["truncated_cell_suffix"])
         return text[: max_cell_chars - len(suffix)].rstrip() + suffix
     return text
@@ -246,7 +244,20 @@ def _render_answer_block(
         body_rows = [
             "| "
             + " | ".join(
-                _render_answer_cell(item.get(key), format_spec) for key in keys
+                _render_answer_cell(
+                    item.get(key),
+                    format_spec,
+                    reference=key
+                    in {
+                        "evidence_id",
+                        "evidence_ids",
+                        "finding_id",
+                        "finding_ids",
+                        "reference",
+                        "references",
+                    },
+                )
+                for key in keys
             )
             + " |"
             for item in preview
@@ -379,6 +390,10 @@ def _render_structured_answer_markdown(
     interpretation = _structured_answer_interpretation(
         answer, block_heading, tz_name=tz_name, format_spec=format_spec
     )
+    evidence_ids = _extract_evidence_ids_from_value(answer)
+    references = ", ".join(f"`{ref}`" for ref in evidence_ids[:3])
+    if references:
+        interpretation += f" ({references})"
     spec = question_spec_for_answer_spec(str(answer.get("answer_spec") or ""))
     lead_lines: list[str] = []
     if spec is not None and spec.lead_timestamp:
@@ -399,6 +414,11 @@ def _render_structured_answer_markdown(
     query_lines = [
         f"- {item}" for item in _coerce_string_list(answer.get("queries_run"))
     ]
+    if references:
+        if missing_lines:
+            missing_lines.append(f"- {references}")
+        if query_lines:
+            query_lines.append(f"- {references}")
     data_lines = (
         [f"- JSON: {answer.get('json_path')}"] if answer.get("json_path") else []
     )
@@ -503,7 +523,16 @@ def _add_local_time_columns(
         for c in columns
         if any(c.endswith(s) or c == s for s in _TIMESTAMP_COLUMN_SUFFIXES)
         or c
-        in ("date", "logon_time", "shutdown_time", "last_exec_time", "artifact_time")
+        in (
+            "logon_time",
+            "shutdown_time",
+            "last_exec_time",
+            "artifact_time",
+            "first_startup",
+            "first_logon",
+            "last_logoff",
+            "last_shutdown",
+        )
     ]
     for col in ts_cols:
         local_col = f"{col}_local"

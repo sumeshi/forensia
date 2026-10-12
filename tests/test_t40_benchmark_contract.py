@@ -82,7 +82,7 @@ class BenchmarkTimelineTest(unittest.TestCase):
                 answer_spec="daily_session_timeline",
                 answer_id="Q13",
                 section_key="6_appendix",
-                block_heading="13. Startup, shutdown, logon, and logoff history between 09:00 and 18:00",
+                block_heading="13. Startup, shutdown, logon, and logoff history between 09:00 and 18:00 UTC",
             )
         self.assertEqual("answered", answer["status"])
         row = answer["answer"][0]

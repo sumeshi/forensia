@@ -2,11 +2,9 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
-from zoneinfo import ZoneInfo
 
 import yaml
 
@@ -324,9 +322,8 @@ def extract_time_qualifiers(
       - Time-of-day: 'between 09:00 and 17:00'
       - Time range: '9 AM to 5 PM'
 
-    When a timezone name is provided and hour qualifiers are present, the returned
-    hour values are converted to UTC so that SQL filters match the UTC timestamps
-    stored in the database. Also returns a ``timezone_note`` key explaining the basis.
+    Hour values remain in the stated time basis. The query owner converts each
+    evidence timestamp at its own date, preserving daylight-saving transitions.
 
     Returns {date_from, date_to, hour_from, hour_to, timezone_note, basis}.
     Missing qualifiers are set to None.
@@ -375,46 +372,12 @@ def extract_time_qualifiers(
             hour_from = f"{int(m.group(1)):02d}:00"
             hour_to = f"{int(m.group(2)) + 12:02d}:00"
 
-    # Convert hour qualifiers to UTC when timezone is known
-    if hour_from and hour_to and tz_name and tz_name != "UTC":
-        try:
-            tz = ZoneInfo(tz_name)
-            # Use a reference date (today) to get the UTC offset
-            ref_date = datetime.now(UTC).date()
-            from_local = datetime(
-                ref_date.year,
-                ref_date.month,
-                ref_date.day,
-                int(hour_from.split(":")[0]),
-                int(hour_from.split(":")[1]),
-                tzinfo=tz,
-            )
-            to_local = datetime(
-                ref_date.year,
-                ref_date.month,
-                ref_date.day,
-                int(hour_to.split(":")[0]),
-                int(hour_to.split(":")[1]),
-                tzinfo=tz,
-            )
-            from_utc = from_local.astimezone(UTC)
-            to_utc = to_local.astimezone(UTC)
-            hour_from = f"{from_utc.hour:02d}:{from_utc.minute:02d}"
-            hour_to = f"{to_utc.hour:02d}:{to_utc.minute:02d}"
-            result["timezone_note"] = (
-                f"Time-of-day filter applied in UTC (converted from {tz_name} local time)"
-            )
-            result["basis"] = tz_name
-        except ValueError, OSError, KeyError:
-            result["timezone_note"] = (
-                f"Time-of-day filter applied in UTC (timezone {tz_name} could not be resolved)"
-            )
-            result["basis"] = "UTC"
-    elif hour_from and hour_to:
-        result["timezone_note"] = "Time-of-day filter applied in UTC (timezone unknown)"
-        result["basis"] = "UTC"
-    else:
-        result["basis"] = tz_name if tz_name else "UTC"
+    # Preserve local clock values; convert each evidence timestamp at its own date.
+    result["basis"] = tz_name or "UTC"
+    if hour_from and hour_to:
+        result["timezone_note"] = (
+            f"Time-of-day window uses {result['basis']} local time"
+        )
 
     result["date_from"] = date_from
     result["date_to"] = date_to
@@ -442,7 +405,7 @@ def _has_stable_reference(row: dict[str, Any]) -> bool:
         if isinstance(value, (list, tuple, set)):
             if any(item is not None and str(item).strip() for item in value):
                 return True
-        if value is not None and str(value).strip():
+        elif value is not None and str(value).strip():
             return True
     return False
 
@@ -532,6 +495,8 @@ def evaluate_question_spec_status(
     fallback = normalize_structured_status(fallback_status or "")
 
     if not rows:
+        if fallback in {"unobservable", "not_searched", "wrong_query"}:
+            return fallback, []
         if coverage_observable is False:
             return "unobservable", [
                 str(

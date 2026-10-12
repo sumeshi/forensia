@@ -48,7 +48,12 @@ def _browser_name_for_row(row: dict[str, Any]) -> str:
 
 
 def _build_browser_usage(
-    case: Case, db: CaseDB, answer_id: str, section_key: str, block_heading: str
+    case: Case,
+    db: CaseDB,
+    answer_id: str,
+    section_key: str,
+    block_heading: str,
+    question_text: str,
 ) -> dict[str, Any]:
     browser_exe_sql = exe_glob_sql(
         "executable_name", catalog_exe_globs("browser_artifacts")
@@ -268,7 +273,12 @@ def _infer_recent_lnk_rename_candidates(
 
 
 def _build_desktop_rename_candidates(
-    case: Case, db: CaseDB, answer_id: str, section_key: str, block_heading: str
+    case: Case,
+    db: CaseDB,
+    answer_id: str,
+    section_key: str,
+    block_heading: str,
+    question_text: str,
 ) -> dict[str, Any]:
     rows = _structured_rows(
         db,
@@ -361,7 +371,12 @@ def _cloud_markers() -> dict[str, tuple[str, ...]]:
 
 
 def _build_cloud_service_traces(
-    case: Case, db: CaseDB, answer_id: str, section_key: str, block_heading: str
+    case: Case,
+    db: CaseDB,
+    answer_id: str,
+    section_key: str,
+    block_heading: str,
+    question_text: str,
 ) -> dict[str, Any]:
     cloud_path_sql = _like_sql(
         "file_path", _catalog_path_patterns("cloud_sync_artifacts")
@@ -478,7 +493,12 @@ def _build_cloud_service_traces(
 
 
 def _build_antiforensic_activity(
-    case: Case, db: CaseDB, answer_id: str, section_key: str, block_heading: str
+    case: Case,
+    db: CaseDB,
+    answer_id: str,
+    section_key: str,
+    block_heading: str,
+    question_text: str,
 ) -> dict[str, Any]:
     tool_globs = catalog_exe_globs("antiforensic_tools")
     tool_exe_sql = exe_glob_sql("executable_name", tool_globs)

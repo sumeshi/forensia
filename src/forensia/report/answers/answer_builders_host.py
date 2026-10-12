@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from forensia.core.case import Case, detect_epochs
@@ -45,7 +46,12 @@ logger = logging.getLogger(__name__)
 
 
 def _build_host_identity(
-    case: Case, db: CaseDB, answer_id: str, section_key: str, block_heading: str
+    case: Case,
+    db: CaseDB,
+    answer_id: str,
+    section_key: str,
+    block_heading: str,
+    question_text: str,
 ) -> dict[str, Any]:
     rows = _structured_rows(
         db,
@@ -55,7 +61,8 @@ def _build_host_identity(
               computer,
               COUNT(*) AS evidence_count,
               MIN(timestamp) AS first_seen,
-              MAX(timestamp) AS last_seen
+              MAX(timestamp) AS last_seen,
+              LIST(DISTINCT evidence_id) FILTER (WHERE evidence_id IS NOT NULL) AS evidence_ids
           FROM evtx_events
           WHERE computer IS NOT NULL AND TRIM(computer) <> ''
           GROUP BY computer
@@ -64,7 +71,8 @@ def _build_host_identity(
             ARG_MAX(computer, evidence_count) AS host_id,
             SUM(evidence_count) AS evidence_count,
             MIN(first_seen) AS first_seen,
-            MAX(last_seen) AS last_seen
+            MAX(last_seen) AS last_seen,
+            FLATTEN(LIST(evidence_ids)) AS evidence_ids
         FROM raw
         GROUP BY UPPER(TRIM(computer))
         ORDER BY evidence_count DESC, host_id
@@ -97,7 +105,12 @@ def _build_host_identity(
 
 
 def _build_last_human_logon(
-    case: Case, db: CaseDB, answer_id: str, section_key: str, block_heading: str
+    case: Case,
+    db: CaseDB,
+    answer_id: str,
+    section_key: str,
+    block_heading: str,
+    question_text: str,
 ) -> dict[str, Any]:
     interactive_rows = _structured_rows(
         db,
@@ -171,7 +184,12 @@ def _build_last_human_logon(
 
 
 def _build_last_shutdown_event(
-    case: Case, db: CaseDB, answer_id: str, section_key: str, block_heading: str
+    case: Case,
+    db: CaseDB,
+    answer_id: str,
+    section_key: str,
+    block_heading: str,
+    question_text: str,
 ) -> dict[str, Any]:
     rows = _structured_rows(
         db,
@@ -200,7 +218,12 @@ def _build_last_shutdown_event(
 
 
 def _build_application_execution_history(
-    case: Case, db: CaseDB, answer_id: str, section_key: str, block_heading: str
+    case: Case,
+    db: CaseDB,
+    answer_id: str,
+    section_key: str,
+    block_heading: str,
+    question_text: str,
 ) -> dict[str, Any]:
     rows = _structured_rows(
         db,
@@ -216,7 +239,8 @@ def _build_application_execution_history(
                WHERE x.executable_path LIKE '%' || UPPER(executable_name)),
               NULL
             )) AS executable_path,
-            MIN(source_file) AS prefetch_file
+            MIN(source_file) AS prefetch_file,
+            LIST(DISTINCT evidence_id) FILTER (WHERE evidence_id IS NOT NULL) AS evidence_ids
         FROM prefetch_executions
         WHERE executable_name IS NOT NULL AND TRIM(executable_name) <> ''
         GROUP BY executable_name
@@ -312,7 +336,12 @@ def _build_application_execution_history(
 
 
 def _build_daily_session_activity(
-    case: Case, db: CaseDB, answer_id: str, section_key: str, block_heading: str
+    case: Case,
+    db: CaseDB,
+    answer_id: str,
+    section_key: str,
+    block_heading: str,
+    question_text: str,
 ) -> dict[str, Any]:
     rows = _structured_rows(
         db,
@@ -369,29 +398,45 @@ def _build_daily_session_timeline_rows(
     logon_type_list = ", ".join(str(lt) for lt in logon_types)
     logoff_list = ", ".join(str(e) for e in logoff_ids)
 
-    hour_filter = ""
     qual = qualifiers or {}
+    filters: list[str] = []
+    params: list[Any] = [qual.get("basis") or "UTC"]
     hour_from = qual.get("hour_from")
     hour_to = qual.get("hour_to")
     if hour_from and hour_to:
-        hour_filter = (
-            f"  AND CAST(STRFTIME(timestamp, '%H:%M') AS VARCHAR) >= '{hour_from}'\n"
-            f"  AND CAST(STRFTIME(timestamp, '%H:%M') AS VARCHAR) <= '{hour_to}'\n"
+        clock = "CAST(local_timestamp AS TIME)"
+        if hour_from <= hour_to:
+            filters.append(f"{clock} BETWEEN CAST(? AS TIME) AND CAST(? AS TIME)")
+        else:
+            filters.append(
+                f"({clock} >= CAST(? AS TIME) OR {clock} <= CAST(? AS TIME))"
+            )
+        params.extend((hour_from, hour_to))
+    if qual.get("date_from") and qual.get("date_to"):
+        filters.append(
+            "CAST(local_timestamp AS DATE) BETWEEN CAST(? AS DATE) AND CAST(? AS DATE)"
         )
+        params.extend((qual["date_from"], qual["date_to"]))
+    time_filter = "".join(f" AND {condition}\n" for condition in filters)
 
     sql = f"""
-    WITH sessions AS (
+    WITH localized AS (
+        SELECT *, timezone(?, timezone('UTC', CAST(timestamp AS TIMESTAMP))) AS local_timestamp
+        FROM evtx_events
+        WHERE timestamp IS NOT NULL
+    ), sessions AS (
         SELECT
-            CAST(CAST(timestamp AS DATE) AS VARCHAR) AS date,
+            CAST(CAST(local_timestamp AS DATE) AS VARCHAR) AS date,
             timestamp,
             event_id,
             logon_type,
             target_user,
-            evidence_id
-        FROM evtx_events
+            evidence_id,
+            computer
+        FROM localized
         WHERE {event_filter}
           AND timestamp IS NOT NULL
-{hour_filter}
+{time_filter}
     ),
     daily_agg AS (
         SELECT
@@ -402,7 +447,8 @@ def _build_daily_session_timeline_rows(
             MAX(CASE WHEN event_id IN ({shutdown_list}) THEN timestamp END) AS last_shutdown,
             LIST(DISTINCT evidence_id) FILTER (WHERE evidence_id IS NOT NULL) AS evidence_ids,
             LIST(
-                CAST(timestamp AS VARCHAR) || ' event_id=' || CAST(event_id AS VARCHAR)
+                CAST(timestamp AS VARCHAR) || ' UTC event_id=' || CAST(event_id AS VARCHAR)
+                || ' computer=' || COALESCE(computer, '')
                 || ' user=' || COALESCE(target_user, '')
                 || ' evidence_id=' || COALESCE(evidence_id, '')
                 ORDER BY timestamp
@@ -431,17 +477,16 @@ def _build_daily_session_timeline_rows(
             THEN u.logon_users_raw[1:5]
             ELSE u.logon_users_raw
         END AS logon_users,
-        u.interactive_logon_count
+        u.interactive_logon_count,
+        d.evidence_ids,
+        d.event_trace
     FROM daily_agg d
     LEFT JOIN daily_logon_users u ON d.date = u.date
     ORDER BY d.date
 
     """
 
-    try:
-        rows = fetch_records(db, sql)
-    except Exception:
-        return []
+    rows = fetch_records(db, sql, params)
 
     result: list[dict[str, Any]] = []
     for row in rows:
@@ -466,11 +511,39 @@ def _build_daily_session_timeline_rows(
 
 
 def _build_daily_session_timeline(
-    case: Case, db: CaseDB, answer_id: str, section_key: str, block_heading: str
+    case: Case,
+    db: CaseDB,
+    answer_id: str,
+    section_key: str,
+    block_heading: str,
+    question_text: str,
 ) -> dict[str, Any]:
-    # Evidence timestamps are normalized to naive UTC at ingest. The rendered
-    # answer carries the case timezone, but SQL filtering must use UTC values.
-    qualifiers = extract_time_qualifiers(block_heading, "UTC")
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+    qualifiers = extract_time_qualifiers(question_text, case.source_timezone)
+    local_scope = bool(
+        re.search(
+            r"\b(?:local|timezone|time zone)\b|現地|タイムゾーン",
+            question_text,
+            re.IGNORECASE,
+        )
+    )
+    explicit_utc = bool(re.search(r"\bUTC\b(?!\s*[+-])", question_text, re.IGNORECASE))
+    if explicit_utc:
+        qualifiers["basis"] = "UTC"
+    missing: list[str] = []
+    try:
+        ZoneInfo(str(qualifiers["basis"]))
+        if local_scope and not explicit_utc and case.source_timezone == "UTC":
+            missing.append(
+                "The requested local-time basis is unknown; the local time/date window was not applied."
+            )
+    except ZoneInfoNotFoundError, ValueError:
+        missing.append(
+            "The requested timezone is unavailable; the time/date window was not applied."
+        )
+    if missing:
+        qualifiers = {"basis": "UTC"}
     rows = _build_daily_session_timeline_rows(db, qualifiers)
     return _structured_answer(
         case,
@@ -490,4 +563,6 @@ def _build_daily_session_timeline(
             "evidence_ids",
         ],
         queries_run=["structured:daily_session_timeline:per_day_session_timeline"],
+        status="partial" if missing and rows else "unobservable" if missing else None,
+        missing_reason=missing,
     )

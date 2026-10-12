@@ -212,11 +212,9 @@ def render_prior_attempts(recent_history: list[dict[str, Any]], limit: int = 10)
         purpose = str(item.get("purpose") or "").strip().replace("\n", " ")
         if purpose:
             parts.append(f"purpose={purpose[:120]}")
-        normalized_sql = (
-            str(item.get("normalized_sql") or "").strip().replace("\n", " ")
-        )
+        normalized_sql = str(item.get("normalized_sql") or "").strip()
         if normalized_sql:
-            parts.append(f"sql={normalized_sql[:240]}")
+            parts.append(f"sql={json.dumps(normalized_sql, ensure_ascii=False)}")
         reason = str(item.get("reason") or "").strip().replace("\n", " ")
         if reason:
             parts.append(f"reason={reason[:120]}")

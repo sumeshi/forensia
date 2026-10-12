@@ -437,7 +437,7 @@ structured_answer:
         self.assertIn("_Showing 200 of 250 rows", markdown)
         self.assertNotIn("| 249 |", markdown)
 
-    def test_structured_markdown_hides_evidence_id_columns(self) -> None:
+    def test_structured_markdown_retains_evidence_references(self) -> None:
         markdown = render_structured_answer_markdown(
             {
                 "id": "Q-EVIDENCE",
@@ -454,23 +454,25 @@ structured_answer:
                 ],
                 "columns": ["name", "evidence_id", "evidence_ids", "source_file"],
                 "missing_reason": [],
-                "queries_run": ["structured:test"],
+                "queries_run": ["structured:logon:evtx_events"],
             },
             "Evidence preview",
         )
 
-        self.assertIn("| name |", markdown)
-        self.assertNotIn("evidence_id", markdown)
-        self.assertNotIn(
+        self.assertIn("| name | evidence_id | evidence_ids |", markdown)
+        self.assertIn(
             "evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000001",
             markdown,
         )
-        self.assertNotIn(
+        self.assertIn(
             "mft-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-000000000001-00",
             markdown,
         )
         self.assertNotIn("source_file", markdown)
         self.assertNotIn("raw.evtx", markdown)
+        from forensia.report.report_validation import check_claim_traceability
+
+        self.assertEqual(check_claim_traceability(markdown), [])
 
 
 class SectionBodyQualityTests(unittest.TestCase):

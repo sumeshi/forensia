@@ -306,6 +306,9 @@ def _block_projection(
                 ),
                 section_key=section_key,
                 block_heading=heading,
+                question_text="\n".join(
+                    (question, str(block.get("template_body") or ""))
+                ),
             )
             if answer is not None:
                 answer_rows = [
@@ -325,6 +328,7 @@ def _block_projection(
                 body = _render_structured_answer_markdown(
                     answer,
                     heading,
+                    tz_name=case.source_timezone,
                     template_dir=case.report_template_dir,
                 )
                 projection.update({"answer_spec": answer_spec, "answer": answer})

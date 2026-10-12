@@ -744,6 +744,11 @@ class PriorAttemptsBlockTests(unittest.TestCase):
     def test_render_prior_attempts_structured_fields(self) -> None:
         from forensia.investigation.prompts import render_prior_attempts
 
+        sql = (
+            "SELECT evidence_id, timestamp FROM evtx_events WHERE message = '"
+            + "a" * 260
+            + "'\nORDER BY timestamp"
+        )
         block = render_prior_attempts(
             [
                 {
@@ -756,6 +761,7 @@ class PriorAttemptsBlockTests(unittest.TestCase):
                     "purpose": "find 4720 account creation",
                     "template_id": "t-logon",
                     "summary": "no rows returned for event 4720",
+                    "normalized_sql": sql,
                 },
                 {
                     "query_id": "q-002",
@@ -778,6 +784,7 @@ class PriorAttemptsBlockTests(unittest.TestCase):
         self.assertNotIn("template_id", block)
         self.assertNotIn("summary", block)
         self.assertNotIn("body", block)
+        self.assertIn(f"sql={json.dumps(sql)}", block)
 
     def test_intent_messages_carry_structured_attempts(self) -> None:
         from forensia.investigation.prompts import build_query_intent_messages

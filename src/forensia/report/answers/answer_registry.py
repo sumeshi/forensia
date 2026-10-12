@@ -93,7 +93,7 @@ def _build_generic_question_spec_answer(
     return answer
 
 
-StructuredAnswerBuilder = Callable[[Case, CaseDB, str, str, str], dict[str, Any]]
+StructuredAnswerBuilder = Callable[[Case, CaseDB, str, str, str, str], dict[str, Any]]
 
 
 def _rank_rows_first(
@@ -154,6 +154,7 @@ def build_structured_answer(
     answer_id: str,
     section_key: str,
     block_heading: str,
+    question_text: str = "",
 ) -> dict[str, Any] | None:
     """Recompute the named answer from current CaseDB rows; exports are projections."""
     normalized_spec = str(answer_spec or "").strip().casefold().replace("-", "_")
@@ -181,7 +182,14 @@ def build_structured_answer(
             block_heading=block_heading,
         )
     resolved_id = str(answer_id or normalized_spec).strip() or normalized_spec
-    answer = builder(case, db, resolved_id, section_key, block_heading)
+    answer = builder(
+        case,
+        db,
+        resolved_id,
+        section_key,
+        block_heading,
+        "\n".join((block_heading, question_text)),
+    )
     answer["answer_spec"] = normalized_spec
     if spec is not None:
         status, reasons = evaluate_question_spec_status(

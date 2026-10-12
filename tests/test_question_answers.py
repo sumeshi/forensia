@@ -869,6 +869,12 @@ class DailySessionTimelineBuilderTests(unittest.TestCase):
         self.assertIn("alice", day1["logon_users"])
         self.assertIn("bob", day1["logon_users"])
         self.assertEqual(day1["interactive_logon_count"], 2)
+        self.assertEqual(
+            set(day1["evidence_ids"]),
+            {"evtx-e1", "evtx-e2", "evtx-e3", "evtx-e4", "evtx-e5"},
+        )
+        self.assertEqual(len(day1["event_trace"]), 5)
+        self.assertIn("UTC event_id=", day1["event_trace"][0])
 
         day2 = rows[1]
         self.assertEqual(day2["date"], "2015-03-23")
@@ -879,73 +885,106 @@ class DailySessionTimelineBuilderTests(unittest.TestCase):
         self.assertIn("charlie", day2["logon_users"])
         self.assertEqual(day2["interactive_logon_count"], 1)
 
-    def test_builder_respects_hour_qualifiers(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(tmpdir)
-            with CaseDB(case) as db:
-                db.execute(
-                    "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer, target_user, logon_type) VALUES (?, ?, ?, ?, ?, ?)",
-                    (
-                        "evtx-e1",
-                        6005,
-                        datetime(2015, 3, 22, 9, 5, 0),
-                        "HOST1",
-                        None,
-                        None,
-                    ),
-                )
-                # This logon is outside qualifier window (before 09:00) so should be excluded
-                db.execute(
-                    "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer, target_user, logon_type) VALUES (?, ?, ?, ?, ?, ?)",
-                    (
-                        "evtx-e2",
-                        4624,
-                        datetime(2015, 3, 22, 8, 0, 0),
-                        "HOST1",
-                        "bob",
-                        "2",
-                    ),
-                )
-                # This logon is within the window (09:00-18:00)
-                db.execute(
-                    "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer, target_user, logon_type) VALUES (?, ?, ?, ?, ?, ?)",
-                    (
-                        "evtx-e3",
-                        4624,
-                        datetime(2015, 3, 22, 9, 0, 0),
-                        "HOST1",
-                        "alice",
-                        "2",
-                    ),
-                )
-                db.execute(
-                    """
-                    UPDATE evtx_events
-                    SET channel = CASE WHEN event_id = 6005 THEN 'System' ELSE 'Security' END,
-                        raw_json = CASE WHEN event_id = 6005
-                          THEN '{"winlog":{"provider":{"name":"EventLog"}}}'
-                          ELSE '{"winlog":{"provider":{"name":"Microsoft-Windows-Security-Auditing"}}}'
-                        END
-                    WHERE event_id IN (6005, 4624)
-                    """
-                )
+    def test_builder_respects_body_scope_and_evidence_date_timezone(self):
+        from forensia.report.report_validation import check_claim_traceability
+        from forensia.report.sections.section_refresher import _block_projection
 
-                rows = build_structured_answer(
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir, source_timezone="America/New_York")
+            with CaseDB(case) as db:
+                times = [
+                    "2015-01-22 13:30:00",
+                    "2015-01-22 14:30:00",
+                    "2015-03-22 12:59:59",
+                    "2015-03-22 13:00:00",
+                    "2015-03-22 22:00:00",
+                    "2015-03-22 22:00:01",
+                    "2015-03-23 13:00:00",
+                    "2015-03-22 09:00:00",
+                    "2015-03-23 03:00:00",
+                ]
+                ids = [f"evtx-{'a' * 64}-security-{i:012d}" for i in range(len(times))]
+                for evidence_id, timestamp in zip(ids, times, strict=True):
+                    db.execute(
+                        "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer, target_user, logon_type, channel, raw_json) "
+                        "VALUES (?, 4624, ?, 'HOST1', 'alice', '2', 'Security', ?)",
+                        [
+                            evidence_id,
+                            timestamp,
+                            '{"winlog":{"provider":{"name":"Microsoft-Windows-Security-Auditing"}}}',
+                        ],
+                    )
+                block = {
+                    "heading": "System startup/shutdown and user logon/logoff",
+                    "mode": "question",
+                    "answer_spec": "daily_session_timeline",
+                    "answer_id": "daily",
+                    "template_body": "Consider only between 09:00 and 18:00 in local time, between 2015-01-22 and 2015-03-22.",
+                }
+                markdown, results, projection = _block_projection(
+                    case, db, "timeline", block
+                )
+                answer = projection["answer"]
+                rows = answer["answer"]
+                self.assertEqual(answer["status"], "answered")
+                self.assertEqual(
+                    [row["date"] for row in rows], ["2015-01-22", "2015-03-22"]
+                )
+                self.assertEqual(rows[0]["first_logon"], "2015-01-22 14:30:00")
+                self.assertEqual(rows[0]["first_logon_local"], "2015-01-22 09:30:00")
+                self.assertEqual(rows[1]["first_logon"], "2015-03-22 13:00:00")
+                self.assertEqual(
+                    set(results[0]["evidence_ids"]), {ids[1], ids[3], ids[4]}
+                )
+                self.assertEqual(len(rows[1]["event_trace"]), 2)
+                self.assertIn(ids[3], markdown)
+                self.assertEqual(check_claim_traceability(markdown, db), [])
+                exported = json.loads(
+                    (case.reports_dir / "structured/daily.json").read_text()
+                )
+                self.assertEqual(exported["answer"], rows)
+
+                _, _, overnight = _block_projection(
                     case,
                     db,
-                    answer_spec="daily_session_timeline",
-                    answer_id="daily",
-                    section_key="2_timeline",
-                    block_heading="Daily session timeline between 09:00 and 18:00",
-                )["answer"]
+                    "timeline",
+                    {
+                        **block,
+                        "template_body": "between 22:00 and 06:00 in local time, between 2015-03-22 and 2015-03-22.",
+                    },
+                )
+                self.assertEqual(len(overnight["answer"]["answer"]), 1)
+                night = overnight["answer"]["answer"][0]
+                self.assertEqual(night["date"], "2015-03-22")
+                self.assertEqual(set(night["evidence_ids"]), {ids[7], ids[8]})
 
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]["date"], "2015-03-22")
-        self.assertEqual(rows[0]["first_startup"], "2015-03-22 09:05:00")
-        self.assertEqual(rows[0]["first_logon"], "2015-03-22 09:00:00")
-        self.assertEqual(rows[0]["last_logoff"], "")
-        self.assertEqual(rows[0]["last_shutdown"], "")
-        self.assertEqual(rows[0]["interactive_logon_count"], 1)  # bob at 08:00 excluded
+                case.source_timezone = "UTC"
+                _, _, unresolved = _block_projection(case, db, "timeline", block)
+                self.assertEqual(unresolved["answer"]["status"], "partial")
+                self.assertIn(
+                    "local-time basis is unknown",
+                    unresolved["answer"]["missing_reason"][0],
+                )
+                self.assertGreater(len(unresolved["answer"]["answer"]), len(rows))
+                db.execute("DELETE FROM evtx_events")
+                _, _, empty = _block_projection(case, db, "timeline", block)
+                self.assertEqual(empty["answer"]["status"], "unobservable")
+                case.source_timezone = "America/New_York"
+                db.execute(
+                    "INSERT INTO evtx_events (event_id, timestamp, target_user, logon_type, channel, raw_json) "
+                    "VALUES (4624, '2015-03-22 13:00:00', 'alice', '2', 'Security', ?)",
+                    [
+                        '{"winlog":{"provider":{"name":"Microsoft-Windows-Security-Auditing"}}}'
+                    ],
+                )
+                _, _, unreferenced = _block_projection(case, db, "timeline", block)
+                self.assertEqual(unreferenced["answer"]["status"], "partial")
+                self.assertTrue(
+                    any(
+                        "no stable" in reason
+                        for reason in unreferenced["answer"]["missing_reason"]
+                    )
+                )
 
 
 if __name__ == "__main__":

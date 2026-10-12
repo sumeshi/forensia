@@ -132,7 +132,7 @@ def test_structured_answer_builder_registration(monkeypatch) -> None:
         dict(answer_registry._STRUCTURED_ANSWER_BUILDERS),
     )
 
-    def builder(_case, _db, answer_id, section_key, block_heading):
+    def builder(_case, _db, answer_id, section_key, block_heading, question_text):
         return {
             "answer_id": answer_id,
             "section_key": section_key,
