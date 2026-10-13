@@ -470,12 +470,13 @@ def test_public_run_records_provider_planned_query_or_bounded_rejection(
                 ]
                 assert final_hypothesis == ("confirmed",)
                 saved = db.execute(
-                    "SELECT description, sufficiency_status FROM hypotheses"
+                    "SELECT description, sufficiency_status, verification_spec FROM hypotheses"
                 ).fetchone()
-                assert (
-                    saved[0]
-                    == 'At least 1 prefetch observation has executable_name equals "sample.exe".'
-                )
+                observation = json_module.loads(saved[2])["support_conditions"][
+                    "observation"
+                ]
+                assert observation["evidence_ids"] == [prefetch_evidence_id]
+                assert prefetch_evidence_id in saved[0]
                 assert saved[1] == "sufficient"
                 markdown = (case_dir / "reports/report.md").read_text()
                 assert saved[0] in markdown

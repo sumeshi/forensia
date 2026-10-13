@@ -75,12 +75,16 @@ _BLOCKER_MESSAGES = {
     "observation_min_count_exceeds_current_family_count": (
         "typed observation needs more evidence: {owner}"
     ),
+    "observation_min_count_exceeds_target_count": (
+        "typed observation count exceeds its fixed target: {owner}"
+    ),
 }
 
 VERIFICATION_INFEASIBLE_CODES = frozenset(
     {
         "required_entity_unobservable",
         "observation_min_count_exceeds_current_family_count",
+        "observation_min_count_exceeds_target_count",
     }
 )
 
@@ -122,7 +126,12 @@ class WorkJudgment:
         if self.external_task_ids:
             return "human_or_external_result"
         if any(
-            blocker.code == "required_entity_unobservable" for blocker in self.blockers
+            blocker.code
+            in {
+                "required_entity_unobservable",
+                "observation_min_count_exceeds_target_count",
+            }
+            for blocker in self.blockers
         ):
             return "human_or_external_result"
         if self.unavailable_capabilities:

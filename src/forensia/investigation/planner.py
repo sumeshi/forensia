@@ -139,8 +139,13 @@ def _typed_observation_query(
         return None
     id_column = "artifact_id" if family == "registry" else "evidence_id"
     matching_ids: list[str] = []
+    targets = observation.get("evidence_ids") or []
+    target_filter = (
+        f" WHERE {id_column} IN ({', '.join('?' for _ in targets)})" if targets else ""
+    )
     cursor = db.execute(
-        f"SELECT {id_column}, {field} FROM {table} ORDER BY {id_column}"
+        f"SELECT {id_column}, {field} FROM {table}{target_filter} ORDER BY {id_column}",
+        targets,
     )
     while batch := cursor.fetchmany(512):
         for evidence_id, value in batch:

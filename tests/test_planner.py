@@ -1238,5 +1238,158 @@ def test_working_state_only_deduplicates_requirements_with_rendered_rows() -> No
     assert "open hypothesis=H-1" not in rendered
 
 
+def test_refutation_experiment_isolates_trials_and_bounds_searches(
+    tmp_path, monkeypatch
+):
+    import asyncio
+
+    from scripts.eval import refutation
+
+    from forensia.config import Settings
+    from forensia.core.verification import VerificationSpec
+
+    source = Case.init(tmp_path / "source")
+    candidates = []
+    with CaseDB(source) as db:
+        db.execute(
+            "INSERT INTO evtx_events (evidence_id, event_id, channel, computer, raw_json) VALUES "
+            "('evtx-one', 4624, 'Security', 'HOST', ?), "
+            "('evtx-two', 4672, 'Security', 'HOST', ?)",
+            ['{"winlog":{"provider":{"name":"Microsoft-Windows-Security-Auditing"}}}']
+            * 2,
+        )
+        db.execute(
+            "INSERT INTO mft_entries (evidence_id, file_path, is_deleted) VALUES "
+            "('mft-one', 'a.db-wal', TRUE), ('mft-two', 'b.exe', FALSE)"
+        )
+        db.execute(
+            "INSERT INTO trace.hypothesis_reasoning (entry_id, hypothesis_id, body) "
+            "VALUES ('poison', 'H-001', 'LATER_VERDICT_MUST_NOT_LEAK')"
+        )
+    source_hash = refutation._sha(source.database_path)
+    for index, (evidence, event_id) in enumerate(
+        (("evtx-one", 4624), ("evtx-two", 4672)), 1
+    ):
+        candidates.append(
+            {
+                "question": f"question-{index}",
+                "evidence_ids": [evidence],
+                "hypothesis": Hypothesis(
+                    id=f"H-{index:03d}",
+                    description="Account logon"
+                    if index == 1
+                    else "Privileged account used",
+                    verification_spec=VerificationSpec(
+                        support_conditions={
+                            "co_observed_event_ids": [event_id],
+                        }
+                    ),
+                ).model_dump(mode="json"),
+            }
+        )
+    for index, evidence in enumerate(("mft-one", "mft-two"), 3):
+        candidates.append(
+            {
+                "question": f"question-{index}",
+                "evidence_ids": [evidence],
+                "hypothesis": Hypothesis(
+                    id=f"H-{index:03d}",
+                    description="Intentional concealment of file activity",
+                    verification_spec=VerificationSpec(
+                        support_conditions={
+                            "observation": {
+                                "family": "mft",
+                                "capability": "file_activity",
+                                "field": "file_path",
+                                "operator": "equals",
+                                "value": "a.db-wal",
+                            }
+                        }
+                    ),
+                ).model_dump(mode="json"),
+            }
+        )
+    candidates_file = tmp_path / "candidates.json"
+    refutation._write(candidates_file, candidates)
+    settings = Settings(llm_base_url="http://test-llm.invalid", llm_model="test")
+    monkeypatch.setattr(refutation, "load_settings", lambda **_kw: settings)
+    experiment = tmp_path / "experiment"
+    refutation.prepare(source.path, candidates_file, experiment)
+    with CaseDB(Case.open(experiment / "seed"), read_only=True) as db:
+        assert (
+            db.execute("SELECT COUNT(*) FROM trace.hypothesis_reasoning").fetchone()[0]
+            == 0
+        )
+        assert db.execute("SELECT COUNT(*) FROM evtx_events").fetchone()[0] == 2
+    calls = []
+    planner_attempts = {}
+
+    def completion(**kwargs):
+        body = "\n".join(m["content"] for m in kwargs["messages"])
+        assert "LATER_VERDICT_MUST_NOT_LEAK" not in body
+        condition = (
+            "counterevidence" if refutation.COUNTEREVIDENCE in body else "ordinary"
+        )
+        question = "question-1" if "question-1" in body else "question-2"
+        calls.append((question, condition, kwargs["phase"]))
+        if kwargs["phase"] == "hypothesis-plan":
+            key = (question, condition)
+            planner_attempts[key] = planner_attempts.get(key, 0) + 1
+            invalid = question == "question-1" and planner_attempts[key] == 1
+            return json.dumps(
+                {
+                    "action": {
+                        "intent": "Inspect target",
+                        "target_table": "evtx_events",
+                        "template_id": None,
+                        "sql": "SELECT nonexistent_column FROM evtx_events LIMIT 1"
+                        if invalid
+                        else "SELECT evidence_id, event_id, channel, computer FROM evtx_events WHERE 1=0 LIMIT 1",
+                    }
+                }
+            )
+        assert kwargs["phase"] == "check-verdict"
+        return json.dumps(
+            {
+                "verdict": "confirmed",
+                "rationale": "No counterevidence found",
+                "confidence": 1,
+                "missing_questions": [],
+            }
+        )
+
+    monkeypatch.setattr(refutation.json_response, "chat_completion", completion)
+    report = asyncio.run(refutation.run(experiment))
+    assert len(report["trials"]) == 8
+    assert len(calls) == 10  # Four evaluations; only H-001 uses the correction.
+    assert all(result["reason"] != "confirmed" for result in report["trials"])
+    assert (
+        sum(result["status"] == "contract_rejected" for result in report["trials"]) == 4
+    )
+    assert all(
+        result["reason"] == "observation-claim-scope-unproven"
+        for result in report["trials"]
+        if result["status"] == "contract_rejected"
+    )
+    for result in report["trials"]:
+        case = Case.open(
+            experiment / "round-1" / f"{result['hypothesis_id']}-{result['condition']}"
+        )
+        with CaseDB(case, read_only=True) as db:
+            status, finished = db.execute(
+                "SELECT status, finished_at FROM trace.investigation_sessions"
+            ).fetchone()
+            assert status == "stopped" and finished is not None
+            count = db.execute(
+                "SELECT COUNT(*) FROM trace.investigation_steps WHERE phase='do'"
+            ).fetchone()[0]
+            assert count == (0 if result["status"] == "contract_rejected" else 1)
+    assert refutation._sha(source.database_path) == source_hash
+    # A second round repeats all pairs and leaves the first round untouched.
+    asyncio.run(refutation.run(experiment))
+    assert len(json.loads((experiment / "round-2/results.json").read_text())) == 8
+    assert refutation._sha(source.database_path) == source_hash
+
+
 if __name__ == "__main__":
     unittest.main()

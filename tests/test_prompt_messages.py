@@ -841,6 +841,8 @@ class PriorAttemptsBlockTests(unittest.TestCase):
         self.assertIn("peer hypothesis", combined)
         self.assertNotIn("<WORK_CONTEXT", combined)
         self.assertNotIn("Theme Finding IDs", combined)
+        self.assertIn("plausible alternative explanation", combined)
+        self.assertIn("Keep the original subject", combined)
 
         raw_json = (
             '{"event":{"provider":"microsoft-windows-eventsystem","code":4625},'
@@ -882,6 +884,8 @@ class PriorAttemptsBlockTests(unittest.TestCase):
         )
         verdict_user = verdict_messages[1]["content"]
         verdict_system = verdict_messages[0]["content"]
+        self.assertIn("No counterevidence is not proof", verdict_system)
+        self.assertIn("not a stronger accusation", verdict_system)
         self.assertEqual(
             ["confirmed", "inconclusive", "refuted", "newlead"],
             verdict_schema["properties"]["verdict"]["enum"],

@@ -187,6 +187,8 @@ context設定は接続先の実上限へ合わせ、出力予約も含めて予�
 
 型付き観測だけから決まる最初の検索は、ホストがAssessmentと同じ比較処理で対象Evidence IDを選び、既存のbounded SELECTとして実行します。結果件数の上限は一致する証拠に適用し、原本の先頭だけを調べて不一致と扱いません。追加検索はLLMへ任せ、そのSpecと宣言された相関先のtable・schema・recipeだけを開示して検査します。Receiptのprimary verification／corroborationは作業の目的を示す記録であり、支持・反証の判定は引き続きAssessmentが所有します。0件の検索は活動の不存在を証明しません。
 
+観測候補から作る型付き条件は、ホストが候補のEvidence IDへ束縛します。別のファイルなどが同じ値を持っていても、その候補の支持・反証には使いません。別フィールドの時刻をequals条件へ転記した提案は既存の有限修正へ返します。通常の検索計画と結果評価には、元の命題と対象を維持して対立説明を区別する検索を考える指示を含めます。反証がないことを確定理由にせず、単なる活動の観測に悪意の証明を要求しません。
+
 追加検索の出力は、目的、対象table、SQLまたはrecipeとparamsに限定します。schema非対応の接続先にも同じ契約と完成例を本文で渡します。形式修復・文脈縮約・ホスト検証後の修正は、1つの検索計画で最大1回の修正枠を共有します。検証エラーにはfieldと原因を含め、修正できなければ理由と再評価条件を保存して作業枠を解放します。SQL実行上限を形式不正の再生成回数には使いません。明示的なEVTX条件から検索familyを決められる場合、capability分類が空でもEVTXの範囲で検索できますが、Coverageの充足を意味しません。
 
 EVTXの意味付けにはevent ID・channel・providerを使います。未知の文脈のレコードは閲覧できますが、番号だけで既知の活動へ分類しません。PrefetchのDLL参照やMFT時刻差も観測であり、それだけで不正なロードや反フォレンジックを確定しません。
@@ -309,6 +311,23 @@ uv run python scripts/eval/run.py ./baseline-copy ./after-copy --output ./compar
 ```
 
 指標は保存済みの状態と実行receiptから取得します。ルールの実行結果、候補の試行、採用先の仮説、query操作、使用量、sessionの停止、Claim参照を区別し、実測tokenとローカル推定を混ぜません。receipt、leadの注釈、処理時間、peak memoryがない値は理由付きunknownです。benign-contextの注釈やClaim参照先の存在は診断情報であり、侵害の正解やfalse positive率ではありません。processの時間とpeak memoryは外部から計測してください。調査品質の改善を示すには、注釈付きの入力と条件を固定したローカルモデルの比較が必要です。
+
+### 反証指示の小規模な比較
+
+[refutation.py](scripts/eval/refutation.py)は、現在の製品の検証指示と、追加の反証指示を付けた条件を比較します。現在の製品にも対立説明を検討する指示が入っているため、過去の「反証指示なし／あり」の比較を再現するには、その時点のコードを使います。実験プロセスが製品の既定指示を書き換えることはありません。
+
+`candidates.json`には4候補の配列を用意します。各候補は`question`、観測済みの`evidence_ids`、`hypothesis`を持ちます。`hypothesis`には未確認の`description`と既存形式の`verification_spec`を指定し、少なくとも2つのartifact familyを含めます。解釈は事前に人が固定し、後続の判定や参照解答は含めません。IDは準備時にH-001〜H-004へ割り当てます。
+
+```bash
+uv run python -m scripts.eval.refutation prepare ./case-copy ./candidates.json ./refutation-eval
+uv run python -m scripts.eval.refutation run ./refutation-eval
+```
+
+準備は停止済みケースをread-onlyで開き、証拠・provenance・Coverageだけを実験用スナップショットへ残します。過去の仮説・判定・報告書・Traceはモデルへ渡しません。入力、証拠のfingerprint、コード・宣言・設定、評価基準を固定します。APIキーは保存しません。準備後にコード、設定、入力、スナップショットが変われば実行を拒否します。
+
+各条件は既存plannerとReceipt → Assessment → Sufficiency → Settlementを使い、追加検索1回、plannerの修正1回、結果評価1回までです。検索上限を守るため、fallback検索とFindingの追加生成は実験内で無効にします。一般的な解釈をVerificationSpecで表せない場合や、観測確認にしかならない場合は、契約上の制約として記録します。観測の再確認を解釈の確定と数えません。
+
+結果は`round-N/`の独立した8ケースと`comparison.json`へ保存します。元ケースをresume／上書きせず、同じ`run`を再実行すると全4組を新しいラウンドで繰り返します。送信内容・応答・検索・判定は各ケースの既存Traceに、呼出し・token・検索計測は既存の評価集計に残します。有用な検索、対象の保持、取り違え、判断の変化とコストを人が照合し、確定件数だけで改善と判断しないでください。
 
 ## 変更を提出するとき
 

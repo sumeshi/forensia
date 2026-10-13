@@ -224,14 +224,26 @@ def observation_condition_error(condition: Any) -> str | None:
     if not isinstance(min_count, int) or isinstance(min_count, bool) or min_count < 1:
         return "observation-min-count-invalid"
     observation = condition["observation"]
-    if not isinstance(observation, dict) or set(observation) != {
+    required = {
         "family",
         "capability",
         "field",
         "operator",
         "value",
-    }:
+    }
+    if not isinstance(observation, dict) or set(observation) not in (
+        required,
+        required | {"evidence_ids"},
+    ):
         return "invalid-observation-condition"
+    if "evidence_ids" in observation:
+        targets = observation["evidence_ids"]
+        if (
+            not isinstance(targets, list)
+            or not targets
+            or any(not isinstance(value, str) or not value.strip() for value in targets)
+        ):
+            return "observation-target-invalid"
 
     family, capability, field, operator = (
         observation.get(key) for key in ("family", "capability", "field", "operator")
@@ -324,8 +336,14 @@ def canonical_observation_claim(spec: VerificationSpec | dict[str, Any]) -> str 
         return None
     record = "observation" if count == 1 else "observations"
     verb = "has" if count == 1 else "have"
+    targets = observation.get("evidence_ids")
+    target_text = (
+        " among " + json.dumps(sorted(set(targets)), ensure_ascii=False)
+        if targets
+        else ""
+    )
     return (
-        f"At least {count} {observation['family'].strip().lower()} {record} {verb} "
+        f"At least {count} {observation['family'].strip().lower()} {record}{target_text} {verb} "
         f"{observation['field'].strip()} {operator_text} {value}."
     )
 
@@ -410,6 +428,12 @@ def verification_feasibility_error(
         if family_counts is not None:
             family_counts[family] = available
     required = condition.get("min_count", 1)
+    targets = observation.get("evidence_ids")
+    if targets and required > len(set(targets)):
+        return (
+            "observation_min_count_exceeds_target_count",
+            f"target-count:{len(set(targets))}",
+        )
     if required > available:
         return (
             "observation_min_count_exceeds_current_family_count",

@@ -24,6 +24,125 @@ from forensia.investigation.report_gap import (
 class InvestigationStateTests(unittest.TestCase):
     """Test investigation_state singleton table."""
 
+    def test_observed_draft_keeps_target_and_rejects_transposed_timestamp(self) -> None:
+        import asyncio
+
+        from forensia.investigation.investigation_cycle import (
+            _BroadPlanContext,
+            _call_broad_drafter,
+        )
+        from forensia.investigation.planner import plan_hypothesis_query
+        from forensia.investigation.verification.assessment import assess_evidence_group
+
+        candidate = {
+            "scope": {"source_family": "mft"},
+            "evidence": [
+                {
+                    "evidence_id": "mft-target",
+                    "_source": "mft_entries",
+                    "file_path": "Users/alice/client/cache.db",
+                    "si_modified": "2026-01-02 03:04:05",
+                    "fn_modified": "2026-01-01 03:04:05",
+                    "is_deleted": True,
+                }
+            ],
+        }
+        support = {
+            "observation": {
+                "family": "mft",
+                "capability": "file_activity",
+                "field": "is_deleted",
+                "operator": "equals",
+                "value": True,
+            }
+        }
+        with tempfile.TemporaryDirectory() as tmpdir, CaseDB(Case.init(tmpdir)) as db:
+            db.execute(
+                "INSERT INTO mft_entries (evidence_id, file_path, is_deleted) VALUES "
+                "('mft-target', 'Users/alice/client/cache.db', true), "
+                "('mft-unrelated', 'Other/deleted.txt', true)"
+            )
+            state = SessionState(session_id="target-binding")
+            ctx = _BroadPlanContext(
+                state=state,
+                db=db,
+                session_id=state.session_id,
+                base_url="unused",
+                model="unused",
+                plan_cycle=1,
+                observed_keypoints=[],
+                observed_keypoint_labels=[],
+                emit_fn=None,
+                llm_status_fn=lambda _: None,
+                progress_callback=None,
+                case_profile=None,
+            )
+            with mock.patch(
+                "forensia.llm.json_response.request_llm_json",
+                return_value={"hypothesis": {"confirm_when": support}},
+            ):
+                hypothesis, error = asyncio.run(
+                    _call_broad_drafter(
+                        ctx,
+                        {"summary": "Investigate this deleted file"},
+                        candidate=candidate,
+                        draft_index=1,
+                        correction_budget=[0],
+                        logical_call_id=None,
+                        attempt_ordinal=[0],
+                    )
+                )
+            self.assertIsNone(error)
+            self.assertIn('"mft-target"', hypothesis.description)
+            with mock.patch(
+                "forensia.llm.json_response.request_llm_json",
+                side_effect=AssertionError("typed primary needs no inference"),
+            ):
+                plan = plan_hypothesis_query(
+                    state, hypothesis, "unused", "unused", db=db
+                )
+            self.assertEqual(db.execute(plan.query.sql).fetchall(), [("mft-target",)])
+            unrelated = {
+                "evidence_id": "mft-unrelated",
+                "source_family": "mft",
+                "is_deleted": True,
+            }
+            assessment = assess_evidence_group(
+                hypothesis=hypothesis,
+                rows=[unrelated],
+                evidence_ids=["mft-unrelated"],
+            )
+            self.assertEqual(assessment.role, "contextual")
+            assessment = assess_evidence_group(
+                hypothesis=hypothesis,
+                rows=[unrelated, {**unrelated, "evidence_id": "mft-target"}],
+                evidence_ids=["mft-unrelated", "mft-target"],
+            )
+            self.assertEqual(assessment.role, "supporting")
+            self.assertEqual(assessment.evidence_ids, ("mft-target",))
+
+            support["observation"].update(
+                field="fn_modified", value="2026-01-02 03:04:05"
+            )
+            with mock.patch(
+                "forensia.llm.json_response.request_llm_json",
+                return_value={"hypothesis": {"confirm_when": support}},
+            ):
+                hypothesis, error = asyncio.run(
+                    _call_broad_drafter(
+                        ctx,
+                        {},
+                        candidate=candidate,
+                        draft_index=2,
+                        correction_budget=[0],
+                        logical_call_id=None,
+                        attempt_ordinal=[0],
+                    )
+                )
+            self.assertIsNone(hypothesis)
+            self.assertIn("observation-field-value-mismatch", error)
+            self.assertIn("si_modified", error)
+
     def test_exhausted_early_gap_drafts_do_not_starve_later_persisted_gaps(
         self,
     ) -> None:

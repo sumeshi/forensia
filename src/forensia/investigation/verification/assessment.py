@@ -93,7 +93,14 @@ def _condition_matches(
         matching_rows: list[int] = []
         matching_family_rows = 0
         available_field_rows = 0
+        targets = set(observation.get("evidence_ids") or [])
         for index, row in enumerate(rows):
+            if (
+                targets
+                and str(row.get("evidence_id") or row.get("artifact_id") or "")
+                not in targets
+            ):
+                continue
             row_family = (
                 str(row.get("source_family") or row.get("artifact_family") or "")
                 .strip()

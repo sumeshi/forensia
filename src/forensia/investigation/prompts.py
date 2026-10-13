@@ -529,8 +529,9 @@ def build_query_intent_messages(
         )
         + "If EXECUTION_ERROR is present, you MUST change the query — at minimum change the table list, the WHERE clause, or eliminate the failing JOIN. Never repeat the same SQL that caused an execution error.\n"
         + "Address prior_check_feedback within eligible_tables. If required evidence is outside the eligible catalog, report the unmet requirement instead of proposing an unauthorized query.\n"
+        + "Keep the original subject, time scope, and proposition. Consider a plausible alternative explanation and choose a search whose results could distinguish it from the hypothesis. In intent, state what the search can support or contradict. Do not invent an alternative when the evidence cannot distinguish one.\n"
         + (
-            "This is corroboration after the typed primary search. Do not repeat that primary query. Use only tables listed in the selected schema cards; cross-family corroboration is allowed only when those tables are listed. Keep the purpose and evidence family explicit.\n"
+            "This is corroboration after the typed primary search. Do not repeat that primary query or merely reselect values already supplied. Use the previous result and missing requirements to seek new support or counterevidence, preserving the subject. Use only tables listed in the selected schema cards; cross-family corroboration is allowed only when those tables are listed. Keep the purpose and evidence family explicit.\n"
             if test_intent == "corroboration"
             else "This is the primary verification search. Keep its family and typed observation field in scope.\n"
         )
@@ -645,6 +646,8 @@ def build_verdict_review_messages(
         "</OUTPUT_SCHEMA>\n"
         "<RULES>\n"
         "row_count counts citable rows; observed_row_count counts retrieved rows. Missing IDs or partial retrieval are not evidence of absence. Read retrieval_evaluation before interpreting a zero row_count.\n"
+        "Evaluate the original proposition, not a stronger accusation. Consider whether the returned evidence also fits an alternative explanation and identify the observation that distinguishes them. A benign explanation does not refute a claim that only describes an activity. No counterevidence is not proof of the hypothesis.\n"
+        "Use only evidence actually returned in this result for the verdict; prompt context and earlier observations are leads, not newly retrieved support. If the alternatives cannot be distinguished, return inconclusive with the specific missing evidence. Do not manufacture a counterargument or require malicious intent when the hypothesis does not assert it.\n"
         f"{fallback_notice}"
         "When verdict=inconclusive, missing_questions MUST contain at least 1 specific item naming the missing evidence (e.g. 'event_id 4663', 'mft_entries WHERE file_path LIKE %.docx%', 'browser executable in prefetch_executions'). Do NOT leave it empty.\n"
         "For confirmed, refuted, or newlead, return an empty missing_questions array.\n"
@@ -1233,6 +1236,7 @@ def build_hypothesis_drafter_messages(
         "For a gap without an observed candidate, stay within its stated objective, gap, keypoint, and available evidence. Do not invent an event, entity, or source.\n"
         "required_entities must be valid snake_case evidence column names. Keep verification conditions explicit and use only event ID/context combinations supplied by the host.\n"
         "Typed observations use fields from canonical evidence records, not derived timeline projections such as prefetch_timeline.exec_time or mft_timeline.timestamp.\n"
+        "Preserve the supplied subject. The host binds a typed observation to this candidate's canonical evidence IDs; matching a different record will not confirm it. Keep each timestamp paired with its named field. Consider what additional observation could distinguish an alternative explanation; do not turn uncertainty about intent into a claim of malicious intent.\n"
         + (
             "This candidate uses one canonical artifact family. Use only its listed columns and capability. confirm_when is observation-only in this mode; the schema rejects event/correlation mixes. Return conditions only, without description. The host renders the precise observation from the validated conditions. This observation does not resolve a broader causal question.\n"
             if observation_only

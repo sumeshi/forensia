@@ -561,6 +561,69 @@ async def _call_broad_drafter(
         not in h_schema["properties"]["hypothesis"]["properties"],
     )
     if hypothesis:
+        observation = hypothesis.verification_spec.support_conditions.get("observation")
+        if candidate and isinstance(observation, dict):
+            from forensia.investigation.verification.assessment import (
+                _observation_utc_datetime,
+                _observation_value_matches,
+            )
+            from forensia.knowledge.coverage import (
+                canonical_observation_claim,
+                observation_claim_scope_error,
+            )
+
+            scope_error = observation_claim_scope_error(
+                hypothesis.description, hypothesis.verification_spec
+            )
+            if scope_error:
+                return None, scope_error
+
+            rows = candidate.get("evidence") or []
+            field, expected = observation["field"], observation["value"]
+            # A timestamp copied from a different field is a drafting error,
+            # not a reason to search for an unrelated record with that value.
+            if (
+                observation["operator"] == "equals"
+                and _observation_utc_datetime(expected) is not None
+                and not any(
+                    _observation_value_matches(row.get(field), "equals", expected)
+                    for row in rows
+                )
+            ):
+                actual_fields = sorted(
+                    {
+                        key
+                        for row in rows
+                        for key, value in row.items()
+                        if key != field
+                        and _observation_value_matches(value, "equals", expected)
+                    }
+                )
+                if actual_fields:
+                    return (
+                        None,
+                        f"observation-field-value-mismatch: value belongs to {', '.join(actual_fields)}, not {field}",
+                    )
+            targets = sorted(
+                {
+                    str(row.get("evidence_id") or row.get("artifact_id"))
+                    for row in rows
+                    if row.get("evidence_id") or row.get("artifact_id")
+                }
+            )
+            if not targets:
+                return None, "observation-target-missing"
+            observation["evidence_ids"] = targets
+            refute_observation = hypothesis.verification_spec.refute_conditions.get(
+                "observation"
+            )
+            if isinstance(refute_observation, dict):
+                if refute_observation.get("family") != observation["family"]:
+                    return None, "observation-refute-target-family-mismatch"
+                refute_observation["evidence_ids"] = targets
+            hypothesis.description = canonical_observation_claim(
+                hypothesis.verification_spec
+            )
         keypoint_id = gap.get("keypoint_id", "")
         if (
             keypoint_id
