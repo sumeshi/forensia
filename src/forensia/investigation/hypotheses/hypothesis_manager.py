@@ -283,30 +283,58 @@ def _feed_verdict_to_timeline(
     verdict: str,
     description: str,
     sample_rows: list[dict[str, Any]] | None,
+    verification_spec: Any,
 ) -> None:
-    """Feeder (b): insert the decisive query row timestamp into case_timeline."""
+    """Place a verdict at the verified evidence time, never an unrelated timestamp."""
+    from datetime import datetime
+
+    from forensia.db.evidence_lookup import (
+        canonical_record_table,
+        fetch_evidence_records,
+    )
+    from forensia.investigation.verification.assessment import (
+        _observation_value_matches,
+    )
+
     if verdict not in {"confirmed", "refuted"}:
         return
+    conditions = (
+        verification_spec.support_conditions
+        if verdict == "confirmed"
+        else verification_spec.refute_conditions
+    )
+    observation = conditions.get("observation")
+    if "observation" in verification_spec.support_conditions and not observation:
+        return
+    ids = [
+        str(row.get("evidence_id") or row.get("artifact_id"))
+        for row in sample_rows or []
+        if isinstance(row, dict) and (row.get("evidence_id") or row.get("artifact_id"))
+    ]
+    records = fetch_evidence_records(db, ids)
     timestamp = None
     host = ""
     evidence_id = ""
-    for row in sample_rows or []:
-        if not isinstance(row, dict):
-            continue
-        for ts_key in (
-            "timestamp",
-            "logon_time",
-            "exec_time",
-            "last_exec_time",
-            "si_modified",
-        ):
-            candidate = row.get(ts_key)
-            if candidate is not None and str(candidate).strip():
-                timestamp = candidate
-                host = str(row.get("computer") or row.get("host") or "")
-                evidence_id = str(row.get("evidence_id") or "")
-                break
-        if timestamp is not None:
+    for evidence_id in ids:
+        row = records.get(evidence_id, {})
+        if observation:
+            if row.get("_source") != canonical_record_table(observation["family"]):
+                continue
+            targets = observation.get("evidence_ids") or []
+            if targets and evidence_id not in targets:
+                continue
+            candidate = row.get(observation["field"])
+            if not _observation_value_matches(
+                candidate, observation["operator"], observation["value"]
+            ):
+                continue
+        else:
+            candidate = (
+                row.get("timestamp") if row.get("_source") == "evtx_events" else None
+            )
+        if isinstance(candidate, datetime):
+            timestamp = candidate
+            host = str(row.get("computer") or row.get("host") or "")
             break
     if timestamp is None:
         return
@@ -554,7 +582,12 @@ def _resolve_hypothesis_in_transaction(
             # Propagate verdict through relations
             propagate_verdict(db, hypothesis_id=hypothesis_id, verdict=verdict)
             _feed_verdict_to_timeline(
-                db, item.id, verdict, item.description, sample_rows
+                db,
+                item.id,
+                verdict,
+                item.description,
+                sample_rows,
+                item.verification_spec,
             )
             # R5-03: Mark stale based on target_keypoint_id (runs regardless of source_rule_ids)
             if item.target_keypoint_id:

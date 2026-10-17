@@ -30,6 +30,56 @@ from forensia.report.sections.section_taxonomy import sections_for_keypoint
 
 
 class TestHypothesisAdmissionConformance(unittest.TestCase):
+    def test_verdict_timeline_uses_verified_canonical_timestamp(self) -> None:
+        from datetime import datetime
+
+        from forensia.investigation.hypotheses.hypothesis_manager import (
+            _feed_verdict_to_timeline,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir, CaseDB(Case.init(tmpdir)) as db:
+            db.execute(
+                "INSERT INTO mft_entries (evidence_id, fn_created, si_modified, is_deleted) "
+                "VALUES ('mft-target', '2038-04-05 06:07:08', '2002-01-02 03:04:05', true)"
+            )
+            for field, value, expected in (
+                ("fn_created", "2038-04-05 06:07:08", datetime(2038, 4, 5, 6, 7, 8)),
+                ("si_modified", "2002-01-02 03:04:05", datetime(2002, 1, 2, 3, 4, 5)),
+                ("is_deleted", True, None),
+            ):
+                hyp = Hypothesis(
+                    id=field,
+                    description="A typed observation",
+                    confirm_when={
+                        "observation": {
+                            "family": "mft",
+                            "capability": "file_activity",
+                            "field": field,
+                            "operator": "equals",
+                            "value": value,
+                            "evidence_ids": ["mft-target"],
+                        }
+                    },
+                )
+                _feed_verdict_to_timeline(
+                    db,
+                    hyp.id,
+                    "confirmed",
+                    hyp.description,
+                    [
+                        {
+                            "evidence_id": "mft-target",
+                            "timestamp": "1999-01-01",
+                            "fn_created": "1999-02-02",
+                        }
+                    ],
+                    hyp.verification_spec,
+                )
+                result = db.execute(
+                    "SELECT timestamp FROM case_timeline WHERE ref_id = ?", [field]
+                ).fetchone()
+                self.assertEqual((expected,) if expected else None, result)
+
     def test_rejects_unmaterialized_or_unverifiable_claims(self) -> None:
         state = SessionState(session_id="S-admission")
 

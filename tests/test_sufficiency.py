@@ -741,6 +741,18 @@ class SufficiencyEvaluationTests(unittest.TestCase):
         datetime_cases = (
             (datetime(2026, 1, 2), "greater_than", "2026-01-01T00:00:00Z", True),
             (
+                "2026-01-01T00:00:00Z",
+                "less_than",
+                "2026-01-02T00:00:00Z",
+                True,
+            ),
+            (
+                "2026-01-02T00:00:00Z",
+                "less_than",
+                "2026-01-01T00:00:00Z",
+                False,
+            ),
+            (
                 datetime(2026, 1, 1),
                 "greater_than",
                 "2026-01-01T01:00:00+01:00",
@@ -900,6 +912,147 @@ class SufficiencyEvaluationTests(unittest.TestCase):
         refutation = settle(canonical_claim or "", "refuted", role="contradictory")
         self.assertEqual("inconclusive", refutation.verdict)
         self.assertIn("no_supporting_evidence_link", refutation.reason)
+
+    def test_finite_typed_refutation_requires_all_current_contradictory_targets(
+        self,
+    ) -> None:
+        from forensia.core.verification import VerificationSpec
+
+        target_ids = ["mft-target-a", "mft-target-b"]
+        support = {
+            "observation": {
+                "family": "mft",
+                "capability": "file_activity",
+                "field": "is_deleted",
+                "operator": "equals",
+                "value": True,
+                "evidence_ids": target_ids,
+            }
+        }
+        refute = {
+            "observation": {
+                **support["observation"],
+                "value": False,
+            }
+        }
+        description = canonical_observation_claim({"support_conditions": support}) or ""
+        hypothesis = Hypothesis(
+            id="H-FINITE-TYPED-REFUTATION",
+            description=description,
+            verification_spec=VerificationSpec(
+                support_conditions=support,
+                refute_conditions=refute,
+            ),
+        )
+        si = build_settlement_input_from_confirm_when(
+            hypothesis=hypothesis,
+            checker_verdict="inconclusive",
+            check_summary="The target records are not marked deleted.",
+        )
+
+        def link(evidence_id: str, role: str) -> EvidenceLink:
+            return EvidenceLink(
+                link_id=f"L-{evidence_id}-{role}",
+                hypothesis_id=hypothesis.id,
+                evidence_id=evidence_id,
+                finding_id="",
+                query_id="Q-finite-refutation",
+                assessment_id=f"EA-{evidence_id}-{role}",
+                role=role,
+                source_family="mft",
+                source_file="active.bin",
+                derivation_group=evidence_id,
+                strength="strong",
+            )
+
+        complete = decide_settlement(
+            si,
+            links=[link(evidence_id, "contradictory") for evidence_id in target_ids],
+            coverage={},
+            canonical_records={
+                evidence_id: {"is_deleted": False} for evidence_id in target_ids
+            },
+        )
+        self.assertEqual("refuted", complete.verdict)
+        self.assertIn("finite_typed_target_refuted", complete.gates_passed)
+
+        incomplete = decide_settlement(
+            si,
+            links=[link(target_ids[0], "contradictory")],
+            coverage={},
+            canonical_records={
+                evidence_id: {"is_deleted": False} for evidence_id in target_ids
+            },
+        )
+        self.assertEqual("inconclusive", incomplete.verdict)
+        self.assertNotIn("Typed observation scope unproven", incomplete.reason)
+
+        conflicting = decide_settlement(
+            si,
+            links=[
+                *(link(evidence_id, "contradictory") for evidence_id in target_ids),
+                link(target_ids[0], "supporting"),
+            ],
+            coverage={},
+            canonical_records={
+                evidence_id: {"is_deleted": False} for evidence_id in target_ids
+            },
+        )
+        self.assertEqual("inconclusive", conflicting.verdict)
+        self.assertNotIn("Typed observation scope unproven", conflicting.reason)
+
+        no_declared_refute = Hypothesis(
+            id="H-NO-TYPED-REFUTE",
+            description=description,
+            verification_spec=VerificationSpec(support_conditions=support),
+        )
+        no_refute = decide_settlement(
+            build_settlement_input_from_confirm_when(
+                hypothesis=no_declared_refute,
+                checker_verdict="inconclusive",
+                check_summary="The target records are not marked deleted.",
+            ),
+            links=[link(evidence_id, "contradictory") for evidence_id in target_ids],
+            coverage={},
+        )
+        self.assertEqual("inconclusive", no_refute.verdict)
+
+        numeric_support = {
+            "observation": {
+                **support["observation"],
+                "field": "size",
+                "value": "2",
+            }
+        }
+        numeric_refute = {
+            "observation": {
+                **numeric_support["observation"],
+                "value": "2.0",
+            }
+        }
+        numeric_hypothesis = Hypothesis(
+            id="H-NUMERIC-OVERLAP",
+            description=(
+                canonical_observation_claim({"support_conditions": numeric_support})
+                or ""
+            ),
+            verification_spec=VerificationSpec(
+                support_conditions=numeric_support,
+                refute_conditions=numeric_refute,
+            ),
+        )
+        numeric_decision = decide_settlement(
+            build_settlement_input_from_confirm_when(
+                hypothesis=numeric_hypothesis,
+                checker_verdict="inconclusive",
+                check_summary="The canonical value is 2.",
+            ),
+            links=[link(evidence_id, "contradictory") for evidence_id in target_ids],
+            coverage={},
+            canonical_records={evidence_id: {"size": 2} for evidence_id in target_ids},
+        )
+        self.assertEqual("inconclusive", numeric_decision.verdict)
+        self.assertNotIn("Typed observation scope unproven", numeric_decision.reason)
 
     def test_observation_without_canonical_row_id_cannot_become_a_witness(self) -> None:
         assessment = assess_evidence_group(

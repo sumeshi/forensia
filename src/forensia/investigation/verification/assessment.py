@@ -172,18 +172,23 @@ def _observation_value_matches(value: Any, operator: str, expected: Any) -> bool
         return any(
             wanted in str(item).casefold() for item in values if item is not None
         )
-    if operator == "greater_than":
+    if operator in {"greater_than", "less_than"}:
+        compare = (
+            (lambda actual, wanted: actual > wanted)
+            if operator == "greater_than"
+            else (lambda actual, wanted: actual < wanted)
+        )
         actual_number = _finite_decimal(value)
         expected_number = _finite_decimal(expected)
         if actual_number is not None and expected_number is not None:
-            return actual_number > expected_number
+            return compare(actual_number, expected_number)
         if isinstance(value, datetime):
             actual_time = _observation_utc_datetime(value)
             expected_time = _observation_utc_datetime(expected)
             return (
                 actual_time is not None
                 and expected_time is not None
-                and actual_time > expected_time
+                and compare(actual_time, expected_time)
             )
         try:
             actual_time = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
@@ -192,7 +197,7 @@ def _observation_value_matches(value: Any, operator: str, expected: Any) -> bool
                 if isinstance(expected, datetime)
                 else datetime.fromisoformat(str(expected).replace("Z", "+00:00"))
             )
-            return actual_time > expected_time
+            return compare(actual_time, expected_time)
         except TypeError, ValueError, OverflowError:
             return False
     return False

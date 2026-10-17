@@ -21,6 +21,7 @@ from typing import Any, Literal
 from forensia.context.retrieval import RetrievalEvaluation
 from forensia.core.session import Hypothesis
 from forensia.db.database import CaseDB
+from forensia.db.evidence_lookup import fetch_evidence_records, routed_family
 from forensia.evidence.links import EvidenceLink, load_evidence_links
 from forensia.investigation.verification.sufficiency import (
     SufficiencyResult,
@@ -31,6 +32,7 @@ from forensia.knowledge.coverage import (
     derive_required_capabilities,
     get_coverage_summary,
     observation_claim_scope_error,
+    observation_condition_error,
     relevant_coverage_states,
 )
 
@@ -342,11 +344,24 @@ def settle_hypothesis(
     evidence_requirements: dict[str, Any] | None = None,
 ) -> SettlementDecision:
     """Load authoritative state and delegate to the pure decision function."""
+    observation = si.hypothesis.verification_spec.support_conditions.get("observation")
+    target_ids = (
+        sorted(
+            {
+                str(evidence_id).strip()
+                for evidence_id in observation.get("evidence_ids", [])
+                if str(evidence_id).strip()
+            }
+        )
+        if isinstance(observation, dict)
+        else []
+    )
     return decide_settlement(
         si,
         links=load_evidence_links(db, si.hypothesis.id, current_only=True),
         coverage=get_coverage_summary(db),
         evidence_requirements=evidence_requirements,
+        canonical_records=fetch_evidence_records(db, target_ids),
     )
 
 
@@ -356,6 +371,7 @@ def decide_settlement(
     links: list[EvidenceLink],
     coverage: dict[str, dict[str, str]],
     evidence_requirements: dict[str, Any] | None = None,
+    canonical_records: dict[str, dict[str, Any]] | None = None,
 ) -> SettlementDecision:
     """Return a settlement decision without reading or mutating external state.
 
@@ -406,6 +422,12 @@ def decide_settlement(
                 ),
                 gates_passed=["auto_refute_zero_rows"],
             )
+    if _finite_typed_observation_refuted(si, links, canonical_records or {}):
+        return SettlementDecision(
+            verdict="refuted",
+            reason="Finite typed target set has current assessed contradictory evidence",
+            gates_passed=["finite_typed_target_refuted"],
+        )
     # ── Confirmed ──
     # Co-observation is a deterministic correlation gate, not a semantic
     # verdict.  In particular, a rule may declare a corroborating event that
@@ -559,6 +581,78 @@ def decide_settlement(
         reason="No settlement conditions met",
         allowed=False,
     )
+
+
+def _finite_typed_observation_refuted(
+    si: SettlementInput,
+    links: list[EvidenceLink],
+    canonical_records: dict[str, dict[str, Any]],
+) -> bool:
+    support = si.hypothesis.verification_spec.support_conditions
+    refute = si.hypothesis.verification_spec.refute_conditions
+    if observation_condition_error(support) or observation_condition_error(refute):
+        return False
+    support_observation = support["observation"]
+    refute_observation = refute["observation"]
+    target_ids = {
+        str(evidence_id).strip()
+        for evidence_id in support_observation.get("evidence_ids", [])
+        if str(evidence_id).strip()
+    }
+    refute_ids = {
+        str(evidence_id).strip()
+        for evidence_id in refute_observation.get("evidence_ids", [])
+        if str(evidence_id).strip()
+    }
+    if (
+        not target_ids
+        or refute_observation.get("operator") != "equals"
+        or refute_ids != target_ids
+        or any(
+            str(refute_observation.get(key) or "").strip().casefold()
+            != str(support_observation.get(key) or "").strip().casefold()
+            for key in ("family", "capability", "field")
+        )
+    ):
+        return False
+
+    from forensia.investigation.verification.assessment import (
+        _observation_value_matches,
+    )
+
+    family = str(support_observation.get("family") or "").strip().casefold()
+    field = str(support_observation.get("field") or "")
+    if any(
+        evidence_id not in canonical_records
+        or routed_family(evidence_id) != family
+        or not _observation_value_matches(
+            canonical_records[evidence_id].get(field),
+            str(refute_observation.get("operator") or ""),
+            refute_observation.get("value"),
+        )
+        or _observation_value_matches(
+            canonical_records[evidence_id].get(field),
+            str(support_observation.get("operator") or ""),
+            support_observation.get("value"),
+        )
+        for evidence_id in target_ids
+    ):
+        return False
+
+    target_links = [
+        link
+        for link in links
+        if link.evidence_id in target_ids
+        and link.source_family.strip().casefold() == family
+        and str(link.assessment_id or "").strip()
+    ]
+    contradictory_ids = {
+        link.evidence_id for link in target_links if link.role == "contradictory"
+    }
+    supporting_ids = {
+        link.evidence_id for link in target_links if link.role == "supporting"
+    }
+    return target_ids.issubset(contradictory_ids) and not supporting_ids
 
 
 def build_settlement_input_from_confirm_when(
