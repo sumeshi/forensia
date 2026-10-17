@@ -18,6 +18,25 @@ from forensia.db.database import CaseDB
 
 
 class DryRunValidationTests(unittest.TestCase):
+    def test_dry_run_propagates_operational_duckdb_errors(self) -> None:
+        for error_type in (
+            duckdb.IOException,
+            duckdb.ConnectionException,
+            duckdb.InterruptException,
+            duckdb.InternalException,
+            duckdb.OutOfMemoryException,
+        ):
+            with self.subTest(error_type=error_type.__name__):
+
+                class BrokenConnection:
+                    def execute(self, _sql: str) -> None:
+                        raise error_type("database execution failed")
+
+                with self.assertRaises(error_type):
+                    validate_select_sql_with_dryrun(
+                        "SELECT x FROM t", BrokenConnection()
+                    )
+
     def test_reports_binder_errors_and_returns_valid_sql(self) -> None:
         with duckdb.connect(":memory:") as conn:
             conn.execute("CREATE TABLE t (x INTEGER)")

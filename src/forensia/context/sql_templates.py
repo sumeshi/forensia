@@ -267,8 +267,8 @@ def validate_select_sql_with_dryrun(sql: str, db: Any) -> str:
     or tables (the host's deterministic column validation). `db` is anything with
     a DuckDB-backed ``.execute`` (raw connection or CaseDB). This is a binder-level
     check only; run `validate_select_sql` first for the read-only/allowlist/
-    placeholder/row-limit guarantees. Returns the normalized SQL on success,
-    raises ValueError with the first line of the DuckDB error message on failure.
+    placeholder/row-limit guarantees. Returns normalized SQL on success, converts
+    SQL errors to ValueError, and lets operational database errors propagate.
     """
     normalized = sql.strip().rstrip(";").strip()
     if not normalized:
@@ -276,7 +276,7 @@ def validate_select_sql_with_dryrun(sql: str, db: Any) -> str:
     _enforce_row_limit(normalized)
     try:
         db.execute(f"EXPLAIN {normalized}")
-    except duckdb.Error as exc:
+    except (duckdb.ProgrammingError, duckdb.DataError, duckdb.NotSupportedError) as exc:
         msg = str(exc).split("\n")[0].strip()
         raise ValueError(msg) from exc
     return normalized
