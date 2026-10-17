@@ -5,18 +5,22 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from forensia.config import get_llm_settings
+from forensia.config import get_llm_settings, get_settings
 from forensia.context.prompt_context import fit_prompt_messages
 from forensia.core.control import InvestigationStopped, check_stop
 from forensia.llm.llm_client import (
     LLMContextWindowError,
+    LLMOutageBudgetExceededError,
     LLMOutputTruncatedError,
     LLMServerUnavailableError,
+    LLMStructuredOutputError,
     chat_completion,
+    outage_wait_until_recovered_sync,
 )
 from forensia.llm.telemetry import (
     LLMBudgetExceededError,
@@ -35,12 +39,19 @@ _TRUNCATION_RECOVERY = (
     "analysis, repetition, markdown, and fields not required by the schema. "
     "Keep each explanatory string under 240 characters.</RETRY_CONSTRAINT>"
 )
+_STRUCTURED_OUTPUT_RECOVERY = (
+    "<RETRY_CONSTRAINT>The provider could not parse the generated output. "
+    "Return exactly one JSON object matching OUTPUT_SCHEMA. Do not include "
+    "analysis, reasoning, markdown, or text before or after the JSON object. "
+    "Keep the same requested scope and use concise values.</RETRY_CONSTRAINT>"
+)
 
 
-def _messages_for_truncation_retry(
+def _messages_for_output_retry(
     messages: list[dict[str, str]],
+    instruction: str,
 ) -> list[dict[str, str]]:
-    """Change the request after truncation without discarding input evidence."""
+    """Change a request without discarding input evidence."""
     retried = [dict(item) for item in messages]
     target = next(
         (
@@ -51,10 +62,10 @@ def _messages_for_truncation_retry(
         None,
     )
     if target is None:
-        retried.append({"role": "user", "content": _TRUNCATION_RECOVERY})
+        retried.append({"role": "user", "content": instruction})
     else:
         content = str(retried[target].get("content") or "")
-        retried[target]["content"] = f"{content}\n\n{_TRUNCATION_RECOVERY}"
+        retried[target]["content"] = f"{content}\n\n{instruction}"
     if hasattr(messages, "retrieval_event_ids"):
         from forensia.context.prompt_context import PromptMessages
 
@@ -168,11 +179,11 @@ def _request_json_repair(
         status_callback("Malformed JSON returned by LLM. Requesting JSON repair.")
     messages = _json_repair_messages(broken_output, parse_error)
     check_stop()
-    return chat_completion(
+    return _chat_completion_resuming_outage(
         messages=messages,
         model=model,
         base_url=base_url,
-        status_callback=None,
+        status_callback=status_callback,
         logical_call_id=logical_call_id,
         attempt_ordinal=ordinal if ordinal is not None else 0,
         phase="json_repair",
@@ -225,6 +236,53 @@ def parse_llm_json(
         ) from error
 
 
+def _chat_completion_resuming_outage(
+    *,
+    status_callback: Callable[[str], None] | None = None,
+    retry_metadata: dict[str, Any] | None = None,
+    **kwargs: Any,
+) -> str:
+    deadline = None
+    retry_metadata = retry_metadata if retry_metadata is not None else {}
+    while True:
+        try:
+            return chat_completion(
+                **(kwargs | {"status_callback": status_callback} | retry_metadata)
+            )
+        except LLMOutageBudgetExceededError:
+            raise
+        except LLMServerUnavailableError:
+            budget_s = get_settings().llm_outage_wall_clock_budget_s
+            deadline = deadline or (time.monotonic() + budget_s)
+            remaining_s = deadline - time.monotonic()
+            if remaining_s <= 0:
+                raise LLMOutageBudgetExceededError(
+                    f"LLM outage budget exceeded ({budget_s}s)"
+                )
+            if status_callback:
+                status_callback(
+                    "LLM unavailable; waiting before resuming the same request"
+                )
+            interval_s = get_settings().llm_outage_probe_interval_s
+            until = min(deadline, time.monotonic() + interval_s)
+            while time.monotonic() < until:
+                check_stop()
+                time.sleep(min(0.25, max(0, until - time.monotonic())))
+            retry_metadata.update(
+                retry_class="outage_recovery",
+                retry_reason="transport failure; resumed the same request after recovery wait",
+                policy_decision="resume_same_request",
+            )
+            remaining_s = deadline - time.monotonic()
+            outage_wait_until_recovered_sync(
+                kwargs["base_url"], status_callback, budget_s=remaining_s
+            )
+            if time.monotonic() >= deadline:
+                raise LLMOutageBudgetExceededError(
+                    f"LLM outage budget exceeded ({budget_s}s)"
+                )
+
+
 def request_llm_json(
     messages: list[dict[str, str]],
     base_url: str,
@@ -256,12 +314,14 @@ def request_llm_json(
     context_compaction_used = False
     context_retry_fields: dict[str, Any] | None = None
     truncation_retry_fields: dict[str, Any] | None = None
+    structured_retry_fields: dict[str, Any] | None = None
     configured_cap = int(get_llm_settings()["max_tokens"])
     base_max = min(int(max_tokens), configured_cap) if max_tokens else configured_cap
     for _ in range(MAX_JSON_COMPLETION_ATTEMPTS):
+        outage_retry_metadata: dict[str, Any] = {}
         try:
             try:
-                output = chat_completion(
+                output = _chat_completion_resuming_outage(
                     messages=messages,
                     model=model,
                     base_url=base_url,
@@ -271,10 +331,18 @@ def request_llm_json(
                     logical_call_id=logical_call_id,
                     attempt_ordinal=ordinal,
                     phase=telemetry_phase,
-                    retry_class=("truncation" if truncation_retry_fields else None),
+                    retry_class=(
+                        "truncation"
+                        if truncation_retry_fields
+                        else "structured_parse"
+                        if structured_retry_fields
+                        else None
+                    ),
                     retry_reason=(
                         "finish_reason=length; concise JSON retry within original cap"
                         if truncation_retry_fields
+                        else "provider could not parse generated output"
+                        if structured_retry_fields
                         else None
                     ),
                     policy_decision=(
@@ -282,11 +350,16 @@ def request_llm_json(
                         if context_retry_fields
                         else "constrain_output"
                         if truncation_retry_fields
+                        else "restate_structured_output"
+                        if structured_retry_fields
                         else None
                     ),
                     request_changed_fields=(
-                        context_retry_fields or truncation_retry_fields
+                        context_retry_fields
+                        or truncation_retry_fields
+                        or structured_retry_fields
                     ),
+                    retry_metadata=outage_retry_metadata,
                 )
             except LLMOutputTruncatedError as exc:
                 if exc.content:
@@ -300,7 +373,7 @@ def request_llm_json(
                 if correction_budget[0] <= 0:
                     raise
                 correction_budget[0] -= 1
-                messages = _messages_for_truncation_retry(messages)
+                messages = _messages_for_output_retry(messages, _TRUNCATION_RECOVERY)
                 truncation_retry_fields = {
                     "decision": "constrain_output",
                     "max_tokens": base_max,
@@ -308,6 +381,25 @@ def request_llm_json(
                 if status_callback:
                     status_callback(
                         "LLM output truncated; retrying once within the original output cap"
+                    )
+                continue
+            except LLMStructuredOutputError as exc:
+                if (
+                    exc.error_code != "generated_output_parse_failed"
+                    or correction_budget[0] <= 0
+                ):
+                    raise
+                correction_budget[0] -= 1
+                messages = _messages_for_output_retry(
+                    messages, _STRUCTURED_OUTPUT_RECOVERY
+                )
+                structured_retry_fields = {
+                    "decision": "restate_structured_output",
+                    "error_code": exc.error_code,
+                }
+                if status_callback:
+                    status_callback(
+                        "LLM could not parse generated output; retrying once with the same schema"
                     )
                 continue
             if not output or not output.strip():

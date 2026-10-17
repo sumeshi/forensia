@@ -633,7 +633,7 @@ def test_client_creates_timeout_attempt_receipt(tmp_path, monkeypatch) -> None:
     assert rows[0][1] == "timeout"
     assert rows[0][2] == "read"
     assert len(rows) == 1
-    assert messages == ["LLM request timed out; not replaying it as an outage"]
+    assert messages == ["LLM request timed out; entering outage recovery"]
 
 
 def _truncated_response() -> httpx.Response:

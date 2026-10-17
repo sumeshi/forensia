@@ -56,6 +56,7 @@ from forensia.llm import json_response
 from forensia.llm.llm_client import (
     LLMRequestTimeoutError,
     LLMServerUnavailableError,
+    LLMStructuredOutputError,
 )
 from forensia.llm.telemetry import get_active_telemetry, telemetry_scope
 from forensia.report.answers.keypoint_catalog import (
@@ -909,6 +910,46 @@ async def _draft_and_admit_candidate(
             "correction_calls_used": prior_correction_calls + 1 - correction_budget[0],
             "draft_calls_used": draft_calls_used,
         }
+    except LLMStructuredOutputError as exc:
+        if exc.error_code != "generated_output_parse_failed":
+            logical_status = "failed"
+            save_outcome(
+                {
+                    "status": "failed",
+                    "error_type": type(exc).__name__,
+                    "error_code": exc.error_code,
+                    "reason": str(exc)[:300],
+                    "attempt_number": attempt_number,
+                    "correction_calls_used": prior_correction_calls
+                    + 1
+                    - correction_budget[0],
+                    "draft_calls_used": draft_calls_used,
+                }
+            )
+            raise
+        reason = f"generated_output_parse_failed: {str(exc)[:300]}"
+        save_outcome(
+            {
+                "status": "generation_failed",
+                "error_type": type(exc).__name__,
+                "error_code": exc.error_code,
+                "reason": reason,
+                "attempt_number": attempt_number,
+                "correction_calls_used": prior_correction_calls
+                + 1
+                - correction_budget[0],
+                "draft_calls_used": draft_calls_used,
+            }
+        )
+        logical_status = "failed"
+        return None, {
+            "candidate_ref": candidate_ref,
+            "status": "generation_failed",
+            "reason": reason,
+            "attempt_number": attempt_number,
+            "correction_calls_used": prior_correction_calls + 1 - correction_budget[0],
+            "draft_calls_used": draft_calls_used,
+        }
     except BaseException as exc:
         logical_status = (
             "discarded" if isinstance(exc, InvestigationStopped) else "failed"
@@ -1176,6 +1217,11 @@ async def _run_broad_plan_step(
             terminal_error={
                 "error_type": type(exc).__name__,
                 "reason": str(exc)[:300],
+                **(
+                    {"error_code": exc.error_code}
+                    if isinstance(exc, LLMStructuredOutputError)
+                    else {}
+                ),
             },
         )
 
@@ -1194,6 +1240,13 @@ async def _run_broad_plan_step(
                 raise
             except LLMServerUnavailableError:
                 raise
+            except LLMStructuredOutputError as exc:
+                if exc.error_code != "generated_output_parse_failed":
+                    raise
+                gap_identification_error = (
+                    f"generated_output_parse_failed: {str(exc)[:240]}"
+                )
+                gap_areas = []
             except RuntimeError as exc:
                 gap_identification_error = str(exc)[:240]
                 gap_areas = []
@@ -1312,6 +1365,9 @@ async def _run_broad_plan_step(
         _emit_broad_plan_result(ctx, drafted_hypotheses, stop_flag, candidate_summary)
         return stop_flag
     except InvestigationStopped as exc:
+        save_terminal_plan(exc)
+        raise
+    except LLMStructuredOutputError as exc:
         save_terminal_plan(exc)
         raise
     except httpx.HTTPStatusError as exc:

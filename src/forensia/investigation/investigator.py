@@ -55,6 +55,7 @@ from forensia.investigation.work_state import (
 from forensia.knowledge.coverage import refresh_evidence_coverage
 from forensia.llm.llm_client import (
     LLMServerUnavailableError,
+    LLMStructuredOutputError,
     close_llm_clients,
     reset_llm_client_scope,
     set_llm_client_scope,
@@ -698,6 +699,10 @@ async def investigate(
         status = "stopped"
         stop_reason_code = "budget_exhausted"
         _log("FINALIZE", "LLM logical-call budget exhausted", level="warning")
+    except LLMStructuredOutputError as exc:
+        status = "failed"
+        stop_reason_code = exc.error_code
+        raise
     except Exception:
         status = "failed"
         stop_reason_code = "exception"

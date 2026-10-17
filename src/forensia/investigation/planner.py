@@ -313,7 +313,7 @@ def persist_hypothesis_plan_result(
             iteration=iteration,
             kind="hypothesis.plan_rejected",
             status="failed",
-            severity="error" if reason.startswith("planner_failed:") else "warning",
+            severity="error" if reason == "planner_failed" else "warning",
             reason="planner_validation_failed"
             if reason.startswith("invalid_action:")
             else reason.split(":", 1)[0],

@@ -1220,8 +1220,9 @@ class IndexedContextTests(unittest.TestCase):
     ) -> None:
         from forensia.context.prompt_context import PromptMessages
         from forensia.llm.json_response import (
+            _TRUNCATION_RECOVERY,
             _compact_messages_after_context_rejection,
-            _messages_for_truncation_retry,
+            _messages_for_output_retry,
         )
         from forensia.llm.request_metadata import prompt_metadata
 
@@ -1293,13 +1294,19 @@ class IndexedContextTests(unittest.TestCase):
             self.assertEqual(
                 prompt_metadata(rejected_fitted), prompt_metadata(no_op_fitted)
             )
-            truncation_retry = _messages_for_truncation_retry(rejected_fitted)
+            truncation_retry = _messages_for_output_retry(
+                rejected_fitted, _TRUNCATION_RECOVERY
+            )
             retry_metadata = prompt_metadata(truncation_retry)
             self.assertEqual(
                 prompt_metadata(rejected_fitted)["omitted_optional_blocks"],
                 retry_metadata["omitted_optional_blocks"],
             )
             self.assertEqual(["retrieval-1"], retry_metadata["retrieval_event_ids"])
+            self.assertIn(
+                _TRUNCATION_RECOVERY,
+                "\n".join(message["content"] for message in truncation_retry),
+            )
 
 
 if __name__ == "__main__":

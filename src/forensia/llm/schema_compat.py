@@ -1,22 +1,9 @@
-"""OpenAI-compatible response-schema negotiation and per-endpoint downgrade cache."""
+"""OpenAI-compatible response-schema negotiation."""
 
 from __future__ import annotations
 
 from collections.abc import Callable
 from typing import Any
-
-_SCHEMA_MODE_CACHE: dict[str, str] = {}
-_SCHEMA_MODE_RANK = {"strict": 2, "compatible": 1, "none": 0}
-
-
-def initial_schema_mode(base_url: str) -> str:
-    return _SCHEMA_MODE_CACHE.get(base_url, "strict")
-
-
-def _remember_schema_mode(base_url: str, mode: str) -> None:
-    current = _SCHEMA_MODE_CACHE.get(base_url, "strict")
-    if _SCHEMA_MODE_RANK[mode] < _SCHEMA_MODE_RANK[current]:
-        _SCHEMA_MODE_CACHE[base_url] = mode
 
 
 def schema_response_format(json_schema: dict, *, strict: bool) -> dict[str, Any]:
@@ -37,25 +24,21 @@ def downgrade_schema_mode(
     status_callback: Callable[[str], None] | None,
     *,
     status_code: int,
-    base_url: str,
+    error_body: str,
 ) -> str | None:
-    """Downgrade response_format only as far as required for compatibility."""
-    if not json_schema or schema_mode == "none":
+    """Retry strict-schema rejection without strict mode, retaining the schema."""
+    message = error_body.lower()
+    explicitly_rejected_strict = (
+        "strict" in message
+        and ("schema" in message or "response_format" in message)
+        and any(word in message for word in ("unsupported", "not supported", "reject"))
+    )
+    if json_schema is None or schema_mode != "strict" or not explicitly_rejected_strict:
         return None
-    if schema_mode == "strict":
-        body["response_format"] = schema_response_format(json_schema, strict=False)
-        _remember_schema_mode(base_url, "compatible")
-        if status_callback:
-            status_callback(
-                f"LLM server rejected strict json_schema ({status_code}); "
-                "retrying with compatible json_schema"
-            )
-        return "compatible"
-    body.pop("response_format", None)
-    _remember_schema_mode(base_url, "none")
+    body["response_format"] = schema_response_format(json_schema, strict=False)
     if status_callback:
         status_callback(
-            f"LLM server rejected json_schema ({status_code}); "
-            "retrying without response_format constraint"
+            f"LLM server rejected strict json_schema ({status_code}); "
+            "retrying with compatible json_schema"
         )
-    return "none"
+    return "compatible"

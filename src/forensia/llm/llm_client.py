@@ -5,10 +5,12 @@ from __future__ import annotations
 import asyncio
 import atexit
 import contextvars
+import json
 import logging
 import threading
 import time
 from collections.abc import Callable
+from copy import deepcopy
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -43,9 +45,6 @@ from forensia.llm.schema_compat import (
     downgrade_schema_mode as _downgrade_schema_mode,
 )
 from forensia.llm.schema_compat import (
-    initial_schema_mode as _initial_schema_mode,
-)
-from forensia.llm.schema_compat import (
     schema_response_format as _schema_response_format,
 )
 from forensia.llm.telemetry import (
@@ -62,6 +61,7 @@ __all__ = [
     "LLMRequestTimeoutError",
     "LLMOutputTruncatedError",
     "LLMContextWindowError",
+    "LLMStructuredOutputError",
     "chat_completion",
     "set_active_telemetry",
     "get_active_telemetry",
@@ -74,12 +74,12 @@ class LLMServerUnavailableError(RuntimeError):
     """Raised when LLM server is unresponsive after call-level retries. Caller should enter outage_wait."""
 
 
-class LLMRequestTimeoutError(LLMServerUnavailableError):
-    """A connected provider exceeded the per-request deadline.
+class LLMOutageBudgetExceededError(LLMServerUnavailableError):
+    """Provider recovery exceeded its wall-clock budget; no replay is allowed."""
 
-    This is a call/output failure, not proof of a server outage, so callers must
-    not enter the outage recovery loop and replay the same expensive request.
-    """
+
+class LLMRequestTimeoutError(LLMServerUnavailableError):
+    """A provider request exceeded its deadline and can resume after recovery."""
 
 
 class LLMOutputTruncatedError(RuntimeError):
@@ -96,6 +96,21 @@ class LLMContextWindowError(RuntimeError):
     def __init__(self, message: str, *, status_code: int, body: str) -> None:
         super().__init__(message)
         self.status_code = status_code
+        self.body = body[:500]
+
+
+class LLMStructuredOutputError(RuntimeError):
+    """The provider rejected a response schema or could not parse its output."""
+
+    def __init__(self, *, status_code: int, error_code: str, body: str) -> None:
+        reason = (
+            "rejected the response schema"
+            if error_code == "response_schema_rejected"
+            else "could not parse generated structured output"
+        )
+        super().__init__(f"LLM provider {reason} (HTTP {status_code}): {body[:500]}")
+        self.status_code = status_code
+        self.error_code = error_code
         self.body = body[:500]
 
 
@@ -271,6 +286,23 @@ def chat_completion(
         logical_call_id = telemetry.begin_logical_call(phase=phase or "chat_completion")
         owned = True
     try:
+        if json_schema is not None:
+            messages = deepcopy(messages)
+            serialized_schema = json.dumps(
+                json_schema, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            )
+            schema_instruction = (
+                "Return exactly one JSON object matching this schema. "
+                "Do not use markdown or surrounding commentary. "
+                "The API response format enforces the same schema.\n"
+                f"JSON Schema:\n{serialized_schema}"
+            )
+            if messages and messages[0].get("role") == "system":
+                messages[0]["content"] = (
+                    f"{messages[0].get('content', '')}\n\n{schema_instruction}"
+                )
+            else:
+                messages.insert(0, {"role": "system", "content": schema_instruction})
         messages = (
             fit_prompt_messages(messages, max_output_tokens=max_tokens) or messages
         )
@@ -297,12 +329,9 @@ def chat_completion(
         "max_tokens": effective,
     }
     schema_mode = "none"
-    if json_schema:
-        schema_mode = _initial_schema_mode(base_url)
-        if schema_mode == "strict":
-            body["response_format"] = _schema_response_format(json_schema, strict=True)
-        elif schema_mode == "compatible":
-            body["response_format"] = _schema_response_format(json_schema, strict=False)
+    if json_schema is not None:
+        schema_mode = "strict"
+        body["response_format"] = _schema_response_format(json_schema, strict=True)
 
     request_fingerprint = _request_fingerprint(messages) if telemetry else None
     ordinal = (
@@ -355,9 +384,7 @@ def chat_completion(
                     telemetry, logical_call_id, owned=owned, status="failed"
                 )
                 if status_callback:
-                    status_callback(
-                        "LLM request timed out; not replaying it as an outage"
-                    )
+                    status_callback("LLM request timed out; entering outage recovery")
                 raise LLMRequestTimeoutError("LLM request timed out") from exc
             except httpx.ConnectError:
                 _check_stop_for_owned_call(telemetry, logical_call_id, owned=owned)
@@ -374,8 +401,29 @@ def chat_completion(
                     )
                 wait_s = _LLM_HTTP_RETRY_BACKOFF[attempt - 1]
                 _record_wait(telemetry, wait_s, "http_retry_backoff")
-                time.sleep(wait_s)
+                until = time.monotonic() + wait_s
+                try:
+                    while time.monotonic() < until:
+                        check_stop()
+                        time.sleep(min(0.25, max(0, until - time.monotonic())))
+                except InvestigationStopped:
+                    _close_logical_call_if_owned(
+                        telemetry, logical_call_id, owned=owned, status="discarded"
+                    )
+                    raise
                 break
+            except httpx.TransportError as exc:
+                _check_stop_for_owned_call(telemetry, logical_call_id, owned=owned)
+                _close_logical_call_if_owned(
+                    telemetry, logical_call_id, owned=owned, status="failed"
+                )
+                if status_callback:
+                    status_callback(
+                        "LLM connection was interrupted; entering outage recovery"
+                    )
+                raise LLMServerUnavailableError(
+                    f"LLM connection interrupted ({type(exc).__name__})"
+                ) from exc
             except InvestigationStopped:
                 _close_logical_call_if_owned(
                     telemetry, logical_call_id, owned=owned, status="discarded"
@@ -388,7 +436,7 @@ def chat_completion(
                 raise
             if (
                 response.status_code == 400
-                and json_schema
+                and json_schema is not None
                 and not _is_context_window_error(400, _redacted_error_body(response))
             ):
                 next_mode = _downgrade_schema_mode(
@@ -397,7 +445,7 @@ def chat_completion(
                     schema_mode,
                     status_callback,
                     status_code=400,
-                    base_url=base_url,
+                    error_body=_redacted_error_body(response),
                 )
                 if next_mode is not None:
                     if att_id:
@@ -407,6 +455,7 @@ def chat_completion(
                             http_status=400,
                             error_type="http",
                             error_code="400",
+                            error_body_summary=_redacted_error_body(response),
                             duration_ms=duration,
                             retry_class="schema_downgrade",
                             retry_reason="server_rejected_response_format",
@@ -443,6 +492,51 @@ def chat_completion(
                 status_code=status,
                 body=error_body,
             )
+        lowered_error = error_body.lower()
+        schema_rejected = json_schema is not None and any(
+            marker in lowered_error
+            for marker in (
+                "json schema conversion failed",
+                "unable to generate parser",
+                "schema unsupported",
+                "response_format unsupported",
+            )
+        )
+        output_parse_failed = (
+            json_schema is not None and "failed to parse input" in lowered_error
+        )
+        if status >= 400 and (schema_rejected or output_parse_failed):
+            error_code = (
+                "response_schema_rejected"
+                if schema_rejected
+                else "generated_output_parse_failed"
+            )
+            if att_id:
+                telemetry.finalize_attempt(  # type: ignore[union-attr]
+                    attempt_id=att_id,
+                    status="provider_error",
+                    http_status=status,
+                    error_type="schema" if schema_rejected else "response_parse",
+                    error_code=error_code,
+                    error_body_summary=error_body,
+                    duration_ms=duration,
+                    discarded_reason=(
+                        "provider rejected response schema"
+                        if schema_rejected
+                        else "provider could not parse generated output"
+                    ),
+                    retry_class=retry_class,
+                    retry_reason=retry_reason,
+                    policy_decision=policy_decision,
+                    request_changed_fields=request_changed_fields,
+                )
+            _check_stop_for_owned_call(telemetry, logical_call_id, owned=owned)
+            _close_logical_call_if_owned(
+                telemetry, logical_call_id, owned=owned, status="failed"
+            )
+            raise LLMStructuredOutputError(
+                status_code=status, error_code=error_code, body=error_body
+            )
         if status >= 500:
             if att_id:
                 telemetry.finalize_attempt(  # type: ignore[union-attr]
@@ -453,19 +547,12 @@ def chat_completion(
                     error_code=str(status),
                     error_body_summary=error_body,
                     duration_ms=duration,
+                    retry_class=retry_class,
+                    retry_reason=retry_reason,
+                    policy_decision=policy_decision,
+                    request_changed_fields=request_changed_fields,
                 )
             _check_stop_for_owned_call(telemetry, logical_call_id, owned=owned)
-            if json_schema and "Failed to parse input" in response.text:
-                next_mode = _downgrade_schema_mode(
-                    body,
-                    json_schema,
-                    schema_mode,
-                    status_callback,
-                    status_code=status,
-                    base_url=base_url,
-                )
-                if next_mode is not None:
-                    schema_mode = next_mode
             if attempt == _LLM_HTTP_RETRY_MAX:
                 _close_logical_call_if_owned(
                     telemetry, logical_call_id, owned=owned, status="failed"
@@ -492,6 +579,10 @@ def chat_completion(
                     error_body_summary=error_body,
                     duration_ms=duration,
                     discarded_reason="http_error",
+                    retry_class=retry_class,
+                    retry_reason=retry_reason,
+                    policy_decision=policy_decision,
+                    request_changed_fields=request_changed_fields,
                 )
             _check_stop_for_owned_call(telemetry, logical_call_id, owned=owned)
             _close_logical_call_if_owned(
@@ -518,6 +609,10 @@ def chat_completion(
                     parse_status="error",
                     accepted=False,
                     discarded_reason="invalid provider response envelope",
+                    retry_class=retry_class,
+                    retry_reason=retry_reason,
+                    policy_decision=policy_decision,
+                    request_changed_fields=request_changed_fields,
                 )
             _close_logical_call_if_owned(
                 telemetry, logical_call_id, owned=owned, status="failed"
@@ -569,6 +664,10 @@ def chat_completion(
                 truncated=unusable_truncation,
                 accepted=not unusable_truncation,
                 discarded_reason=truncation_reason if unusable_truncation else None,
+                retry_class=retry_class,
+                retry_reason=retry_reason,
+                policy_decision=policy_decision,
+                request_changed_fields=request_changed_fields,
             )
         _check_stop_for_owned_call(telemetry, logical_call_id, owned=owned)
         if complete_json:
@@ -591,22 +690,76 @@ def chat_completion(
     raise LLMServerUnavailableError("LLM HTTP retry loop exited without response")
 
 
+def outage_wait_until_recovered_sync(
+    base_url: str,
+    status_callback: Callable[[str], None] | None = None,
+    *,
+    budget_s: float | None = None,
+) -> None:
+    """Wait for provider recovery from synchronous request paths."""
+    import httpx
+
+    settings = get_settings()
+    budget_s = (
+        budget_s if budget_s is not None else settings.llm_outage_wall_clock_budget_s
+    )
+    interval_s = settings.llm_outage_probe_interval_s
+    started = time.monotonic()
+    if status_callback:
+        status_callback(f"LLM unavailable; waiting up to {budget_s}s for recovery")
+    while True:
+        check_stop()
+        elapsed = time.monotonic() - started
+        if elapsed >= budget_s:
+            raise LLMOutageBudgetExceededError(
+                f"LLM outage budget exceeded ({budget_s}s)"
+            )
+        try:
+            response = _get_http_client().get(
+                f"{base_url.rstrip('/')}/v1/models",
+                timeout=min(10.0, max(0.0, budget_s - (time.monotonic() - started))),
+                headers=_auth_headers(),
+            )
+            if response.status_code == 200:
+                check_stop()
+                if time.monotonic() - started >= budget_s:
+                    raise LLMOutageBudgetExceededError(
+                        f"LLM outage budget exceeded ({budget_s}s)"
+                    )
+                return
+        except httpx.HTTPError:
+            pass
+        until = time.monotonic() + min(
+            interval_s, max(0, budget_s - (time.monotonic() - started))
+        )
+        while time.monotonic() < until:
+            check_stop()
+            time.sleep(min(0.25, max(0, until - time.monotonic())))
+
+
 async def outage_wait_until_recovered(
     base_url: str,
     progress_callback: Callable[[dict], None] | None = None,
+    *,
+    budget_s: float | None = None,
 ) -> None:
     """Wait for the provider's model endpoint to respond to a health probe."""
     import httpx
 
     settings = get_settings()
-    budget_s = settings.llm_outage_wall_clock_budget_s
+    budget_s = (
+        budget_s if budget_s is not None else settings.llm_outage_wall_clock_budget_s
+    )
     interval_s = settings.llm_outage_probe_interval_s
     started = time.monotonic()
     while True:
         check_stop()
-        waited = int(time.monotonic() - started)
-        if waited > budget_s:
-            raise LLMServerUnavailableError(f"LLM outage budget exceeded ({budget_s}s)")
+        elapsed = time.monotonic() - started
+        waited = int(elapsed)
+        if elapsed >= budget_s:
+            raise LLMOutageBudgetExceededError(
+                f"LLM outage budget exceeded ({budget_s}s)"
+            )
         if progress_callback:
             progress_callback(
                 progress_event(
@@ -624,15 +777,19 @@ async def outage_wait_until_recovered(
             client = await _get_async_client()
             r = await client.get(
                 f"{base_url.rstrip('/')}/v1/models",
-                timeout=10.0,
+                timeout=min(10.0, max(0.0, budget_s - (time.monotonic() - started))),
                 headers=_auth_headers(),
             )
             if r.status_code == 200:
                 check_stop()
+                if time.monotonic() - started >= budget_s:
+                    raise LLMOutageBudgetExceededError(
+                        f"LLM outage budget exceeded ({budget_s}s)"
+                    )
                 return
         except httpx.HTTPError, httpx.RequestError:
             pass
-        until = time.monotonic() + interval_s
+        until = min(started + budget_s, time.monotonic() + interval_s)
         while time.monotonic() < until:
             check_stop()
             await asyncio.sleep(min(0.25, max(0, until - time.monotonic())))

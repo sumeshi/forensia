@@ -83,6 +83,10 @@ from forensia.investigation.work_state import pause_hypothesis_work
 from forensia.knowledge.coverage import (
     derive_required_capabilities,
 )
+from forensia.llm.llm_client import (
+    LLMOutageBudgetExceededError,
+    LLMStructuredOutputError,
+)
 
 
 def _matching_findings(
@@ -313,8 +317,25 @@ async def _phase_plan(rs: _HypothesisRunState) -> str:
             case_policy=rs.ctx.forensia_policy,
             correction_budget=rs.correction_budget,
         )
-    except LLMBudgetExceededError, InvestigationStopped:
+    except LLMBudgetExceededError, InvestigationStopped, LLMOutageBudgetExceededError:
         raise
+    except LLMStructuredOutputError as exc:
+        if exc.error_code != "generated_output_parse_failed":
+            raise
+        reason = f"generated_output_parse_failed: {str(exc)[:300]}"
+        append_hypothesis_reasoning(
+            db=db,
+            hypothesis_id=hypothesis.id,
+            session_id=session_id,
+            iteration=plan_cycle,
+            phase="error",
+            body=f"[structured-output] {reason}",
+        )
+        hypothesis_plan = HypothesisPlanResult(
+            query=None,
+            stop_reason="generated_output_parse_failed",
+            raw_response={},
+        )
     except Exception as exc:
         err_msg = f"LLM failed for {hypothesis.id}: {exc}"
         _log("PLAN_HYPOTHESIS", err_msg, level="error")
@@ -328,7 +349,7 @@ async def _phase_plan(rs: _HypothesisRunState) -> str:
         )
         hypothesis_plan = HypothesisPlanResult(
             query=None,
-            stop_reason=f"planner_failed: {type(exc).__name__}: {str(exc)[:300]}",
+            stop_reason="planner_failed",
             raw_response={},
         )
     rs.hypothesis_plan = hypothesis_plan
@@ -756,8 +777,23 @@ async def _phase_check(rs: _HypothesisRunState) -> str:
                 status_callback=llm_status_fn or (lambda msg: _log("LLM", msg)),
                 fallback_info=fallback_info,
             )
-    except LLMBudgetExceededError:
+    except LLMBudgetExceededError, LLMOutageBudgetExceededError, InvestigationStopped:
         raise
+    except LLMStructuredOutputError as exc:
+        if exc.error_code != "generated_output_parse_failed":
+            raise
+        err_msg = f"LLM generated output could not be parsed for {hypothesis.id}/{planned_query.query_id}: {exc}"
+        _log("CHECK", err_msg, level="error")
+        append_hypothesis_reasoning(
+            db=db,
+            hypothesis_id=hypothesis.id,
+            session_id=session_id,
+            iteration=plan_cycle,
+            phase="error",
+            body=f"[structured-output] {err_msg}",
+            query_id=planned_query.query_id,
+        )
+        return "continue"
     except Exception as exc:
         err_msg = f"LLM failed for {hypothesis.id}/{planned_query.query_id}: {exc}"
         _log("CHECK", err_msg, level="error")

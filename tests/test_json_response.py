@@ -167,6 +167,118 @@ def test_truncation_retry_shares_budget_and_keeps_original_output_cap() -> None:
     assert [request["max_tokens"] for request in requests] == [41, 41]
 
 
+def test_generated_output_failure_retries_once_with_same_schema() -> None:
+    from forensia.llm import json_response
+    from forensia.llm.llm_client import LLMStructuredOutputError
+
+    schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}}
+    calls: list[dict] = []
+
+    def completion(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            raise LLMStructuredOutputError(
+                status_code=500,
+                error_code="generated_output_parse_failed",
+                body="Failed to parse input: model returned prose before JSON",
+            )
+        return '{"ok": true}'
+
+    budget = [1]
+    with patch.object(json_response, "chat_completion", side_effect=completion):
+        assert json_response.request_llm_json(
+            [{"role": "user", "content": "Return the result."}],
+            base_url="http://llm-repair.invalid",
+            model="test",
+            json_schema=schema,
+            correction_budget=budget,
+        ) == {"ok": True}
+
+    assert budget == [0]
+    assert len(calls) == 2
+    assert all(call["json_schema"] == schema for call in calls)
+    assert (
+        "provider could not parse the generated output"
+        not in calls[0]["messages"][-1]["content"]
+    )
+    assert (
+        "provider could not parse the generated output"
+        in calls[1]["messages"][-1]["content"]
+    )
+
+
+def test_generated_output_retry_exhaustion_and_schema_rejection_are_terminal(
+    tmp_path,
+) -> None:
+    from forensia.llm import json_response
+    from forensia.llm.llm_client import LLMStructuredOutputError
+
+    schema = {"type": "object"}
+    for error_code, budget_value in (
+        ("generated_output_parse_failed", 0),
+        ("response_schema_rejected", 1),
+    ):
+        calls = []
+
+        def fail(**kwargs):
+            calls.append(kwargs)
+            raise LLMStructuredOutputError(
+                status_code=500, error_code=error_code, body="provider error"
+            )
+
+        with patch.object(json_response, "chat_completion", side_effect=fail):
+            with pytest.raises(LLMStructuredOutputError) as caught:
+                json_response.request_llm_json(
+                    [{"role": "user", "content": "Return the result."}],
+                    base_url="http://llm-repair.invalid",
+                    model="test",
+                    json_schema=schema,
+                    correction_budget=[budget_value],
+                )
+        assert caught.value.error_code == error_code
+        assert len(calls) == 1
+
+    from forensia.core.case import Case
+    from forensia.db.database import CaseDB
+    from forensia.llm.telemetry import (
+        LLMTelemetry,
+        reset_active_telemetry,
+        set_active_telemetry,
+    )
+
+    budget = [1]
+    error = LLMStructuredOutputError(
+        status_code=500,
+        error_code="generated_output_parse_failed",
+        body="Failed to parse input",
+    )
+    with CaseDB(Case.init(tmp_path / "case")) as db:
+        token = set_active_telemetry(LLMTelemetry(db, session_id="parse-exhausted"))
+        try:
+            with patch.object(
+                json_response, "chat_completion", side_effect=(error, error)
+            ) as completion:
+                with pytest.raises(LLMStructuredOutputError) as caught:
+                    json_response.request_llm_json(
+                        [{"role": "user", "content": "Return the result."}],
+                        base_url="http://llm-repair.invalid",
+                        model="test",
+                        json_schema=schema,
+                        correction_budget=budget,
+                    )
+            call_status = db.execute(
+                "SELECT status FROM trace.llm_logical_calls "
+                "WHERE session_id = 'parse-exhausted'"
+            ).fetchone()[0]
+        finally:
+            reset_active_telemetry(token)
+
+    assert caught.value.error_code == "generated_output_parse_failed"
+    assert completion.call_count == 2
+    assert budget == [0]
+    assert call_status == "failed"
+
+
 def test_context_rejection_without_reduced_input_is_not_replayed() -> None:
     from forensia.llm import json_response
     from forensia.llm.llm_client import LLMContextWindowError
@@ -193,3 +305,90 @@ def test_context_rejection_without_reduced_input_is_not_replayed() -> None:
             )
 
     assert len(requests) == 1
+
+
+def test_request_recovery_retries_the_same_json_repair_request(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from forensia.llm import json_response
+    from forensia.llm.llm_client import LLMRequestTimeoutError
+
+    request = {
+        "base_url": "http://llama.test",
+        "messages": [{"role": "user", "content": "repair"}],
+    }
+    seen = []
+    waited = []
+    statuses = []
+
+    def flaky_chat_completion(**kwargs):
+        seen.append(kwargs)
+        if len(seen) == 1:
+            raise LLMRequestTimeoutError("timed out")
+        return '{"ok": true}'
+
+    monkeypatch.setattr(json_response, "chat_completion", flaky_chat_completion)
+    monkeypatch.setattr(
+        json_response,
+        "get_settings",
+        lambda: SimpleNamespace(
+            llm_outage_wall_clock_budget_s=10, llm_outage_probe_interval_s=0
+        ),
+    )
+    monkeypatch.setattr(
+        json_response,
+        "outage_wait_until_recovered_sync",
+        lambda url, status_callback=None, *, budget_s=None: waited.append(url),
+    )
+
+    assert (
+        json_response._chat_completion_resuming_outage(
+            status_callback=statuses.append, **request
+        )
+        == '{"ok": true}'
+    )
+    assert len(seen) == 2
+    assert seen[0] == request | {"status_callback": statuses.append}
+    assert seen[1]["messages"] == seen[0]["messages"]
+    assert seen[1]["retry_class"] == "outage_recovery"
+    assert seen[1]["policy_decision"] == "resume_same_request"
+    assert waited == ["http://llama.test"]
+    assert seen[1]["status_callback"] == statuses.append
+    assert statuses == ["LLM unavailable; waiting before resuming the same request"]
+
+
+def test_exhausted_inner_outage_budget_does_not_restart_outer_call(monkeypatch) -> None:
+    import asyncio
+    from types import SimpleNamespace
+
+    from forensia.investigation import investigation_session
+    from forensia.llm.llm_client import LLMOutageBudgetExceededError
+
+    calls = []
+
+    def exhausted(**kwargs):
+        calls.append(kwargs)
+        raise LLMOutageBudgetExceededError("outage budget exceeded")
+
+    monkeypatch.setattr(
+        investigation_session,
+        "get_settings",
+        lambda: SimpleNamespace(
+            llm_outage_wall_clock_budget_s=1, llm_outage_probe_interval_s=0
+        ),
+    )
+    monkeypatch.setattr(
+        investigation_session,
+        "outage_wait_until_recovered",
+        lambda *args, **kwargs: pytest.fail(
+            "terminal budget must not restart recovery"
+        ),
+    )
+
+    with pytest.raises(LLMOutageBudgetExceededError):
+        asyncio.run(
+            investigation_session._call_with_outage_recovery(
+                exhausted, "http://llama.test", "model"
+            )
+        )
+    assert len(calls) == 1

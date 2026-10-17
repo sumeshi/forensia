@@ -718,6 +718,211 @@ class InvestigateWiringTests(unittest.TestCase):
                     candidate_attempt["reason"], "mock qualification failure"
                 )
 
+    def test_generated_output_failure_stays_local_to_broad_gap_identification(
+        self,
+    ) -> None:
+        from forensia.investigation import investigation_cycle
+        from forensia.investigation import investigator as investigator_module
+        from forensia.llm.llm_client import LLMStructuredOutputError
+
+        error = LLMStructuredOutputError(
+            status_code=500,
+            error_code="generated_output_parse_failed",
+            body="Failed to parse input: generated markdown analysis",
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                with (
+                    mock.patch.object(
+                        investigation_cycle,
+                        "_identify_broad_plan_gaps",
+                        new=mock.AsyncMock(side_effect=error),
+                    ),
+                    mock.patch.object(
+                        investigator_module,
+                        "async_refresh_report_sections",
+                        new=mock.AsyncMock(
+                            return_value={
+                                "report_status": {},
+                                "gaps": [],
+                                "question_requests": [],
+                            }
+                        ),
+                    ),
+                ):
+                    asyncio.run(
+                        investigator_module.investigate(
+                            case=case,
+                            db=db,
+                            base_url="http://unused",
+                            model="dummy",
+                            max_iter=1,
+                        )
+                    )
+
+                plan = json.loads(
+                    db.execute(
+                        "SELECT output_json FROM trace.investigation_steps "
+                        "WHERE phase = 'plan-broad'"
+                    ).fetchone()[0]
+                )
+                self.assertEqual("completed", plan["status"])
+                self.assertIn(
+                    "generated_output_parse_failed",
+                    plan["candidate_summary"]["gap_identification_error"],
+                )
+                session = db.execute(
+                    "SELECT status, terminal_reason, finished_at "
+                    "FROM trace.investigation_sessions"
+                ).fetchone()
+                self.assertNotEqual("failed", session[0])
+                self.assertIsNotNone(session[2])
+
+    def test_generated_output_failure_pauses_one_hypothesis_and_runs_the_next(
+        self,
+    ) -> None:
+        from forensia.db.investigation_state import ensure_investigation_state
+        from forensia.investigation import investigator as investigator_module
+        from forensia.investigation.hypotheses import hypothesis_runner
+        from forensia.investigation.planner import HypothesisPlanResult
+        from forensia.llm.llm_client import LLMStructuredOutputError
+
+        error = LLMStructuredOutputError(
+            status_code=500,
+            error_code="generated_output_parse_failed",
+            body="Failed to parse input: generated prose before JSON",
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                ensure_investigation_state(db, objective="keep independent work moving")
+                for hypothesis_id in ("H-FAIL", "H-NEXT"):
+                    db.execute(
+                        "INSERT INTO hypotheses "
+                        "(hypothesis_id, description, status, verification_spec) "
+                        "VALUES (?, ?, 'active', ?)",
+                        [
+                            hypothesis_id,
+                            f"Independent investigation {hypothesis_id}",
+                            '{"spec_version":"1"}',
+                        ],
+                    )
+                planned: list[str] = []
+
+                def plan(**kwargs):
+                    hypothesis_id = kwargs["hypothesis"].id
+                    planned.append(hypothesis_id)
+                    if hypothesis_id == "H-FAIL":
+                        raise error
+                    return HypothesisPlanResult(
+                        query=None,
+                        stop_reason="independent proposal ended",
+                        raw_response={},
+                    )
+
+                with (
+                    mock.patch.object(
+                        hypothesis_runner, "plan_hypothesis_query", side_effect=plan
+                    ),
+                    mock.patch.object(
+                        investigator_module,
+                        "async_refresh_report_sections",
+                        new=mock.AsyncMock(
+                            return_value={
+                                "report_status": {},
+                                "gaps": [],
+                                "question_requests": [],
+                            }
+                        ),
+                    ),
+                ):
+                    asyncio.run(
+                        investigator_module.investigate(
+                            case=case,
+                            db=db,
+                            base_url="http://unused",
+                            model="dummy",
+                            max_iter=1,
+                            max_queries_per_hypothesis=1,
+                        )
+                    )
+
+                self.assertEqual({"H-FAIL", "H-NEXT"}, set(planned))
+                blocked_reason = db.execute(
+                    "SELECT blocked_reason FROM hypotheses "
+                    "WHERE hypothesis_id = 'H-FAIL'"
+                ).fetchone()[0]
+                self.assertEqual("generated_output_parse_failed", blocked_reason)
+                error_trace = db.execute(
+                    "SELECT body FROM trace.hypothesis_reasoning "
+                    "WHERE hypothesis_id = 'H-FAIL' AND phase = 'error'"
+                ).fetchone()[0]
+                self.assertIn(
+                    "Failed to parse input: generated prose before JSON", error_trace
+                )
+                from forensia.investigation.working_state import (
+                    build_working_state,
+                    render_working_state,
+                )
+
+                prompt_context = render_working_state(
+                    build_working_state(db, hypothesis_id="H-FAIL")
+                )
+                self.assertNotIn("Failed to parse input:", prompt_context)
+                self.assertNotIn("generated prose before JSON", prompt_context)
+                self.assertTrue(
+                    db.execute(
+                        "SELECT COUNT(*) FROM trace.hypothesis_reasoning "
+                        "WHERE hypothesis_id = 'H-FAIL' "
+                        "AND body LIKE '%generated_output_parse_failed%'"
+                    ).fetchone()[0]
+                )
+                session = db.execute(
+                    "SELECT status, terminal_reason, finished_at "
+                    "FROM trace.investigation_sessions"
+                ).fetchone()
+                self.assertNotEqual("failed", session[0])
+                self.assertIsNotNone(session[2])
+
+    def test_schema_rejection_remains_fatal_to_investigation(self) -> None:
+        from forensia.investigation import investigation_cycle
+        from forensia.investigation import investigator as investigator_module
+        from forensia.llm.llm_client import LLMStructuredOutputError
+
+        error = LLMStructuredOutputError(
+            status_code=500,
+            error_code="response_schema_rejected",
+            body="JSON schema conversion failed",
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                with (
+                    mock.patch.object(
+                        investigation_cycle,
+                        "_identify_broad_plan_gaps",
+                        new=mock.AsyncMock(side_effect=error),
+                    ),
+                    self.assertRaises(LLMStructuredOutputError),
+                ):
+                    asyncio.run(
+                        investigator_module.investigate(
+                            case=case,
+                            db=db,
+                            base_url="http://unused",
+                            model="dummy",
+                            max_iter=1,
+                        )
+                    )
+                session = db.execute(
+                    "SELECT status, terminal_reason, finished_at "
+                    "FROM trace.investigation_sessions"
+                ).fetchone()
+                self.assertEqual("failed", session[0])
+                self.assertIn("response_schema_rejected", session[1])
+                self.assertIsNotNone(session[2])
+
     def test_planner_only_session_gets_explicit_terminal_reason(self) -> None:
         from forensia.investigation import investigator as investigator_module
 
@@ -1575,6 +1780,7 @@ class ReportRefreshFailureTests(unittest.TestCase):
         """An LLM-server outage is not a per-cycle failure: the phase waits for
         recovery (same policy as the investigation loop) and only an exhausted
         outage budget propagates and stops the session."""
+        from types import SimpleNamespace
         from unittest import mock
 
         from forensia.core.session import SessionState
@@ -1585,7 +1791,9 @@ class ReportRefreshFailureTests(unittest.TestCase):
         async def _outage(**kwargs):
             raise LLMServerUnavailableError("server gone")
 
-        async def _instant_recovery_probe(base_url, progress_callback=None):
+        async def _instant_recovery_probe(
+            base_url, progress_callback=None, budget_s=None
+        ):
             if progress_callback:
                 progress_callback(
                     {
@@ -1594,7 +1802,7 @@ class ReportRefreshFailureTests(unittest.TestCase):
                         "summary": "LLM server unavailable",
                     }
                 )
-            return None
+            raise LLMServerUnavailableError("outage budget exceeded")
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -1609,6 +1817,14 @@ class ReportRefreshFailureTests(unittest.TestCase):
                         investigation_session,
                         "outage_wait_until_recovered",
                         _instant_recovery_probe,
+                    ),
+                    mock.patch.object(
+                        investigation_session,
+                        "get_settings",
+                        return_value=SimpleNamespace(
+                            llm_outage_wall_clock_budget_s=10,
+                            llm_outage_probe_interval_s=0,
+                        ),
                     ),
                 ):
                     with self.assertRaises(LLMServerUnavailableError):

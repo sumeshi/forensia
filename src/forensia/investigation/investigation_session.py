@@ -16,6 +16,7 @@ from uuid import uuid4
 from forensia.config import get_settings
 from forensia.context.investigation_candidates import build_investigation_candidates
 from forensia.core.case import Case
+from forensia.core.control import check_stop
 from forensia.core.progress_event import progress_event
 from forensia.core.session import SessionState
 from forensia.db.database import CaseDB
@@ -42,7 +43,7 @@ from forensia.investigation.work_state import (
     reopen_retryable_work,
 )
 from forensia.llm.llm_client import (
-    LLMRequestTimeoutError,
+    LLMOutageBudgetExceededError,
     LLMServerUnavailableError,
     outage_wait_until_recovered,
 )
@@ -196,9 +197,6 @@ class Ctx:
     forensia_policy: Any = None
 
 
-_MAX_OUTAGE_RETRIES_PER_CALL = 3
-
-
 async def _call_with_outage_recovery(
     call_fn,
     base_url: str,
@@ -206,27 +204,48 @@ async def _call_with_outage_recovery(
     _outage_progress_callback: Callable[[dict[str, Any]], None] | None = None,
     **kwargs,
 ):
-    for attempt in range(1, _MAX_OUTAGE_RETRIES_PER_CALL + 1):
+    deadline = None
+    while True:
         try:
             if inspect.iscoroutinefunction(call_fn):
                 return await call_fn(base_url=base_url, model=model, **kwargs)
-            else:
-                return await asyncio.to_thread(
-                    call_fn, base_url=base_url, model=model, **kwargs
-                )
-        except LLMRequestTimeoutError:
+            return await asyncio.to_thread(
+                call_fn, base_url=base_url, model=model, **kwargs
+            )
+        except LLMOutageBudgetExceededError:
             raise
         except LLMServerUnavailableError:
-            if attempt >= _MAX_OUTAGE_RETRIES_PER_CALL:
-                raise
+            budget_s = get_settings().llm_outage_wall_clock_budget_s
+            deadline = deadline or (asyncio.get_running_loop().time() + budget_s)
+            remaining_s = deadline - asyncio.get_running_loop().time()
+            if remaining_s <= 0:
+                raise LLMOutageBudgetExceededError(
+                    f"LLM outage budget exceeded ({budget_s}s)"
+                )
+            interval_s = get_settings().llm_outage_probe_interval_s
+            until = min(deadline, asyncio.get_running_loop().time() + interval_s)
+            while asyncio.get_running_loop().time() < until:
+                check_stop()
+                await asyncio.sleep(
+                    min(0.25, max(0, until - asyncio.get_running_loop().time()))
+                )
+            remaining_s = deadline - asyncio.get_running_loop().time()
+            if remaining_s <= 0:
+                raise LLMOutageBudgetExceededError(
+                    f"LLM outage budget exceeded ({budget_s}s)"
+                )
             if _outage_progress_callback is None:
-                await outage_wait_until_recovered(base_url)
+                await outage_wait_until_recovered(base_url, budget_s=remaining_s)
             else:
                 await outage_wait_until_recovered(
                     base_url,
                     progress_callback=_outage_progress_callback,
+                    budget_s=remaining_s,
                 )
-    raise LLMServerUnavailableError("Outage recovery failed")
+            if asyncio.get_running_loop().time() >= deadline:
+                raise LLMOutageBudgetExceededError(
+                    f"LLM outage budget exceeded ({budget_s}s)"
+                )
 
 
 def _ctx_get_report_status(
