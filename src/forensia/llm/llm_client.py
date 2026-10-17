@@ -500,6 +500,8 @@ def chat_completion(
                 "unable to generate parser",
                 "schema unsupported",
                 "response_format unsupported",
+                "failed to parse grammar",
+                "error parsing grammar",
             )
         )
         output_parse_failed = (

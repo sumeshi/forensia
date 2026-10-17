@@ -352,6 +352,30 @@ def test_schema_compile_error_is_terminal_and_preserves_redacted_telemetry(
     assert len(client.requests) == 1
 
 
+@pytest.mark.parametrize("status", [400, 500])
+@pytest.mark.parametrize(
+    "error",
+    [
+        "Failed to initialize samplers: failed to parse grammar",
+        r"error parsing grammar: unknown escape at \s",
+    ],
+)
+def test_gbnf_compile_error_is_not_retried_as_an_outage(status, error) -> None:
+    client = _FakeClient([_response(status, text=error)])
+    with (
+        patch.object(llm_client, "_get_http_client", return_value=client),
+        pytest.raises(llm_client.LLMStructuredOutputError) as caught,
+    ):
+        llm_client.chat_completion(
+            [{"role": "user", "content": "Return JSON."}],
+            model="test",
+            base_url="http://llama.test",
+            json_schema={"type": "object"},
+        )
+    assert caught.value.error_code == "response_schema_rejected"
+    assert len(client.requests) == 1
+
+
 def test_generated_output_parse_error_is_terminal_not_schema_rejection() -> None:
     client = _FakeClient(
         [

@@ -127,18 +127,25 @@ _sql_properties = _sql_action_schema["properties"]
 _sql_required = list(_sql_properties)
 _sql_action_schema["required"] = [key for key in _sql_required if key != "params"]
 _sql_action_schema["anyOf"] = []
+# Match str.strip whitespace without shorthand escapes unsupported by GBNF.
+_sql_whitespace = (
+    r"\u0009-\u000d\u001c-\u0020\u0085\u00a0\u1680\u2000-\u200a"
+    r"\u2028\u2029\u202f\u205f\u3000"
+)
+_sql_blank_pattern = rf"^[{_sql_whitespace}]*$"
+_sql_nonblank_pattern = rf"^([^\n]|\n)*[^{_sql_whitespace}]([^\n]|\n)*$"
 for _template_mode in (True, False):
     _branch_properties = dict(_sql_properties)
     if _template_mode:
         _branch_properties["template_id"] = {
             "type": "string",
             "minLength": 1,
-            "pattern": r"^[\s\S]*\S[\s\S]*$",
+            "pattern": _sql_nonblank_pattern,
             "description": _sql_properties["template_id"]["description"],
         }
         _branch_properties["sql"] = {
             "type": "string",
-            "pattern": r"^\s*$",
+            "pattern": _sql_blank_pattern,
             "description": _sql_properties["sql"]["description"],
         }
         _branch_properties["params"] = _sql_properties["params"]
@@ -149,7 +156,7 @@ for _template_mode in (True, False):
         }
         _branch_properties["sql"] = {
             "type": "string",
-            "pattern": r"^[\s\S]*\S[\s\S]*$",
+            "pattern": _sql_nonblank_pattern,
             "description": _sql_properties["sql"]["description"],
         }
         _branch_properties.pop("params")

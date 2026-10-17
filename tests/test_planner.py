@@ -1633,13 +1633,30 @@ class PlannerRetryTests(unittest.TestCase):
             branch["properties"]["template_id"]["type"]: branch["properties"]
             for branch in sql_schema["anyOf"]
         }
-        self.assertEqual(r"^\s*$", modes["string"]["sql"]["pattern"])
         self.assertEqual("null", modes["null"]["template_id"]["type"])
-        nonblank = r"^[\s\S]*\S[\s\S]*$"
-        self.assertEqual(nonblank, modes["null"]["sql"]["pattern"])
+        nonblank = modes["null"]["sql"]["pattern"]
         self.assertEqual(nonblank, modes["string"]["template_id"]["pattern"])
-        self.assertRegex("SELECT\n1", nonblank)
-        self.assertNotRegex(" \n\t", nonblank)
+        for pattern in (nonblank, modes["string"]["sql"]["pattern"]):
+            self.assertNotRegex(pattern, r"\\[sS]")
+        for value in ("SELECT\n1", "SELECT '𠮷😀'", "\u3000SELECT 1\n"):
+            self.assertRegex(value, nonblank)
+        for value in (
+            "",
+            " \n\t",
+            "\v\f\x1c\x85\u00a0\u1680\u2007\u2028\u2029\u202f\u205f\u3000",
+        ):
+            self.assertNotRegex(value, nonblank)
+            self.assertRegex(value, modes["string"]["sql"]["pattern"])
+            with self.assertRaises(ValidationError):
+                QueryIntentResponse.model_validate(
+                    {
+                        "action": {
+                            "intent": "Search",
+                            "target_table": "mft_entries",
+                            "sql": value,
+                        }
+                    }
+                )
         self.assertIn("params", modes["string"])
         self.assertNotIn("params", modes["null"])
         dynamic_schema = query_intent_schema_for_catalog(
