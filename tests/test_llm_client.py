@@ -679,6 +679,31 @@ def test_disconnected_transport_enters_outage_recovery(error_type) -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("timeout_type", "expected_error"),
+    [
+        (httpx.ReadTimeout, llm_client.LLMRequestTimeoutError),
+        (httpx.ConnectTimeout, llm_client.LLMServerUnavailableError),
+        (httpx.WriteTimeout, llm_client.LLMServerUnavailableError),
+        (httpx.PoolTimeout, llm_client.LLMServerUnavailableError),
+    ],
+)
+def test_response_deadline_is_distinct_from_transport_timeout(
+    timeout_type, expected_error
+) -> None:
+    with (
+        patch.object(llm_client, "_post_attempt", side_effect=timeout_type("deadline")),
+        pytest.raises(expected_error) as caught,
+    ):
+        llm_client.chat_completion(
+            [{"role": "user", "content": "Search."}],
+            model="test",
+            base_url="http://llama.test",
+        )
+    if timeout_type is httpx.ReadTimeout:
+        assert not isinstance(caught.value, llm_client.LLMServerUnavailableError)
+
+
 def test_sync_outage_probe_cannot_recover_after_budget() -> None:
     from threading import Event
 

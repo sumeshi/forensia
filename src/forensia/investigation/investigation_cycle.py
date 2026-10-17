@@ -1141,8 +1141,11 @@ async def _draft_and_admit_candidate(
             "correction_calls_used": prior_correction_calls + 1 - correction_budget[0],
             "draft_calls_used": draft_calls_used,
         }
-    except LLMStructuredOutputError as exc:
-        if exc.error_code != "generated_output_parse_failed":
+    except (LLMStructuredOutputError, LLMRequestTimeoutError) as exc:
+        if exc.error_code not in {
+            "generated_output_parse_failed",
+            "llm_request_timeout",
+        }:
             logical_status = "failed"
             save_outcome(
                 {
@@ -1158,7 +1161,7 @@ async def _draft_and_admit_candidate(
                 }
             )
             raise
-        reason = f"generated_output_parse_failed: {str(exc)[:300]}"
+        reason = f"{exc.error_code}: {str(exc)[:300]}"
         save_outcome(
             {
                 "status": "generation_failed",

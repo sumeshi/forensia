@@ -85,6 +85,7 @@ from forensia.knowledge.coverage import (
 )
 from forensia.llm.llm_client import (
     LLMOutageBudgetExceededError,
+    LLMRequestTimeoutError,
     LLMStructuredOutputError,
 )
 
@@ -319,21 +320,24 @@ async def _phase_plan(rs: _HypothesisRunState) -> str:
         )
     except LLMBudgetExceededError, InvestigationStopped, LLMOutageBudgetExceededError:
         raise
-    except LLMStructuredOutputError as exc:
-        if exc.error_code != "generated_output_parse_failed":
+    except (LLMStructuredOutputError, LLMRequestTimeoutError) as exc:
+        if exc.error_code not in {
+            "generated_output_parse_failed",
+            "llm_request_timeout",
+        }:
             raise
-        reason = f"generated_output_parse_failed: {str(exc)[:300]}"
+        reason = f"{exc.error_code}: {str(exc)[:300]}"
         append_hypothesis_reasoning(
             db=db,
             hypothesis_id=hypothesis.id,
             session_id=session_id,
             iteration=plan_cycle,
             phase="error",
-            body=f"[structured-output] {reason}",
+            body=f"[provider-response] {reason}",
         )
         hypothesis_plan = HypothesisPlanResult(
             query=None,
-            stop_reason="generated_output_parse_failed",
+            stop_reason=exc.error_code,
             raw_response={},
         )
     except Exception as exc:
@@ -779,10 +783,15 @@ async def _phase_check(rs: _HypothesisRunState) -> str:
             )
     except LLMBudgetExceededError, LLMOutageBudgetExceededError, InvestigationStopped:
         raise
-    except LLMStructuredOutputError as exc:
-        if exc.error_code != "generated_output_parse_failed":
+    except (LLMStructuredOutputError, LLMRequestTimeoutError) as exc:
+        if exc.error_code not in {
+            "generated_output_parse_failed",
+            "llm_request_timeout",
+        }:
             raise
-        err_msg = f"LLM generated output could not be parsed for {hypothesis.id}/{planned_query.query_id}: {exc}"
+        err_msg = (
+            f"{exc.error_code} for {hypothesis.id}/{planned_query.query_id}: {exc}"
+        )
         _log("CHECK", err_msg, level="error")
         append_hypothesis_reasoning(
             db=db,
@@ -790,7 +799,7 @@ async def _phase_check(rs: _HypothesisRunState) -> str:
             session_id=session_id,
             iteration=plan_cycle,
             phase="error",
-            body=f"[structured-output] {err_msg}",
+            body=f"[provider-response] {err_msg}",
             query_id=planned_query.query_id,
         )
         return "continue"

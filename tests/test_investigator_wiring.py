@@ -978,17 +978,29 @@ class InvestigateWiringTests(unittest.TestCase):
     def test_generated_output_failure_pauses_one_hypothesis_and_runs_the_next(
         self,
     ) -> None:
+        from forensia.llm.llm_client import LLMStructuredOutputError
+
+        self._assert_provider_failure_pauses_one_hypothesis_and_runs_the_next(
+            LLMStructuredOutputError(
+                status_code=500,
+                error_code="generated_output_parse_failed",
+                body="Failed to parse input: generated prose before JSON",
+            )
+        )
+
+    def test_response_timeout_pauses_one_hypothesis_and_runs_the_next(self) -> None:
+        from forensia.llm.llm_client import LLMRequestTimeoutError
+
+        self._assert_provider_failure_pauses_one_hypothesis_and_runs_the_next(
+            LLMRequestTimeoutError("Repeated response deadline")
+        )
+
+    def _assert_provider_failure_pauses_one_hypothesis_and_runs_the_next(self, error):
         from forensia.db.investigation_state import ensure_investigation_state
         from forensia.investigation import investigator as investigator_module
         from forensia.investigation.hypotheses import hypothesis_runner
         from forensia.investigation.planner import HypothesisPlanResult
-        from forensia.llm.llm_client import LLMStructuredOutputError
 
-        error = LLMStructuredOutputError(
-            status_code=500,
-            error_code="generated_output_parse_failed",
-            body="Failed to parse input: generated prose before JSON",
-        )
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
@@ -1049,14 +1061,12 @@ class InvestigateWiringTests(unittest.TestCase):
                     "SELECT blocked_reason FROM hypotheses "
                     "WHERE hypothesis_id = 'H-FAIL'"
                 ).fetchone()[0]
-                self.assertEqual("generated_output_parse_failed", blocked_reason)
+                self.assertEqual(error.error_code, blocked_reason)
                 error_trace = db.execute(
                     "SELECT body FROM trace.hypothesis_reasoning "
                     "WHERE hypothesis_id = 'H-FAIL' AND phase = 'error'"
                 ).fetchone()[0]
-                self.assertIn(
-                    "Failed to parse input: generated prose before JSON", error_trace
-                )
+                self.assertIn(str(error), error_trace)
                 from forensia.investigation.working_state import (
                     build_working_state,
                     render_working_state,
@@ -1071,7 +1081,8 @@ class InvestigateWiringTests(unittest.TestCase):
                     db.execute(
                         "SELECT COUNT(*) FROM trace.hypothesis_reasoning "
                         "WHERE hypothesis_id = 'H-FAIL' "
-                        "AND body LIKE '%generated_output_parse_failed%'"
+                        "AND body LIKE ?",
+                        [f"%{error.error_code}%"],
                     ).fetchone()[0]
                 )
                 session = db.execute(

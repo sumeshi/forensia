@@ -82,12 +82,19 @@ def _record_attempt_failure(
         return
     duration_ms = int((time.monotonic() - started) * 1000)
     if timed_out:
+        deadline = "read"
+        if isinstance(exc, httpx.ConnectTimeout):
+            deadline = "connect"
+        elif isinstance(exc, httpx.WriteTimeout):
+            deadline = "write"
+        elif isinstance(exc, httpx.PoolTimeout):
+            deadline = "pool"
         telemetry.finalize_attempt(
             attempt_id=att_id,
             status="timeout",
-            exception_class="httpx.TimeoutException",
+            exception_class=type(exc).__name__,
             error_type="timeout",
-            deadline_fired="read",
+            deadline_fired=deadline,
             duration_ms=duration_ms,
         )
     else:

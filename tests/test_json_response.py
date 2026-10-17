@@ -350,11 +350,131 @@ def test_request_recovery_retries_the_same_json_repair_request(monkeypatch) -> N
     assert len(seen) == 2
     assert seen[0] == request | {"status_callback": statuses.append}
     assert seen[1]["messages"] == seen[0]["messages"]
-    assert seen[1]["retry_class"] == "outage_recovery"
+    assert seen[1]["retry_class"] == "response_timeout"
     assert seen[1]["policy_decision"] == "resume_same_request"
     assert waited == ["http://llama.test"]
     assert seen[1]["status_callback"] == statuses.append
-    assert statuses == ["LLM unavailable; waiting before resuming the same request"]
+    assert statuses == [
+        "LLM response timed out; waiting before one retry of the same request"
+    ]
+
+
+@pytest.mark.parametrize("interleaved_outage", [False, True])
+def test_repeated_response_timeout_is_local_and_outer_recovery_does_not_replay(
+    monkeypatch, tmp_path, interleaved_outage
+) -> None:
+    import asyncio
+    from types import SimpleNamespace
+
+    from forensia.core.case import Case
+    from forensia.db.database import CaseDB
+    from forensia.investigation import investigation_session
+    from forensia.llm import json_response
+    from forensia.llm.llm_client import (
+        LLMRequestTimeoutError,
+        LLMServerUnavailableError,
+    )
+    from forensia.llm.telemetry import (
+        LLMTelemetry,
+        reset_active_telemetry,
+        set_active_telemetry,
+    )
+
+    calls = []
+    waits = []
+
+    def fail(**kwargs):
+        calls.append(kwargs)
+        if interleaved_outage and len(calls) == 2:
+            raise LLMServerUnavailableError("connection reset")
+        raise LLMRequestTimeoutError("response deadline exceeded")
+
+    monkeypatch.setattr(json_response, "chat_completion", fail)
+    monkeypatch.setattr(
+        json_response,
+        "get_settings",
+        lambda: SimpleNamespace(
+            llm_outage_wall_clock_budget_s=10, llm_outage_probe_interval_s=0
+        ),
+    )
+    monkeypatch.setattr(
+        json_response,
+        "outage_wait_until_recovered_sync",
+        lambda *args, **kwargs: waits.append(kwargs["budget_s"]),
+    )
+    monkeypatch.setattr(
+        investigation_session,
+        "outage_wait_until_recovered",
+        lambda *args, **kwargs: pytest.fail(
+            "outer recovery must not replay this request"
+        ),
+    )
+    budget = [1]
+    with CaseDB(Case.init(tmp_path / "timeout-case")) as db:
+        token = set_active_telemetry(LLMTelemetry(db, session_id="bounded-timeout"))
+        try:
+            with pytest.raises(LLMRequestTimeoutError):
+                asyncio.run(
+                    investigation_session._call_with_outage_recovery(
+                        json_response.request_llm_json,
+                        "http://llama.test",
+                        "test",
+                        messages=[{"role": "user", "content": "Return JSON."}],
+                        json_schema={"type": "object"},
+                        correction_budget=budget,
+                    )
+                )
+            assert db.execute(
+                "SELECT status FROM trace.llm_logical_calls "
+                "WHERE session_id = 'bounded-timeout'"
+            ).fetchall() == [("failed",)]
+        finally:
+            reset_active_telemetry(token)
+    assert len(calls) == (3 if interleaved_outage else 2)
+    assert len(waits) == len(calls) - 1
+    assert all(call["messages"] == calls[0]["messages"] for call in calls)
+    assert all(call["json_schema"] == calls[0]["json_schema"] for call in calls)
+    assert budget == [1]
+
+
+def test_transport_recovery_is_not_limited_to_one_replay(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from forensia.llm import json_response
+    from forensia.llm.llm_client import LLMServerUnavailableError
+
+    calls = []
+    waits = []
+
+    def completion(**kwargs):
+        calls.append(kwargs)
+        if len(calls) < 4:
+            raise LLMServerUnavailableError("connection interrupted")
+        return '{"ok": true}'
+
+    monkeypatch.setattr(json_response, "chat_completion", completion)
+    monkeypatch.setattr(
+        json_response,
+        "get_settings",
+        lambda: SimpleNamespace(
+            llm_outage_wall_clock_budget_s=10, llm_outage_probe_interval_s=0
+        ),
+    )
+    monkeypatch.setattr(
+        json_response,
+        "outage_wait_until_recovered_sync",
+        lambda *args, **kwargs: waits.append(kwargs["budget_s"]),
+    )
+    assert (
+        json_response._chat_completion_resuming_outage(
+            base_url="http://llama.test",
+            messages=[{"role": "user", "content": "Resume."}],
+        )
+        == '{"ok": true}'
+    )
+    assert len(calls) == 4
+    assert len(waits) == 3
+    assert calls[-1]["retry_class"] == "outage_recovery"
 
 
 def test_exhausted_inner_outage_budget_does_not_restart_outer_call(monkeypatch) -> None:

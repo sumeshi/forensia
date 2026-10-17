@@ -596,10 +596,19 @@ def test_context_rejection_attempt_metadata_explains_optional_block_omissions(
     ]
 
 
-def test_client_creates_timeout_attempt_receipt(tmp_path, monkeypatch) -> None:
+@pytest.mark.parametrize(
+    ("timeout_type", "expected_error", "deadline"),
+    [
+        (httpx.ReadTimeout, llm_client.LLMRequestTimeoutError, "read"),
+        (httpx.ConnectTimeout, llm_client.LLMServerUnavailableError, "connect"),
+        (httpx.WriteTimeout, llm_client.LLMServerUnavailableError, "write"),
+        (httpx.PoolTimeout, llm_client.LLMServerUnavailableError, "pool"),
+    ],
+)
+def test_client_creates_timeout_attempt_receipt(
+    tmp_path, monkeypatch, timeout_type, expected_error, deadline
+) -> None:
     from unittest.mock import patch
-
-    import httpx
 
     case = Case.init(tmp_path)
     db = CaseDB(case)
@@ -608,7 +617,7 @@ def test_client_creates_timeout_attempt_receipt(tmp_path, monkeypatch) -> None:
 
     class _FakeClient:
         def post(self, url, json, headers):
-            raise httpx.TimeoutException("read timeout")
+            raise timeout_type("deadline exceeded")
 
     messages: list[str] = []
     with (
@@ -617,7 +626,7 @@ def test_client_creates_timeout_attempt_receipt(tmp_path, monkeypatch) -> None:
             llm_client, "get_settings", return_value=SimpleNamespace(llm_api_key="tok")
         ),
     ):
-        with pytest.raises(llm_client.LLMRequestTimeoutError):
+        with pytest.raises(expected_error):
             llm_client.chat_completion(
                 [{"role": "user", "content": "go"}],
                 model="m",
@@ -627,13 +636,18 @@ def test_client_creates_timeout_attempt_receipt(tmp_path, monkeypatch) -> None:
     set_active_telemetry(None)
 
     rows = db.execute(
-        "SELECT status, error_type, deadline_fired FROM trace.llm_provider_attempts"
+        "SELECT status, error_type, deadline_fired, exception_class FROM trace.llm_provider_attempts"
     ).fetchall()
     assert rows[0][0] == "timeout"
     assert rows[0][1] == "timeout"
-    assert rows[0][2] == "read"
+    assert rows[0][2] == deadline
+    assert rows[0][3] == timeout_type.__name__
     assert len(rows) == 1
-    assert messages == ["LLM request timed out; entering outage recovery"]
+    assert messages == [
+        "LLM response timed out"
+        if deadline == "read"
+        else "LLM connection timed out; entering outage recovery"
+    ]
 
 
 def _truncated_response() -> httpx.Response:

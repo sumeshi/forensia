@@ -78,8 +78,10 @@ class LLMOutageBudgetExceededError(LLMServerUnavailableError):
     """Provider recovery exceeded its wall-clock budget; no replay is allowed."""
 
 
-class LLMRequestTimeoutError(LLMServerUnavailableError):
-    """A provider request exceeded its deadline and can resume after recovery."""
+class LLMRequestTimeoutError(RuntimeError):
+    """A response missed its deadline; repeated misses are local request failures."""
+
+    error_code = "llm_request_timeout"
 
 
 class LLMOutputTruncatedError(RuntimeError):
@@ -383,9 +385,15 @@ def chat_completion(
                 _close_logical_call_if_owned(
                     telemetry, logical_call_id, owned=owned, status="failed"
                 )
+                if isinstance(exc, httpx.ReadTimeout):
+                    if status_callback:
+                        status_callback("LLM response timed out")
+                    raise LLMRequestTimeoutError("LLM response timed out") from exc
                 if status_callback:
-                    status_callback("LLM request timed out; entering outage recovery")
-                raise LLMRequestTimeoutError("LLM request timed out") from exc
+                    status_callback(
+                        "LLM connection timed out; entering outage recovery"
+                    )
+                raise LLMServerUnavailableError("LLM connection timed out") from exc
             except httpx.ConnectError:
                 _check_stop_for_owned_call(telemetry, logical_call_id, owned=owned)
                 if attempt == _LLM_HTTP_RETRY_MAX:

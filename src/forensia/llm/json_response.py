@@ -17,6 +17,7 @@ from forensia.llm.llm_client import (
     LLMContextWindowError,
     LLMOutageBudgetExceededError,
     LLMOutputTruncatedError,
+    LLMRequestTimeoutError,
     LLMServerUnavailableError,
     LLMStructuredOutputError,
     chat_completion,
@@ -243,6 +244,7 @@ def _chat_completion_resuming_outage(
     **kwargs: Any,
 ) -> str:
     deadline = None
+    response_timeout_retried = False
     retry_metadata = retry_metadata if retry_metadata is not None else {}
     while True:
         try:
@@ -251,7 +253,12 @@ def _chat_completion_resuming_outage(
             )
         except LLMOutageBudgetExceededError:
             raise
-        except LLMServerUnavailableError:
+        except (LLMServerUnavailableError, LLMRequestTimeoutError) as exc:
+            response_timeout = isinstance(exc, LLMRequestTimeoutError)
+            if response_timeout:
+                if response_timeout_retried:
+                    raise
+                response_timeout_retried = True
             budget_s = get_settings().llm_outage_wall_clock_budget_s
             deadline = deadline or (time.monotonic() + budget_s)
             remaining_s = deadline - time.monotonic()
@@ -261,7 +268,9 @@ def _chat_completion_resuming_outage(
                 )
             if status_callback:
                 status_callback(
-                    "LLM unavailable; waiting before resuming the same request"
+                    "LLM response timed out; waiting before one retry of the same request"
+                    if response_timeout
+                    else "LLM unavailable; waiting before resuming the same request"
                 )
             interval_s = get_settings().llm_outage_probe_interval_s
             until = min(deadline, time.monotonic() + interval_s)
@@ -269,8 +278,14 @@ def _chat_completion_resuming_outage(
                 check_stop()
                 time.sleep(min(0.25, max(0, until - time.monotonic())))
             retry_metadata.update(
-                retry_class="outage_recovery",
-                retry_reason="transport failure; resumed the same request after recovery wait",
+                retry_class="response_timeout"
+                if response_timeout
+                else "outage_recovery",
+                retry_reason=(
+                    "response deadline; one replay after recovery wait"
+                    if response_timeout
+                    else "transport failure; resumed the same request after recovery wait"
+                ),
                 policy_decision="resume_same_request",
             )
             remaining_s = deadline - time.monotonic()

@@ -1092,6 +1092,103 @@ class InvestigationStateTests(unittest.TestCase):
 class ReportGapsTests(unittest.TestCase):
     """Test report_gaps table."""
 
+    def test_gap_response_timeout_is_saved_and_next_question_is_attempted(self) -> None:
+        import asyncio
+
+        from forensia.context.case_profile import CaseEvidenceProfile
+        from forensia.investigation import investigation_cycle
+        from forensia.llm.llm_client import LLMRequestTimeoutError
+        from forensia.report.answers.answer_registry import build_structured_answer
+
+        with tempfile.TemporaryDirectory() as tmpdir, CaseDB(Case.init(tmpdir)) as db:
+            for heading, question in (
+                ("Host", "Which hostname appears in the events on 2049-06-14?"),
+                ("Files", "Which files are under D:/Profiles/Lio/Archive/?"),
+            ):
+                db.execute(
+                    "INSERT INTO report_gaps (gap_id, section_key, block_heading, "
+                    "description, kind, status, origin) "
+                    "VALUES (?, 'activity', ?, ?, 'internal_db_check', 'open', 'section')",
+                    [
+                        report_gap_id(
+                            question, section_key="activity", block_heading=heading
+                        ),
+                        heading,
+                        question,
+                    ],
+                )
+            ctx = investigation_cycle._BroadPlanContext(
+                state=SessionState(session_id="gap-timeout"),
+                db=db,
+                session_id="gap-timeout",
+                base_url="http://unused",
+                model="test",
+                plan_cycle=1,
+                observed_keypoints=[],
+                observed_keypoint_labels=[],
+                emit_fn=None,
+                llm_status_fn=lambda _: None,
+                progress_callback=None,
+                case_profile=CaseEvidenceProfile(event_ids=frozenset()),
+            )
+            selected, _ = investigation_cycle._select_gap_drafts(
+                ctx, investigation_cycle._persisted_gap_drafts(ctx), limit=2
+            )
+            self.assertEqual(2, len(selected))
+            first = selected[0]["gap"]
+            calls = []
+
+            def discover(**kwargs):
+                calls.append(kwargs["question"])
+                if kwargs["question"] == first["description"]:
+                    raise LLMRequestTimeoutError("Repeated response deadline")
+                return {"status": "unresolved", "reason": "question_scope_unresolved"}
+
+            async def run():
+                return [
+                    await investigation_cycle._draft_and_admit_candidate(ctx, item, i)
+                    for i, item in enumerate(selected, 1)
+                ]
+
+            with mock.patch.object(
+                investigation_cycle, "discover_gap_evidence", side_effect=discover
+            ):
+                outcomes = asyncio.run(run())
+            self.assertEqual([item["gap"]["description"] for item in selected], calls)
+            self.assertEqual("generation_failed", outcomes[0][1]["status"])
+            self.assertIn("llm_request_timeout", outcomes[0][1]["reason"])
+            self.assertEqual("discovery_failed", outcomes[1][1]["status"])
+            saved = json.loads(
+                db.execute(
+                    "SELECT output_json FROM trace.investigation_steps "
+                    "WHERE phase = 'plan-broad-candidate' "
+                    "AND json_extract_string(input_json, '$.gap_id') = ?",
+                    [first["gap_id"]],
+                ).fetchone()[0]
+            )
+            self.assertEqual("llm_request_timeout", saved["error_code"])
+            answer = build_structured_answer(
+                db.case,
+                db,
+                answer_spec="",
+                answer_id="timeout-answer",
+                section_key="activity",
+                block_heading=first["block_heading"],
+                question_text=first["description"],
+            )
+            self.assertNotIn(answer["status"], {"answered", "partial"})
+            self.assertTrue(
+                any(
+                    "attempt failed" in reason.lower()
+                    for reason in answer["missing_reason"]
+                )
+            )
+            exported = json.loads(
+                (db.case.reports_dir / answer["json_path"]).read_text()
+            )
+            self.assertEqual(answer["status"], exported["status"])
+            self.assertEqual(answer["missing_reason"], exported["missing_reason"])
+
     def test_broad_gap_draft_keeps_exact_request_as_source_context(self) -> None:
         import asyncio
 
