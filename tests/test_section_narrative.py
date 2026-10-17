@@ -77,6 +77,43 @@ class SectionNarrativeTests(unittest.TestCase):
                         "SELECT section_key, body, stale FROM report_sections"
                     ).fetchall()
                     status = result["report_status"]
+                # Change the evidence so an optional draft is generated on refresh.
+                db.execute("UPDATE findings SET summary = 'Updated observed finding'")
+                wrong_paragraph = (
+                    "HOST-1 logged on three times, although the count is seven."
+                )
+                with patch.object(
+                    section_refresher,
+                    "_narrate_projection",
+                    return_value=wrong_paragraph,
+                ):
+                    asyncio.run(
+                        section_refresher.async_refresh_report_sections(
+                            case=case,
+                            db=db,
+                            session_id="draft-only",
+                            iteration=2,
+                            base_url="",
+                            model="",
+                            sections=sources,
+                            progress_callback=None,
+                            focus_sections=[],
+                            allow_narration=True,
+                        )
+                    )
+                public_bodies = db.execute(
+                    "SELECT body FROM report_sections"
+                ).fetchall()
+                drafts = db.execute(
+                    "SELECT payload FROM section_runs WHERE phase = 'narrative-draft'"
+                ).fetchall()
+                self.assertTrue(drafts)
+                self.assertTrue(
+                    all(wrong_paragraph not in row[0] for row in public_bodies)
+                )
+                self.assertTrue(
+                    any(json.loads(row[0])["body"] == wrong_paragraph for row in drafts)
+                )
 
             self.assertEqual(5, len(sources))
             self.assertEqual(5, result["updated_sections"])

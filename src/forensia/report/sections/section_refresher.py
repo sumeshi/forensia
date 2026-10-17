@@ -456,6 +456,7 @@ def _prepare_projection(
     }
     signature = _canonical_hash(
         {
+            "narration_policy": "trace_only",
             "report_input": {
                 "section_key": source.section_key,
                 "body": source.body,
@@ -970,30 +971,25 @@ async def _refresh_section(
                 narration_rejection_reasons = _narration_admission_reasons(
                     db, projection, fallback, narrated_body, paragraph
                 )
+                _store_section_run(
+                    db,
+                    section_key=section_key,
+                    block_heading=str(
+                        projection["blocks"][narrative_index].get("heading") or ""
+                    ),
+                    iteration=iteration,
+                    phase="narrative-draft",
+                    payload={
+                        "body": paragraph,
+                        "status": "unverified",
+                        "input_signature": projection["input_signature"],
+                        "rejection_reasons": narration_rejection_reasons,
+                    },
+                )
                 if narration_rejection_reasons:
                     narration_status = "rejected:quality_gate"
                 else:
-                    try:
-                        body = _persist_projection(
-                            db,
-                            section_key,
-                            str(request.get("title") or section_key),
-                            narrated_body,
-                            projection["evidence_results"],
-                            session_id=session_id,
-                        )
-                        narrated = True
-                        narration_status = "narrated"
-                    except Exception as exc:
-                        _log(
-                            "REPORT",
-                            f"{section_key} — narrated output was not persisted: {exc}",
-                            level="warning",
-                        )
-                        narration_status = (
-                            f"fallback:persist_error:{type(exc).__name__}"
-                        )
-                        body = fallback
+                    narration_status = "withheld:unverified"
         if not narrated:
             _log("REPORT", f"{section_key} — deterministic projection persisted")
         _record_projection(
