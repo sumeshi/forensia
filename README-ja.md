@@ -2,6 +2,8 @@
 
 ![forensia-logo](https://gist.githubusercontent.com/sumeshi/c2f430d352ae763273faadf9616a29e5/raw/f0b46d7a1801f359ddae0927ba5c4c4f969b1953/forensia2.svg)
 
+[English](README.md)
+
 FORENSIAは、LLMを用いてWindowsデジタルフォレンジックを支援する、実験的なハーネスです。
 
 MFT、EVTX、Prefetch、Registryなどの各種アーティファクトを取り込み、検知ルールによる発見を起点として、**調査仮説の生成、証拠の検索と検証、報告書の更新**を繰り返します。
@@ -105,7 +107,7 @@ flowchart TB
 
     Q -->|"Results"| V["Evidence Assessor"]
     V --> S["Sufficiency Guard"]
-    S -->|"Asessment"| C
+    S -->|"Assessment"| C
 
     S -.-> T[("Trace State")]
     T -.->|"History"| X
@@ -242,7 +244,7 @@ FORENSIAは実験段階のプロジェクトです。
 FORENSIAは開発中のプロジェクトであり、アーキテクチャやインターフェースは大幅に変更される可能性があります。
 機能の追加だけでなく、ハーネスをより単純にする方法、調査の失敗例、推論や検証の品質を測定する方法についての議論も歓迎します。
 
-実装の構造、開発環境、拡張方法、テストについては[CONTRIBUTING.md](CONTRIBUTING.md)を参照してください。
+処理の流れ、実装上の工夫、変更時に守る設計上の判断と開発手順は[CONTRIBUTING.md](CONTRIBUTING.md)を参照してください。
 
 
 ## ライセンス
