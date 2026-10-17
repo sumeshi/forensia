@@ -22,6 +22,202 @@ from forensia.db.database import CaseDB
 
 
 class InvestigateWiringTests(unittest.TestCase):
+    def test_gap_discovery_retries_invalid_sql_once_then_stops_at_budget(self) -> None:
+        from forensia.core.session import SessionState
+        from forensia.investigation import investigation_cycle
+
+        with tempfile.TemporaryDirectory() as tmpdir, CaseDB(Case.init(tmpdir)) as db:
+            db.execute(
+                "INSERT INTO prefetch_executions "
+                "(evidence_id, executable_name, last_exec_time) VALUES "
+                "('prefetch-gap-retry', 'VEGA.EXE', '2032-08-17 10:00:00')"
+            )
+            session_id = "S-gap-retry"
+            ctx = investigation_cycle._BroadPlanContext(
+                state=SessionState(session_id=session_id),
+                db=db,
+                session_id=session_id,
+                base_url="unused",
+                model="unused",
+                plan_cycle=1,
+                observed_keypoints=[],
+                observed_keypoint_labels=[],
+                emit_fn=None,
+                llm_status_fn=lambda _: None,
+                progress_callback=None,
+                case_profile=None,
+            )
+            candidate = {
+                "candidate_ref": "gap-candidate",
+                "candidate_fingerprint": "candidate-fingerprint",
+                "title": "Find requested records",
+                "scope": {},
+            }
+            selected = {
+                "candidate": candidate,
+                "gap": {
+                    "gap_id": "gap-retry",
+                    "block_heading": "Question",
+                    "description": "Find requested records",
+                },
+                "input_fingerprint": "input-fingerprint",
+                "attempt_number": 1,
+                "prior_attempts": {},
+            }
+            invalid_sql = (
+                "SELECT evidence_id, last_exec_time FROM prefetch_executions "
+                "WHERE last_exec_time BETWEEN '09:00:00' AND '18:00:00'"
+            )
+            corrected_sql = (
+                "SELECT evidence_id, last_exec_time FROM prefetch_executions "
+                "WHERE CAST(last_exec_time AS TIME) BETWEEN "
+                "TIME '09:00:00' AND TIME '18:00:00'"
+            )
+
+            with (
+                mock.patch(
+                    "forensia.llm.json_response.request_llm_json",
+                    side_effect=[
+                        {
+                            "request_contract": {
+                                "status": "resolved",
+                                "scope_filters": [],
+                                "requirements": [
+                                    {
+                                        "family": "prefetch",
+                                        "field": "last_exec_time",
+                                        "kind": "observed_value",
+                                    }
+                                ],
+                            },
+                            "action": {
+                                "intent": "Find records",
+                                "target_table": "prefetch_executions",
+                                "sql": invalid_sql,
+                            },
+                        },
+                        {
+                            "action": {
+                                "intent": "Find records",
+                                "target_table": "prefetch_executions",
+                                "sql": corrected_sql,
+                            },
+                        },
+                    ],
+                ) as request,
+                mock.patch.object(
+                    investigation_cycle,
+                    "_call_broad_drafter",
+                    new=mock.AsyncMock(return_value=(None, "invalid draft")),
+                ),
+            ):
+                asyncio.run(
+                    investigation_cycle._draft_and_admit_candidate(ctx, selected, 1)
+                )
+
+            self.assertEqual(2, request.call_count)
+            self.assertIn(
+                "Conversion", str(request.call_args_list[1].kwargs["messages"])
+            )
+            receipts = db.execute(
+                "SELECT phase, output_json FROM trace.investigation_steps "
+                "ORDER BY created_at, step_id"
+            ).fetchall()
+            receipts = [row[1] for row in receipts if row[0] == "plan-gap-discovery"]
+            discovery = [json.loads(row) for row in receipts]
+            by_status = {item["status"]: item for item in discovery}
+            self.assertEqual({"invalid", "completed"}, set(by_status), receipts)
+            self.assertIn("09:00:00", by_status["invalid"]["sql"])
+            self.assertIn("09:00:00", by_status["completed"]["sql"])
+
+            exhausted = {
+                **selected,
+                "candidate": {**candidate, "candidate_ref": "gap-exhausted"},
+                "gap": {**selected["gap"], "gap_id": "gap-exhausted"},
+                "prior_attempts": {
+                    "gap-exhausted": [
+                        {
+                            "candidate_fingerprint": "candidate-fingerprint",
+                            "input_fingerprint": "input-fingerprint",
+                            "correction_calls_used": 1,
+                            "draft_calls_used": 0,
+                        }
+                    ]
+                },
+            }
+            with (
+                mock.patch(
+                    "forensia.llm.json_response.request_llm_json",
+                    return_value={
+                        "action": {
+                            "intent": "Find records",
+                            "target_table": "prefetch_executions",
+                            "sql": invalid_sql,
+                        }
+                    },
+                ) as request,
+                mock.patch.object(
+                    investigation_cycle,
+                    "_call_broad_drafter",
+                    new=mock.AsyncMock(),
+                ) as draft,
+            ):
+                asyncio.run(
+                    investigation_cycle._draft_and_admit_candidate(ctx, exhausted, 2)
+                )
+            request.assert_called_once()
+            draft.assert_not_awaited()
+
+    def test_explicit_questions_exist_before_first_investigation_cycle(self) -> None:
+        from pathlib import Path
+
+        from forensia.investigation import investigator
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            spec = Path(tmpdir) / "questions.md"
+            spec.write_text(
+                "# Inventory\n\nKeep every source reference.\n\n"
+                "## Label\n<!-- question: What label is configured? -->\n"
+                "<!-- answer_id: configured-label -->\n"
+            )
+            with CaseDB(case) as db:
+
+                async def first_cycle(env):
+                    rows = db.execute(
+                        "SELECT description, status, coverage_reason, hypothesis_id FROM report_gaps WHERE block_heading = 'Label'"
+                    ).fetchall()
+                    self.assertEqual(1, len(rows))
+                    self.assertIn("What label is configured?", rows[0][0])
+                    self.assertIn("Keep every source reference.", rows[0][0])
+                    self.assertEqual(("open", "discovery_pending", None), rows[0][1:])
+                    return "stopped", 0, "max_iterations"
+
+                with (
+                    mock.patch.object(
+                        investigator, "_run_investigation_loop", side_effect=first_cycle
+                    ),
+                    mock.patch(
+                        "forensia.llm.json_response.request_llm_json",
+                        side_effect=AssertionError("No model needed"),
+                    ),
+                ):
+                    asyncio.run(
+                        investigator.investigate(
+                            case=case,
+                            db=db,
+                            base_url="unused",
+                            model="unused",
+                            max_iter=1,
+                            report_spec=spec,
+                        )
+                    )
+                answer = json.loads(
+                    (case.reports_dir / "structured/configured-label.json").read_text()
+                )
+                self.assertEqual("insufficient_evidence", answer["status"])
+                self.assertEqual(["discovery_pending"], answer["missing_reason"])
+
     def test_settlement_receipt_failure_rolls_back_case_and_trace_together(
         self,
     ) -> None:

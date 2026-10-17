@@ -259,7 +259,7 @@ def observation_condition_error(condition: Any) -> str | None:
     operator = operator.strip()
 
     catalog = observation_catalog()
-    if family == "evtx" or family not in catalog:
+    if family not in catalog:
         return "observation-family-unsupported"
     if capability not in catalog[family]["capabilities"]:
         return "observation-capability-unsupported"

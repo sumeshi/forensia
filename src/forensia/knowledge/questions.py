@@ -1,13 +1,25 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from decimal import Decimal
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+import sqlglot
 import yaml
+from sqlglot import exp
 
+from forensia.core.verification import VerificationSpec
+from forensia.db.database import CaseDB
+from forensia.db.evidence_lookup import canonical_record_table
+from forensia.db.query import normalize_value
+from forensia.knowledge.catalog import load_schema_hints
+from forensia.knowledge.coverage import observation_catalog
 from forensia.knowledge.resources import schema_dir
 
 # Aliases normalised to the canonical structured_status vocabulary.
@@ -39,10 +51,46 @@ def _schema_dir() -> Path:
     return schema_dir()
 
 
+def gap_operational_reason(db: CaseDB, gap_id: str) -> str | None:
+    """Project the latest typed broad-draft outcome as a stable status code."""
+    row = db.execute(
+        "SELECT output_json FROM trace.investigation_steps "
+        "WHERE phase = 'plan-broad-candidate' "
+        "AND json_extract_string(input_json, '$.gap_id') = ? "
+        "ORDER BY created_at DESC, step_id DESC LIMIT 1",
+        [gap_id],
+    ).fetchone()
+    if not row:
+        return None
+    output = row[0]
+    if isinstance(output, str):
+        try:
+            output = json.loads(output)
+        except json.JSONDecodeError:
+            return None
+    if not isinstance(output, dict):
+        return None
+    if output.get("status") in {"attempting", "correcting"}:
+        return "investigation_attempt_in_progress"
+    if output.get("error_type"):
+        return "investigation_attempt_failed"
+    return None
+
+
 def _clean_text(value: Any) -> str:
     text = str(value or "").casefold()
     text = text.replace("_", " ").replace("-", " ")
     return " ".join(re.split(r"\s+", text)).strip()
+
+
+def strip_section_instructions(question_text: str) -> str:
+    """Remove injected section-wide prose before interpreting question scope."""
+    return re.sub(
+        r"<!--\s*section_instructions\s*:.*?-->\s*",
+        "",
+        str(question_text or ""),
+        flags=re.IGNORECASE | re.DOTALL,
+    )
 
 
 def _coerce_str_tuple(value: Any) -> tuple[str, ...]:
@@ -56,6 +104,415 @@ def _coerce_dict_list(value: Any) -> tuple[dict[str, Any], ...]:
     if not isinstance(value, list):
         return ()
     return tuple(dict(item) for item in value if isinstance(item, dict))
+
+
+def verification_spec_payload(raw: Any) -> dict[str, Any]:
+    """Return the mapping form of a stored verification specification."""
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _same_observed_value(actual: Any, expected: Any) -> bool:
+    actual_is_datetime = isinstance(actual, datetime)
+    expected_is_datetime = isinstance(expected, datetime)
+    actual, expected = normalize_value(actual), normalize_value(expected)
+    if isinstance(actual, bool) or isinstance(expected, bool):
+        return (
+            isinstance(actual, bool)
+            and isinstance(expected, bool)
+            and actual is expected
+        )
+    numeric_types = (int, float, Decimal)
+    if isinstance(actual, numeric_types) and isinstance(expected, numeric_types):
+        return actual == expected
+    if isinstance(actual, str) and isinstance(expected, str):
+        if actual_is_datetime or expected_is_datetime:
+
+            def as_utc(value: str) -> datetime:
+                parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                return (
+                    parsed.replace(tzinfo=UTC)
+                    if parsed.utcoffset() is None
+                    else parsed.astimezone(UTC)
+                )
+
+            try:
+                return as_utc(actual) == as_utc(expected)
+            except ValueError:
+                return False
+        return actual.strip().casefold() == expected.strip().casefold()
+    return type(actual) is type(expected) and actual == expected
+
+
+def question_contract_match_reason(
+    contract: dict[str, Any] | None,
+    verification_spec: Any,
+    *,
+    observation_records: dict[str, dict[str, Any]] | None = None,
+) -> str | None:
+    """Check that a verification spec contains a typed observation for a request."""
+    if not isinstance(contract, dict):
+        return "question_contract_invalid"
+    requirements = contract.get("requirements")
+    if contract.get("status") != "resolved" or not isinstance(requirements, list):
+        return "question_scope_unresolved"
+    conditions = (
+        verification_spec.get("support_conditions", {})
+        if isinstance(verification_spec, dict)
+        else getattr(verification_spec, "support_conditions", {})
+    )
+    observation = (
+        conditions.get("observation") if isinstance(conditions, dict) else None
+    )
+    if not isinstance(observation, dict):
+        return "question_contract_requires_typed_observation"
+    matched_observation = False
+    for requirement in requirements:
+        if not isinstance(requirement, dict):
+            return "question_contract_invalid"
+        same_field = str(requirement.get("family") or "").strip().casefold() == str(
+            observation.get("family") or ""
+        ).strip().casefold() and str(requirement.get("field") or "") == str(
+            observation.get("field") or ""
+        )
+        if not same_field:
+            continue
+        if requirement.get("kind") == "observed_value":
+            operator = observation.get("operator")
+            if operator not in {"equals", "contains"}:
+                continue
+            if observation_records is not None:
+                ids = observation.get("evidence_ids")
+                if (
+                    not isinstance(ids, list)
+                    or not ids
+                    or any(not isinstance(evidence_id, str) for evidence_id in ids)
+                ):
+                    continue
+                selected_records = [
+                    observation_records.get(str(evidence_id))
+                    for evidence_id in dict.fromkeys(ids)
+                ]
+                selected_records = [
+                    record for record in selected_records if isinstance(record, dict)
+                ]
+                expected = observation.get("value")
+                matching_count = 0
+                for record in selected_records:
+                    if requirement["field"] not in record:
+                        continue
+                    actual = record[requirement["field"]]
+                    if isinstance(actual, str):
+                        actual = normalize_value(actual)
+                    if isinstance(actual, (list, tuple, set)):
+                        matches = operator == "contains" and any(
+                            _same_observed_value(item, expected) for item in actual
+                        )
+                    else:
+                        matches = operator == "equals" and _same_observed_value(
+                            actual, expected
+                        )
+                    matching_count += bool(matches)
+                min_count = conditions.get("min_count", 1)
+                if (
+                    not isinstance(min_count, int)
+                    or isinstance(min_count, bool)
+                    or min_count < 1
+                    or matching_count < min_count
+                ):
+                    continue
+            matched_observation = True
+        elif requirement.get("operator") == observation.get(
+            "operator"
+        ) and requirement.get("value") == observation.get("value"):
+            matched_observation = True
+    return None if matched_observation else "question_contract_observation_mismatch"
+
+
+def question_scope_evidence_ids(
+    db: CaseDB,
+    contract: dict[str, Any],
+    *,
+    max_rows: int = 1000,
+    evidence_ids: list[str] | None = None,
+) -> tuple[list[str], bool]:
+    """Return the current canonical evidence IDs matching a frozen request scope."""
+    requirements = contract.get("requirements")
+    filters = contract.get("scope_filters", [])
+    if contract.get("status") != "resolved" or not isinstance(requirements, list):
+        raise ValueError("question_scope_contract_unresolved")
+    families = {
+        str(item.get("family") or "").strip().casefold()
+        for item in requirements
+        if isinstance(item, dict)
+    }
+    if len(families) != 1 or "" in families:
+        raise ValueError("question_scope_requires_one_artifact_family")
+    family = next(iter(families))
+    catalog = observation_catalog().get(family)
+    table = canonical_record_table(family)
+    if not catalog or not table:
+        raise ValueError("question_scope_family_unsupported")
+    allowed_fields = set(catalog["fields"])
+    for item in requirements:
+        if not isinstance(item, dict) or item.get("field") not in allowed_fields:
+            raise ValueError("question_scope_requirement_field_unsupported")
+    if not isinstance(filters, list):
+        raise ValueError("question_scope_filters_invalid")
+    id_column = "artifact_id" if family == "registry" else "evidence_id"
+    query = sqlglot.parse_one(f"SELECT {id_column} FROM {table}", read="duckdb")
+    for item in filters:
+        if (
+            not isinstance(item, dict)
+            or str(item.get("family") or "").strip().casefold() != family
+            or item.get("field") not in allowed_fields
+        ):
+            raise ValueError("question_scope_filter_unsupported")
+        query = query.where(
+            question_scope_sql_predicate(
+                db,
+                family,
+                str(item["field"]),
+                str(item.get("operator") or ""),
+                item.get("value"),
+                exp.column(str(item["field"])),
+            ),
+            append=True,
+        )
+    if evidence_ids is not None:
+        if not evidence_ids:
+            return [], False
+        query = query.where(exp.column(id_column).isin(*evidence_ids))
+    query = query.limit(max_rows + 1)
+    result = db.execute(query.sql(dialect="duckdb"))
+    fetched = result.fetchmany(max_rows + 1)
+    truncated = len(fetched) > max_rows
+    ids = list(dict.fromkeys(str(row[0]) for row in fetched[:max_rows] if row[0]))
+    return ids, truncated
+
+
+def question_directory_scope_fields(family: str) -> frozenset[str]:
+    """Return fields whose artifact contract defines directory ancestry."""
+    table = canonical_record_table(family)
+    hints = load_schema_hints().get(table or "", {})
+    fields = hints.get("directory_scope_fields", [])
+    return frozenset(str(field) for field in fields if isinstance(field, str))
+
+
+def normalize_directory_scope(value: Any) -> str:
+    """Normalize a literal directory path while preserving its root semantics."""
+    if not isinstance(value, str):
+        raise ValueError("question_scope_path_value_invalid")
+    path = value.strip().replace("\\", "/")
+    if not path or "\x00" in path:
+        raise ValueError("question_scope_path_value_invalid")
+    unc = path.startswith("//")
+    if unc:
+        tail = re.sub(r"/+", "/", path[2:]).strip("/")
+        if len(tail.split("/")) < 2:
+            raise ValueError("question_scope_path_value_invalid")
+        path = "//" + tail
+    else:
+        path = re.sub(r"/+", "/", path)
+        if re.match(r"^[A-Za-z]:($|[^/])", path):
+            raise ValueError("question_scope_path_value_invalid")
+        drive_root = bool(re.fullmatch(r"[A-Za-z]:/", path))
+        if path != "/" and not drive_root:
+            path = path.rstrip("/")
+    components = [component for component in path.strip("/").split("/") if component]
+    if any(component in {".", ".."} for component in components):
+        raise ValueError("question_scope_path_value_invalid")
+    if not components and path != "/":
+        raise ValueError("question_scope_path_value_invalid")
+    return path.lower()
+
+
+def validate_question_scope_operator(
+    family: str, field: str, operator: str, value: Any
+) -> None:
+    """Validate scope operators against the declared artifact field semantics."""
+    if operator == "path_under":
+        if field not in question_directory_scope_fields(family):
+            raise ValueError("question_scope_filter_operator_unsupported")
+        normalize_directory_scope(value)
+    elif operator not in {"equals", "greater_than", "less_than"}:
+        raise ValueError("question_scope_filter_operator_unsupported")
+
+
+def question_scope_sql_predicate(
+    db: CaseDB,
+    family: str,
+    field: str,
+    operator: str,
+    value: Any,
+    column: exp.Expression,
+) -> exp.Expression:
+    """Build the shared SQL predicate used for discovery and scope evidence IDs."""
+    validate_question_scope_operator(family, field, operator, value)
+    if operator == "path_under":
+        path = exp.func(
+            "lower",
+            exp.func(
+                "replace",
+                column,
+                exp.Literal.string("\\"),
+                exp.Literal.string("/"),
+            ),
+        )
+        normalized = normalize_directory_scope(value)
+        if normalized.startswith("/") or re.match(r"^[a-z]:/", normalized):
+            prefix = normalized if normalized.endswith("/") else normalized + "/"
+            return exp.and_(
+                exp.func("starts_with", path, exp.Literal.string(prefix)),
+                exp.NEQ(this=path.copy(), expression=exp.Literal.string(normalized)),
+                exp.NEQ(this=path.copy(), expression=exp.Literal.string(prefix)),
+            )
+        # The trailing slash belongs after the candidate directory, not after
+        # the whole artifact path: a matching basename is not a descendant.
+        path_without_trailing_slashes = exp.func("rtrim", path, exp.Literal.string("/"))
+        wrapped_path = exp.func(
+            "concat", exp.Literal.string("/"), path_without_trailing_slashes
+        )
+        return exp.func(
+            "contains",
+            exp.Paren(this=wrapped_path),
+            exp.Literal.string(f"/{normalized.strip('/')}/"),
+        )
+
+    value = canonical_scope_value(db, family, field, value)
+    literal = (
+        exp.Boolean(this=value)
+        if isinstance(value, bool)
+        else exp.Literal.number(str(value))
+        if isinstance(value, (int, float))
+        else exp.Literal.string(str(value))
+    )
+    comparison = {
+        "equals": exp.EQ,
+        "greater_than": exp.GT,
+        "less_than": exp.LT,
+    }[operator]
+    return comparison(this=column, expression=literal)
+
+
+def canonical_scope_value(db: CaseDB, family: str, field: str, value: Any) -> Any:
+    """Normalize explicit offsets for canonical DuckDB TIMESTAMP comparisons."""
+    if not isinstance(value, str):
+        return value
+    column = db.execute(
+        "SELECT data_type FROM information_schema.columns "
+        "WHERE table_schema = 'main' AND table_name = ? AND column_name = ?",
+        [canonical_record_table(family), field],
+    ).fetchone()
+    if not column or str(column[0]).upper() != "TIMESTAMP":
+        return value
+    try:
+        parsed = datetime.fromisoformat(
+            value.strip().replace("z", "+00:00").replace("Z", "+00:00")
+        )
+    except ValueError:
+        return value
+    if parsed.tzinfo is None:
+        return value
+    return parsed.astimezone(UTC).replace(tzinfo=None).isoformat(sep="T")
+
+
+def admitted_question_receipt(
+    db: CaseDB,
+    *,
+    gap_id: str,
+    question_text: str,
+    hypothesis_id: str,
+    verification_spec: Any,
+) -> dict[str, Any] | None:
+    """Read the exact discovery receipt admitted for this question and spec."""
+    try:
+        spec_payload = VerificationSpec.model_validate(
+            verification_spec_payload(verification_spec)
+        ).model_dump(mode="json")
+    except Exception:
+        return None
+    spec_fingerprint = _question_fingerprint(spec_payload)
+    for raw_input, raw_output in db.execute(
+        "SELECT input_json, output_json FROM trace.investigation_steps "
+        "WHERE phase = 'plan-broad-candidate' "
+        "ORDER BY created_at DESC, step_id DESC"
+    ).fetchall():
+        try:
+            attempt_input, attempt = json.loads(raw_input), json.loads(raw_output)
+        except TypeError, json.JSONDecodeError:
+            continue
+        discovery_step_id = attempt.get("discovery_step_id")
+        contract_id = attempt.get("contract_id")
+        if (
+            attempt_input.get("gap_id") != gap_id
+            or attempt_input.get("question") != question_text
+            or attempt.get("status") != "admitted"
+            or attempt.get("admitted_hypothesis_id") != hypothesis_id
+            or attempt.get("admitted_spec_fingerprint") != spec_fingerprint
+            or not discovery_step_id
+            or not contract_id
+        ):
+            continue
+        discovery_row = db.execute(
+            "SELECT input_json, output_json FROM trace.investigation_steps "
+            "WHERE step_id = ? AND phase = 'plan-gap-discovery'",
+            [discovery_step_id],
+        ).fetchone()
+        if not discovery_row:
+            continue
+        try:
+            discovery_input = json.loads(discovery_row[0])
+            receipt = json.loads(discovery_row[1])
+        except TypeError, json.JSONDecodeError:
+            continue
+        contract = receipt.get("request_contract")
+        observation = (
+            spec_payload.get("support_conditions", {}).get("observation", {})
+            if isinstance(spec_payload.get("support_conditions"), dict)
+            else {}
+        )
+        observation_ids = (
+            observation.get("evidence_ids") if isinstance(observation, dict) else None
+        )
+        from forensia.db.evidence_lookup import fetch_evidence_records
+
+        observation_records = (
+            fetch_evidence_records(db, observation_ids)
+            if isinstance(observation_ids, list)
+            and all(isinstance(item, str) for item in observation_ids)
+            else {}
+        )
+        if (
+            discovery_input.get("gap_id") != gap_id
+            or discovery_input.get("question") != question_text
+            or receipt.get("status") != "completed"
+            or receipt.get("discovery_step_id") != discovery_step_id
+            or receipt.get("contract_id") != contract_id
+            or not isinstance(contract, dict)
+            or _question_fingerprint(contract) != contract_id
+            or not isinstance(observation_ids, list)
+            or any(not isinstance(item, str) for item in observation_ids)
+            or not set(observation_ids).issubset(observation_records)
+            or question_contract_match_reason(
+                contract, spec_payload, observation_records=observation_records
+            )
+        ):
+            continue
+        return receipt
+    return None
+
+
+def _question_fingerprint(payload: dict[str, Any]) -> str:
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str).encode(
+            "utf-8"
+        )
+    ).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)
@@ -310,6 +767,30 @@ def project_rows_for_question_spec(
     return projected or rows
 
 
+def question_requests_local_time(question_text: str) -> bool:
+    question_text = strip_section_instructions(question_text)
+    return bool(
+        re.search(
+            r"\b(?:local|timezone|time zone)\b|現地|タイムゾーン",
+            question_text,
+            re.IGNORECASE,
+        )
+    )
+
+
+def question_requests_utc(question_text: str) -> bool:
+    question_text = strip_section_instructions(question_text)
+    return bool(re.search(r"\bUTC\b(?!\s*[+-])", question_text, re.IGNORECASE))
+
+
+def local_time_basis_unresolved(question_text: str, source_timezone: str) -> bool:
+    return (
+        question_requests_local_time(question_text)
+        and not question_requests_utc(question_text)
+        and source_timezone == "UTC"
+    )
+
+
 def extract_time_qualifiers(
     question_text: str, tz_name: str | None = None
 ) -> dict[str, str | None]:
@@ -336,7 +817,7 @@ def extract_time_qualifiers(
         "timezone_note": None,
         "basis": None,
     }
-    text = str(question_text or "")
+    text = strip_section_instructions(question_text)
 
     date_from: str | None = None
     date_to: str | None = None
@@ -352,6 +833,10 @@ def extract_time_qualifiers(
         m = re.search(r"(\d{4}-\d{2}-\d{2})\s*[〜~]\s*(\d{4}-\d{2}-\d{2})", text)
         if m:
             date_from, date_to = m.group(1), m.group(2)
+        else:
+            m = re.search(r"\b(\d{4}-\d{2}-\d{2})\b", text)
+            if m:
+                date_from = date_to = m.group(1)
 
     hour_from: str | None = None
     hour_to: str | None = None
@@ -444,17 +929,7 @@ def sub_requirement_coverage(
                     allowed_values = [str(value).strip().lower() for value in allowed]
                 else:
                     allowed_values = [str(allowed).strip().lower()]
-                is_path = value_field.casefold() in {
-                    "file_path",
-                    "file_name",
-                    "path",
-                }
-                if is_path:
-                    value_ok = any(
-                        token and token in row_value for token in allowed_values
-                    )
-                else:
-                    value_ok = row_value in allowed_values
+                value_ok = row_value in allowed_values
                 if not value_ok:
                     ok = False
                     break
@@ -589,3 +1064,113 @@ def evaluate_question_spec_status(
     if base_status not in _valid_structured_statuses():
         base_status = "answered"
     return base_status, reasons
+
+
+def explicit_all_timestamps_request(question_text: str) -> bool:
+    """Whether the question asks for the complete timestamp field group."""
+    text = strip_section_instructions(question_text)
+    return bool(
+        re.search(
+            r"\b(?:all|every)\s+(?:(?:of\s+the)\s+)?"
+            r"(?:(?:available|observed|recorded|known)\s+)?"
+            r"time[\s-]?stamps?\b",
+            text,
+            flags=re.IGNORECASE,
+        )
+        or re.search(r"(?:すべて|全て|全)(?:の)?タイムスタンプ", text)
+    )
+
+
+def question_timestamp_coverage(
+    db: CaseDB,
+    question_text: str,
+    contract: dict[str, Any],
+    records: dict[str, dict[str, Any]],
+) -> tuple[tuple[str, ...], dict[str, tuple[str, ...]]]:
+    """Return declared timestamp fields and fields absent from each evidence row.
+
+    The field group comes from the canonical artifact table's declared TIMESTAMP
+    columns, limited to its typed observation catalog. Model-selected requirements
+    do not redefine an explicit request for all timestamps.
+    """
+    if not explicit_all_timestamps_request(question_text):
+        return (), {}
+
+    def unresolved(reason: str) -> tuple[tuple[str, ...], dict[str, tuple[str, ...]]]:
+        return (), {evidence_id: (reason,) for evidence_id in records} or {
+            "__coverage__": (reason,)
+        }
+
+    requirements = contract.get("requirements")
+    families = {
+        str(item.get("family") or "").strip().casefold()
+        for item in requirements or []
+        if isinstance(item, dict)
+    }
+    if len(families) != 1 or "" in families:
+        return unresolved("artifact family is unresolved")
+    family = next(iter(families))
+    table = canonical_record_table(family)
+    catalog = observation_catalog().get(family)
+    if not table or not catalog:
+        return unresolved("declared timestamp fields are unavailable")
+    rows = db.execute(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_schema = 'main' AND table_name = ? "
+        "AND UPPER(data_type) LIKE '%TIMESTAMP%' ORDER BY ordinal_position",
+        [table],
+    ).fetchall()
+    catalog_fields = set(catalog["fields"])
+    fields = tuple(str(row[0]) for row in rows if str(row[0]) in catalog_fields)
+    json_fields = {
+        str(row[0])
+        for row in db.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema = 'main' AND table_name = ? "
+            "AND UPPER(data_type) = 'JSON'",
+            [table],
+        ).fetchall()
+        if str(row[0]) in catalog_fields
+    }
+    from forensia.knowledge.catalog import load_schema_hints
+
+    declaration = load_schema_hints().get(table, {})
+    declared_arrays = declaration.get("timestamp_array_fields")
+    if json_fields and not isinstance(declared_arrays, list):
+        return unresolved("timestamp array fields are not classified")
+    if declared_arrays is not None and (
+        not isinstance(declared_arrays, list)
+        or any(
+            not isinstance(field_name, str) or field_name not in json_fields
+            for field_name in declared_arrays
+        )
+    ):
+        return unresolved(
+            "timestamp array declaration does not match the artifact schema"
+        )
+    fields += tuple(field_name for field_name in declared_arrays or [])
+    timestamp_arrays = set(declared_arrays or [])
+    if not fields:
+        return unresolved("declared timestamp fields are unavailable")
+
+    def field_has_value(record: dict[str, Any], field_name: str) -> bool:
+        value = record.get(field_name)
+        if field_name in timestamp_arrays:
+            return bool(
+                isinstance(value, (list, tuple))
+                and value
+                and all(item is not None and str(item).strip() for item in value)
+            )
+        return _has_value(record, field_name)
+
+    missing = {
+        evidence_id: tuple(
+            field_name
+            for field_name in fields
+            if not field_has_value(record, field_name)
+        )
+        for evidence_id, record in records.items()
+    }
+    return fields, {
+        evidence_id: values for evidence_id, values in missing.items() if values
+    }

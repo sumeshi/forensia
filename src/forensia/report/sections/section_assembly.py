@@ -57,6 +57,30 @@ def section_family(section_key: str) -> str:
     return parts[1] if len(parts) == 2 else parts[0]
 
 
+def block_question_request(
+    section_key: str, block: dict[str, Any]
+) -> dict[str, str] | None:
+    mode = str(block.get("mode") or "").strip().casefold()
+    if block.get("builder") or not (
+        mode in {"question", "benchmark", "structured"}
+        or block.get("answer_spec")
+        or block.get("question")
+    ):
+        return None
+    heading = str(block.get("heading") or "")
+    return {
+        "section_key": section_key,
+        "block_heading": heading,
+        "question_text": "\n".join(
+            (
+                heading,
+                str(block.get("question") or "").strip(),
+                str(block.get("template_body") or ""),
+            )
+        ),
+    }
+
+
 def prepare_section_request(
     case: Case,
     db: CaseDB,
@@ -76,6 +100,11 @@ def prepare_section_request(
     section_key = source.section_key
     title = _title_from_template_body(template_body, section_key)
     template_preamble, blocks = split_template_body(template_body)
+    section_instructions = "\n\n".join(
+        text
+        for text in (template_meta.instructions, template_preamble if blocks else "")
+        if text
+    )
     if not blocks:
         blocks = [
             {
@@ -92,14 +121,9 @@ def prepare_section_request(
         ]
 
     def with_section_instructions(block_body: str) -> str:
-        if not template_meta.instructions:
+        if not section_instructions:
             return block_body
-        return (
-            "<!-- section_instructions:\n"
-            f"{template_meta.instructions}\n"
-            "-->\n"
-            f"{block_body}"
-        )
+        return f"<!-- section_instructions:\n{section_instructions}\n-->\n{block_body}"
 
     block_requests = [
         {

@@ -23,6 +23,7 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
+from forensia.core.verdicts import valid_verdicts
 from forensia.knowledge.catalog import expand_catalog_sql_placeholders
 from forensia.knowledge.rules.loader import load_rules_from_dir
 
@@ -249,14 +250,9 @@ def _audit_question_specs() -> list[str]:
         status_rules = item.get("status_rules") or {}
         if not isinstance(status_rules, dict):
             issues.append(f"{label}: status_rules must be an object")
-        elif status_rules.get("empty_status") and status_rules["empty_status"] not in {
-            "answered",
-            "partial",
-            "not_found",
-            "not_searched",
-            "insufficient_evidence",
-            "wrong_query",
-        }:
+        elif status_rules.get("empty_status") and status_rules[
+            "empty_status"
+        ] not in valid_verdicts("structured_status"):
             issues.append(
                 f"{label}: invalid empty_status {status_rules['empty_status']}"
             )

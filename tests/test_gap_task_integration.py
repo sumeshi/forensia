@@ -1151,6 +1151,41 @@ class RetryAndProjectionTests(unittest.TestCase):
                     "resolved",
                 )
 
+    def test_conclusive_question_resolution_also_closes_other_linked_gaps(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir, CaseDB(Case.init(tmpdir)) as db:
+            _insert_hypothesis(db, "H-QUESTION")
+            db.execute(
+                "UPDATE hypotheses SET status = 'confirmed', source_gap_id = ? "
+                "WHERE hypothesis_id = ?",
+                ["GAP-QUESTION", "H-QUESTION"],
+            )
+            db.execute(
+                "INSERT INTO report_gaps "
+                "(gap_id, block_heading, description, status, hypothesis_id) "
+                "VALUES (?, ?, ?, 'open', ?), (?, ?, ?, 'in_progress', ?)",
+                [
+                    "GAP-QUESTION",
+                    "Question: which file?",
+                    "Question gap",
+                    "H-QUESTION",
+                    "GAP-STOP-H-QUESTION",
+                    "Investigation",
+                    "Stop gap",
+                    "H-QUESTION",
+                ],
+            )
+
+            resolve_linked_work(db, "H-QUESTION")
+
+            statuses = dict(
+                db.execute(
+                    "SELECT gap_id, status FROM report_gaps WHERE gap_id IN (?, ?)",
+                    ["GAP-QUESTION", "GAP-STOP-H-QUESTION"],
+                ).fetchall()
+            )
+            self.assertEqual(statuses["GAP-QUESTION"], "open")
+            self.assertEqual(statuses["GAP-STOP-H-QUESTION"], "resolved")
+
     def test_report_and_persisted_rows_share_task_gap_ids(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             with CaseDB(Case.init(tmpdir)) as db:
@@ -1194,6 +1229,97 @@ class RetryAndProjectionTests(unittest.TestCase):
         self.assertEqual("未登録（未採用）", row["task_id"])
         self.assertEqual("未登録（未採用）", row["gap_id"])
         self.assertIn("TaskとGap", row["next_step"])
+
+
+class QuestionScopeSettlementTests(unittest.TestCase):
+    def test_settlement_uses_only_current_path_under_witnesses(self) -> None:
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from forensia.investigation.report_gap import link_settled_question_gap
+
+        contract = {
+            "status": "resolved",
+            "scope_filters": [
+                {
+                    "family": "mft",
+                    "field": "file_path",
+                    "operator": "path_under",
+                    "value": "Users/Aster/Archive",
+                }
+            ],
+            "requirements": [
+                {"family": "mft", "field": "file_path", "kind": "observed_value"}
+            ],
+        }
+        ids = ["mft-target", "mft-basename", "mft-other-user"]
+        links = [
+            SimpleNamespace(
+                assessment_id=f"assessment-{evidence_id}",
+                evidence_id=evidence_id,
+                role="supporting",
+            )
+            for evidence_id in ids
+        ]
+
+        def requirements_complete(_contract, _spec, records, *_args) -> bool:
+            self.assertEqual({"mft-target"}, set(records))
+            return True
+
+        with tempfile.TemporaryDirectory() as tmpdir, CaseDB(Case.init(tmpdir)) as db:
+            hypothesis = _insert_hypothesis(db, "H-PATH")
+            db.execute(
+                "UPDATE hypotheses SET status = 'confirmed', source_gap_id = ? "
+                "WHERE hypothesis_id = ?",
+                ["GAP-PATH", hypothesis.id],
+            )
+            db.execute(
+                "INSERT INTO report_gaps "
+                "(gap_id, block_heading, description, status, hypothesis_id) "
+                "VALUES ('GAP-PATH', 'Question: report?', ?, 'open', ?)",
+                ["Find report under Users/Aster/Archive", hypothesis.id],
+            )
+            db.execute(
+                "INSERT INTO mft_entries (evidence_id, file_path) VALUES "
+                "('mft-target', 'Users/Aster/Archive/report.docx'), "
+                "('mft-basename', 'Users/Aster/Archive'), "
+                "('mft-other-user', 'Users/Other/Archive/report.docx')"
+            )
+            receipt = {
+                "status": "completed",
+                "request_contract": contract,
+                "canonical_scope_evidence_ids": ["mft-target"],
+                "scoped_evidence_ids": ["mft-target"],
+                "truncated": False,
+                "canonical_scope_truncated": False,
+            }
+            with (
+                patch(
+                    "forensia.investigation.report_gap.admitted_question_receipt",
+                    return_value=receipt,
+                ),
+                patch(
+                    "forensia.investigation.report_gap.question_contract_match_reason",
+                    return_value=None,
+                ),
+                patch(
+                    "forensia.investigation.report_gap.load_evidence_links",
+                    return_value=links,
+                ),
+                patch(
+                    "forensia.investigation.report_gap._question_requirements_complete",
+                    side_effect=requirements_complete,
+                ),
+            ):
+                result = link_settled_question_gap(db, hypothesis.id)
+
+            self.assertEqual("complete", result)
+            self.assertEqual(
+                "resolved",
+                db.execute(
+                    "SELECT status FROM report_gaps WHERE gap_id = 'GAP-PATH'"
+                ).fetchone()[0],
+            )
 
 
 class StopSummaryTests(unittest.TestCase):

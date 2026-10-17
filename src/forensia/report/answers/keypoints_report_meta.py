@@ -81,7 +81,7 @@ def _hypothesis_reasoning_rows(
     *,
     where: str,
     params: tuple[Any, ...] = (),
-    limit: int,
+    limit: int | None,
 ) -> list[dict[str, Any]]:
     """Shared resolver for hypothesis rows joined with their latest reasoning."""
     placeholders = ", ".join("?" for _ in params)
@@ -97,7 +97,7 @@ def _hypothesis_reasoning_rows(
         LEFT JOIN latest l ON l.hypothesis_id = h.hypothesis_id AND l.rn = 1
         {rendered_where}
         ORDER BY h.updated_at DESC NULLS LAST
-        LIMIT {int(limit)}
+        {f"LIMIT {int(limit)}" if limit is not None else ""}
         """,
         params,
     )

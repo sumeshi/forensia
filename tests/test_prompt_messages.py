@@ -439,6 +439,57 @@ class PromptMessageTests(unittest.TestCase):
         )
         db.close()
 
+    def test_missing_requested_observation_keeps_drafter_schema_consistent(
+        self,
+    ) -> None:
+        from forensia.investigation import prompts
+
+        candidate = {
+            "scope": {"source_family": "evtx"},
+            "request_contract": {
+                "requirements": [
+                    {"family": "evtx", "field": "user_name", "kind": "observed_value"}
+                ]
+            },
+            "evidence": [
+                {
+                    "evidence_id": "evtx-e1",
+                    "_source": "evtx_events",
+                    "user_name": None,
+                    "target_user": "CORP\\analyst",
+                }
+            ],
+        }
+        with patch.object(prompts, "_org_knowledge_block", return_value=""):
+            messages, schema = prompts.build_hypothesis_drafter_messages(
+                {}, [], observed_candidate=candidate
+            )
+
+        confirm = schema["properties"]["hypothesis"]["properties"]["confirm_when"]
+        self.assertNotIn("observation", confirm["properties"])
+        self.assertNotIn("observation", confirm.get("required", []))
+        self.assertNotIn('"CORP\\\\analyst"', "\n".join(m["content"] for m in messages))
+        self.assertFalse(prompts._has_observed_value([]))
+        self.assertFalse(prompts._has_observed_value([None, ""]))
+        self.assertFalse(prompts._has_observed_value("  "))
+
+        candidate["request_contract"]["requirements"].append(
+            {
+                "family": "evtx",
+                "field": "target_user",
+                "kind": "observed_value",
+            }
+        )
+        with patch.object(prompts, "_org_knowledge_block", return_value=""):
+            _messages, partial_schema = prompts.build_hypothesis_drafter_messages(
+                {}, [], observed_candidate=candidate
+            )
+        partial_confirm = partial_schema["properties"]["hypothesis"]["properties"][
+            "confirm_when"
+        ]
+        self.assertIn("observation", partial_confirm["properties"])
+        self.assertIn("observation", partial_confirm["required"])
+
     def test_hypothesis_drafter_typed_catalog_matches_candidate_and_schema(
         self,
     ) -> None:
@@ -558,6 +609,92 @@ class PromptMessageTests(unittest.TestCase):
         )
         self.assertEqual(boolean_variant["properties"]["value"], {"type": "boolean"})
         self.assertEqual(boolean_variant["properties"]["operator"]["enum"], ["equals"])
+
+    def test_question_candidate_evtx_uses_typed_raw_observation_schema(self) -> None:
+        from unittest.mock import patch
+
+        from forensia.investigation import prompts
+
+        candidate = {
+            "scope": {"source_family": "evtx"},
+            "request_contract": {
+                "status": "resolved",
+                "requirements": [
+                    {"family": "evtx", "field": "computer", "kind": "observed_value"},
+                    {"family": "evtx", "field": "timestamp", "kind": "observed_value"},
+                ],
+            },
+            "evidence": [
+                {
+                    "evidence_id": "evtx-cedar-41",
+                    "_source": "evtx_events",
+                    "computer": "ORCHID-7",
+                    "timestamp": "2043-02-17 11:26:09",
+                    "event_id": 9999,
+                    "channel": "Application",
+                    "provider": "Synthetic",
+                }
+            ],
+        }
+        with patch.object(prompts, "_org_knowledge_block", return_value=""):
+            messages, schema = prompts.build_hypothesis_drafter_messages(
+                {"keypoint_id": "explicit-question"}, [], observed_candidate=candidate
+            )
+
+        properties = schema["properties"]["hypothesis"]["properties"]["confirm_when"][
+            "properties"
+        ]
+        variants = [
+            variant["properties"] for variant in properties["observation"]["anyOf"]
+        ]
+        self.assertEqual({"evtx"}, {item["family"]["enum"][0] for item in variants})
+        self.assertEqual(
+            {"computer", "timestamp"},
+            {item["field"]["enum"][0] for item in variants},
+        )
+        self.assertEqual({"equals"}, {item["operator"]["enum"][0] for item in variants})
+        self.assertNotIn("co_observed_event_ids", properties)
+        self.assertIn(
+            "<AVAILABLE_TYPED_OBSERVATIONS>", "\n".join(m["content"] for m in messages)
+        )
+
+    def test_question_array_observation_schema_requires_contains(self) -> None:
+        from unittest.mock import patch
+
+        from forensia.investigation import prompts
+
+        candidate = {
+            "scope": {"source_family": "prefetch"},
+            "request_contract": {
+                "status": "resolved",
+                "requirements": [
+                    {
+                        "family": "prefetch",
+                        "field": "filenames",
+                        "kind": "observed_value",
+                    }
+                ],
+            },
+            "evidence": [
+                {
+                    "evidence_id": "prefetch-agent-1",
+                    "_source": "prefetch_executions",
+                    "filenames": ["agent.exe", "helper.dll"],
+                }
+            ],
+        }
+        with patch.object(prompts, "_org_knowledge_block", return_value=""):
+            _messages, schema = prompts.build_hypothesis_drafter_messages(
+                {"keypoint_id": "explicit-question"}, [], observed_candidate=candidate
+            )
+
+        variants = schema["properties"]["hypothesis"]["properties"]["confirm_when"][
+            "properties"
+        ]["observation"]["anyOf"]
+        self.assertEqual(
+            [["contains"]],
+            [variant["properties"]["operator"]["enum"] for variant in variants],
+        )
 
     def test_typed_observation_examples_run_through_admission_assessment_settlement(
         self,

@@ -94,6 +94,8 @@ class RequiredCapabilityDerivationTests(unittest.TestCase):
         )
         self.assertIn("registry_observation", catalog["registry"]["capabilities"])
         self.assertIn("key_path", catalog["registry"]["fields"])
+        self.assertIn("computer", catalog["evtx"]["fields"])
+        self.assertIn("timestamp", catalog["evtx"]["fields"])
 
     def test_observation_condition_validation_is_shared_and_typed(self) -> None:
         observation = {
@@ -104,6 +106,19 @@ class RequiredCapabilityDerivationTests(unittest.TestCase):
             "value": "Run\\",
         }
         self.assertIsNone(observation_condition_error({"observation": observation}))
+        self.assertIsNone(
+            observation_condition_error(
+                {
+                    "observation": {
+                        "family": "evtx",
+                        "capability": "logon",
+                        "field": "computer",
+                        "operator": "equals",
+                        "value": "ORCHID-7",
+                    }
+                }
+            )
+        )
         self.assertIsNone(
             observation_condition_error({"observation": observation, "min_count": 2})
         )
@@ -123,8 +138,14 @@ class RequiredCapabilityDerivationTests(unittest.TestCase):
         )
         invalid = (
             (
-                {"observation": {**observation, "family": "evtx"}},
-                "observation-family-unsupported",
+                {
+                    "observation": {
+                        **observation,
+                        "family": "evtx",
+                        "capability": "logon",
+                    }
+                },
+                "observation-field-unsupported",
             ),
             (
                 {

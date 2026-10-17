@@ -11,7 +11,7 @@ core_columns:
   - fn_created
 column_descriptions:
   file_name: "Base filename only, e.g. 'NTUSER.DAT'."
-  file_path: "Full path under the volume, e.g. 'C:/Users/alice/Documents/x.docx'. Use LIKE '%pattern%' for substring match."
+  file_path: "Full path under the volume, e.g. 'C:/Users/alice/Documents/x.docx'. Use equals for one exact path and path_under for descendants of a directory. path_under compares path components, case-insensitively, using either slash as the separator."
   extension: "Lowercase extension without dot, e.g. 'docx', 'exe', 'pf'."
   is_deleted: "TRUE if the MFT entry is marked deleted."
   size: "FileName attribute logical size in bytes (metadata snapshot, not a current DATA-stream size)."
@@ -40,6 +40,8 @@ columns:
   - raw_json
   - tags
   - severity
+directory_scope_fields:
+  - file_path
 notes:
   timestomp: "If si_* and fn_* timestamps disagree on the same record, treat fn_* as authoritative. A si_created later than fn_created is a timestomp indicator."
   case_sensitive: "Paths are stored in their original case; use LOWER(file_path) when matching mixed-case patterns."

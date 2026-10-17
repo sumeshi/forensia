@@ -443,6 +443,16 @@ def reopen_retryable_work(db: CaseDB, *, manual_resume: bool = False) -> list[st
 
 def resolve_linked_work(db: CaseDB, hypothesis_id: str) -> None:
     """Close the Task and Gap satisfied by a conclusive hypothesis verdict."""
+    from forensia.investigation.report_gap import link_settled_question_gap
+
+    link_settled_question_gap(db, hypothesis_id)
+    db.execute(
+        "UPDATE report_gaps SET coverage_reason = 'question_relevance_unverified', updated_at = now() "
+        "WHERE gap_id = (SELECT source_gap_id FROM hypotheses WHERE hypothesis_id = ?) "
+        "AND COALESCE(block_heading, '') <> '' AND hypothesis_id IS NULL "
+        "AND status <> 'resolved'",
+        [hypothesis_id],
+    )
     db.execute(
         "UPDATE investigation_tasks SET status = 'resolved', blocked_reason = NULL, "
         "updated_at = now() WHERE hypothesis_id = ? "
@@ -451,8 +461,10 @@ def resolve_linked_work(db: CaseDB, hypothesis_id: str) -> None:
     )
     db.execute(
         "UPDATE report_gaps SET status = 'resolved', updated_at = now() "
-        "WHERE hypothesis_id = ? AND status IN ('open', 'in_progress')",
-        [hypothesis_id],
+        "WHERE hypothesis_id = ? AND status IN ('open', 'in_progress') "
+        "AND gap_id <> COALESCE((SELECT source_gap_id FROM hypotheses "
+        "WHERE hypothesis_id = ?), '')",
+        [hypothesis_id, hypothesis_id],
     )
 
 

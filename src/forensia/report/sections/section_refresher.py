@@ -35,6 +35,7 @@ from forensia.report.sections.prompts import build_paragraph_narrate_messages
 from forensia.report.sections.report_input import SectionSource
 from forensia.report.sections.section_assembly import (
     assemble_section_body,
+    block_question_request,
     body_starts_with_heading,
     prepare_section_request,
 )
@@ -139,13 +140,6 @@ def _report_input_digest(db: CaseDB) -> str:
     except TypeError, ValueError:
         return ""
     return str(value.get("content_sha256") or "") if isinstance(value, dict) else ""
-
-
-def _is_structured_block(block: dict[str, Any]) -> bool:
-    mode = str(block.get("mode") or "").strip().casefold()
-    return mode in {"question", "benchmark", "structured"} or bool(
-        block.get("answer_spec") or block.get("question")
-    )
 
 
 def _result_rows(result: dict[str, Any]) -> list[dict[str, Any]]:
@@ -286,7 +280,7 @@ def _block_projection(
 
     answer_spec = str(block.get("answer_spec") or "").strip()
     question = str(block.get("question") or "").strip()
-    if _is_structured_block(block):
+    if question_request := block_question_request(section_key, block):
         if not answer_spec:
             from forensia.knowledge.questions import resolve_question_spec
 
@@ -296,43 +290,40 @@ def _block_projection(
                 question=question,
             )
             answer_spec = str(spec.answer_spec or "") if spec is not None else ""
-        if answer_spec:
-            answer = build_structured_answer(
-                case,
-                db,
-                answer_spec=answer_spec,
-                answer_id=str(
-                    block.get("answer_id") or block.get("question_id") or answer_spec
-                ),
-                section_key=section_key,
-                block_heading=heading,
-                question_text="\n".join(
-                    (question, str(block.get("template_body") or ""))
-                ),
+        answer = build_structured_answer(
+            case,
+            db,
+            answer_spec=answer_spec,
+            answer_id=str(
+                block.get("answer_id")
+                or block.get("question_id")
+                or f"{answer_spec or 'unresolved'}-{_canonical_hash((section_key, heading, question, block.get('template_body', '')))[:12]}"
+            ),
+            section_key=section_key,
+            block_heading=heading,
+            question_text=question_request["question_text"],
+        )
+        if answer is not None:
+            answer_rows = [
+                item for item in answer.get("answer") or [] if isinstance(item, dict)
+            ]
+            result = {
+                "kind": "rows",
+                "source_ref": f"structured:{answer_spec or 'unresolved_question'}",
+                "block_heading": heading,
+                "row_count": len(answer_rows),
+                "sample_rows": answer_rows[:10],
+                "evidence_ids": _evidence_ids([{"sample_rows": answer_rows}]),
+            }
+            result_rows.append(result)
+            body = _render_structured_answer_markdown(
+                answer,
+                heading,
+                tz_name=case.source_timezone,
+                template_dir=case.report_template_dir,
             )
-            if answer is not None:
-                answer_rows = [
-                    item
-                    for item in answer.get("answer") or []
-                    if isinstance(item, dict)
-                ]
-                result = {
-                    "kind": "rows",
-                    "source_ref": f"structured:{answer_spec}",
-                    "block_heading": heading,
-                    "row_count": len(answer_rows),
-                    "sample_rows": answer_rows[:10],
-                    "evidence_ids": _evidence_ids([{"sample_rows": answer_rows}]),
-                }
-                result_rows.append(result)
-                body = _render_structured_answer_markdown(
-                    answer,
-                    heading,
-                    tz_name=case.source_timezone,
-                    template_dir=case.report_template_dir,
-                )
-                projection.update({"answer_spec": answer_spec, "answer": answer})
-                return body, result_rows, projection
+            projection.update({"answer_spec": answer_spec, "answer": answer})
+            return body, result_rows, projection
 
     keypoints = [
         str(value)
@@ -425,7 +416,7 @@ def _prepare_projection(
         if (
             first_narrative_index is None
             and str(block.get("mode") or "").strip().casefold() != "table"
-            and not _is_structured_block(block)
+            and not block_question_request(str(request.get("section_key") or ""), block)
         ):
             first_narrative_index = index
         rendered.append(body)
@@ -836,7 +827,7 @@ async def _refresh_section(
     model: str,
     progress_callback: Callable[[dict[str, Any]], None] | None,
     allow_narration: bool,
-) -> tuple[str, bool]:
+) -> tuple[str, bool, list[dict[str, str]]]:
     projection = _prepare_projection(case, db, source, report_brief, case_signature)
     request = projection["request"]
     section_key = source.section_key
@@ -1008,7 +999,16 @@ async def _refresh_section(
             "completed" if narrated else "skipped",
             "; ".join(narration_rejection_reasons) or narration_status,
         )
-    return body, narrated
+    question_requests = [
+        {
+            "section_key": section_key,
+            "block_heading": block["heading"],
+            "question_text": block["answer"]["question_text"],
+        }
+        for block in projection["block_projections"]
+        if block.get("answer", {}).get("question_text")
+    ]
+    return body, narrated, question_requests
 
 
 async def async_refresh_report_sections(
@@ -1032,6 +1032,7 @@ async def async_refresh_report_sections(
     report_input_digest = _report_input_digest(db)
     _log("REPORT", f"refreshing {len(sections)} adopted sections")
     updated = 0
+    question_requests: list[dict[str, str]] = []
     for source in sections:
         section_key = source.section_key
         if progress_callback:
@@ -1047,7 +1048,7 @@ async def async_refresh_report_sections(
                 )
             )
         try:
-            await _refresh_section(
+            _, _, section_questions = await _refresh_section(
                 case=case,
                 db=db,
                 source=source,
@@ -1061,6 +1062,7 @@ async def async_refresh_report_sections(
                 progress_callback=progress_callback,
                 allow_narration=allow_narration,
             )
+            question_requests.extend(section_questions)
         except asyncio.CancelledError:
             raise
         except InvestigationStopped:
@@ -1089,6 +1091,7 @@ async def async_refresh_report_sections(
         )
     return {
         "gaps": gaps,
+        "question_requests": question_requests,
         "report_status": report_status,
         "updated_sections": updated,
         "complete": bool(report_status.get("complete")),

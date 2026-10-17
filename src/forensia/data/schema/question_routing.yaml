@@ -55,7 +55,7 @@ question_types:
       - mft_outlook_artifacts
       - ioc_email_ost_files
       - mft_user_app_activity
-    interpretation_template: "Mail-related traces are centered on {sample(application_name, 3)}. OST/PST files indicate potential mail data access, but do not directly show content viewing or external sending."
+    interpretation_template: "Mail-related artifacts are associated with {sample(application_name, 3)}. File presence alone does not establish application execution, message access, or sending."
     required_fields: [application_name]
     render_columns: [application_name, version, evidence_type, artifact_path, artifact_time, evidence_id]
     render_max_rows: 30
@@ -96,7 +96,7 @@ question_types:
       - mft_outlook_artifacts
       - ioc_email_ost_files
       - mft_user_app_activity
-    interpretation_template: "{row_count} mail data files found, representatives: {sample(file_name, 3)}. OST/PST existence indicates mail client usage, but actual send/receive content should be verified via client logs and network evidence."
+    interpretation_template: "{row_count} mail data files found, representatives: {sample(file_name, 3)}. File presence alone does not establish mail client execution or message access; those activities require additional evidence."
     required_fields: [file_path]
     render_columns: [file_name, file_path, extension, si_created, si_modified, si_accessed, fn_created, fn_modified, fn_accessed, evidence_id]
     answer_first: true
@@ -107,10 +107,10 @@ question_types:
       min_rows_for_answer: 1
       empty_status: not_found
     expected_answer_shape:
-      format: name_with_version
-      fields: [application_name, version, data_files]
-      style: versioned_list
-      note: "OST files ALWAYS imply Microsoft Outlook. Report as 'Microsoft Outlook' (or version from MFT when observed). Rank the primary mail data file (OST/PST) first, ahead of OAB/address-book noise."
+      format: table
+      fields: [file_name, file_path, si_created, si_modified, si_accessed, fn_created, fn_modified, fn_accessed]
+      style: table
+      note: "Report observed mail data files and their filesystem timestamps. A file extension alone does not establish the originating application, execution, or message access."
 
     evidence_chain:
       - source: mft
@@ -118,7 +118,7 @@ question_types:
 
   - name: desktop_rename
     answer_spec: desktop_rename_candidates
-    intent: "Identify likely desktop or Recent-file rename pairs with timestamps and evidence basis."
+    intent: "Check for authoritative file rename evidence."
     keywords:
       - desktop
       - recent
@@ -128,58 +128,16 @@ question_types:
       - name change
       - desktop file
     keypoints:
-      - structured_desktop_rename_candidates
       - mft_recent_folder_lnk
       - mft_user_desktop_artifacts
-    interpretation_template: "{row_count} rename candidates. Recent LNK-based estimates provide clues about user activity, but should be treated cautiously as direct evidence of actual file renames."
+    interpretation_template: "No authoritative file rename evidence was available from the supported sources."
     required_fields: [original_name, new_name]
     render_columns: [original_name, new_name, timestamp, basis, source_paths, evidence_ids]
     answer_first: true
     status_rules:
       min_rows_for_answer: 1
-      empty_status: not_found
-      empty_reason: "No MFT filename pairs or Recent LNK temporal-alias candidates were found."
-    expected_answer_shape:
-      format: pair_list
-      fields: [original_name, new_name, timestamp]
-      style: table
-      note: "Report renamed files as authoritative original→new (from→to) mappings with timestamps from MFT $FILE_NAME attributes. All known rename pairs must be captured before the answer can be marked answered; inferred Recent-LNK temporal aliases remain candidate_only."
-
-    evidence_chain:
-      - source: mft_entries
-        query: "SELECT file_name, file_path, si_modified FROM mft_entries WHERE file_path LIKE '%/Desktop/%' AND (file_name LIKE '%~%.%' OR file_name LIKE '%(%.%')"
-      - source: mft_entries
-        query: "SELECT file_name, json_extract_string(raw_json, '$.attributes.FileName.data.name') AS original_name, si_modified FROM mft_entries WHERE json_extract_string(raw_json, '$.attributes.FileName.data.name') IS NOT NULL AND json_extract_string(raw_json, '$.attributes.FileName.data.name') != file_name"
-
-  - name: topic_file_timestamps
-    answer_spec: resignation_file_timestamps
-    builder_policy: generic
-    intent: "List filesystem timestamps for files matching the topic keywords supplied by an external evaluation/template question."
-    keywords:
-      - resignation
-      - resign
-      - retire
-      - resignation letter
-      - retirement
-      - resignation letter
-    keypoints:
-      - structured_resignation_files
-    interpretation_template: "{row_count} files matched the target topic, representatives: {sample(file_name, 3)}. This keyword comes from the evaluation/template question vocabulary; file content and intent require other evidence to confirm."
-    required_fields: [file_name]
-    render_columns: [file_name, file_path, extension, is_deleted, si_created, si_modified, si_accessed, fn_created, fn_modified, fn_accessed, evidence_id]
-    lead_timestamp: si_accessed
-    status_rules:
-      min_rows_for_answer: 1
-      empty_status: not_found
-      empty_reason: "No files matched the declared topic keywords."
-    expected_answer_shape:
-      format: table
-      fields: [file_name, file_path, extension, si_created, si_modified, si_accessed, fn_created, fn_modified, fn_accessed]
-      style: table
-      note: "Keyword-specific file timestamp questions should be represented in template/question routing, not core Python builders. Lead the answer with the relevant opened/modified timestamp while retaining related LNK/XPS evidence and timezone."
-    evidence_chain:
-      - source: mft_topic_keyword_files
-        query: "SELECT file_name, file_path, extension, is_deleted, si_created, si_modified, si_accessed, fn_created, fn_modified, fn_accessed, evidence_id FROM mft_entries WHERE LOWER(COALESCE(file_name, '')) LIKE '%resign%' OR LOWER(COALESCE(file_name, '')) LIKE '%resignation%' OR LOWER(COALESCE(file_name, '')) LIKE '%retire%' OR LOWER(COALESCE(file_path, '')) LIKE '%resign%' OR LOWER(COALESCE(file_path, '')) LIKE '%resignation%' OR LOWER(COALESCE(file_path, '')) LIKE '%retire%' ORDER BY COALESCE(fn_modified, si_modified, fn_created, si_created) DESC NULLS LAST, file_path LIMIT 100"
+      empty_status: unobservable
+      empty_reason: "No authoritative file rename evidence source is available."
 
   - name: browser_usage
     answer_spec: browser_usage
@@ -196,7 +154,7 @@ question_types:
       - structured_browser_artifacts
       - host_execution_activity
       - mft_user_app_activity
-    interpretation_template: "Browser traces include {sample(browser_name, 4)}. These indicate web usage occurred, but destinations and transmitted content should be supplemented with history, cache, and network evidence."
+    interpretation_template: "Browser artifacts include {sample(browser_name, 4)}. Prefetch records support application execution; filesystem artifacts alone do not establish browsing or transmitted content."
     required_fields: [browser_name]
     render_columns: [browser_name, version, prefetch_records, total_exec_count, last_exec_time, mft_artifacts, first_artifact_time, last_artifact_time, sample_paths, evidence_ids]
     answer_first: true
@@ -350,48 +308,11 @@ question_types:
     status_rules:
       min_rows_for_answer: 1
       empty_status: not_found
-    sub_requirements:
-      - key: tool_use_install
-        label: "Cleaner/wiper tool use or installation"
-        required_fields: [evidence_type, file_name]
-        require_value:
-          evidence_type: ["tool_execution", "tool_or_cleanup_artifact"]
-        min_rows: 1
-      - key: wipe_target
-        label: "Wipe/cleaner target file or directory"
-        required_fields: [evidence_type, file_path]
-        require_value:
-          evidence_type: ["tool_or_cleanup_artifact"]
-        min_rows: 1
-      - key: recycle_bin
-        label: "Recycle Bin emptying or artifact"
-        required_fields: [file_name, file_path]
-        require_value:
-          file_path: ["$recycle", "$rcycle", "recycler", "recycle"]
-        min_rows: 1
-      - key: cloud_signout_db_deletion
-        label: "Cloud sync sign-out / client database deletion"
-        required_fields: [file_path]
-        require_value:
-          file_path: ["onedrive", "google", "dropbox", "icloud", "sync_config", "snapshot"]
-        min_rows: 1
-      - key: email_deletion
-        label: "Mail data file deletion or removal"
-        required_fields: [file_path]
-        require_value:
-          file_path: [".ost", ".pst", "outlook", "mailbox"]
-        min_rows: 1
-      - key: search_download_chain
-        label: "Search / download activity chain"
-        required_fields: [file_path]
-        require_value:
-          file_path: ["download", "search", "temp"]
-        min_rows: 1
     expected_answer_shape:
-      format: full_scan
-      fields: [tool_name, evidence_type, found, details]
+      format: observations
+      fields: [evidence_type, timestamp, event_id, file_name, file_path, is_deleted, evidence_id]
       style: table
-      note: "Scan all antiforensic tools declared in dfir_ioc_catalog.yaml. Report log clearing events (104, 1102). Report Recycle Bin emptying. This is a composite requirement: each sub-requirement contributes independent coverage, and a partial composite answer (some but not all sub-requirements met) must not be reported as answered."
+      note: "Report log clearing events and matching cleanup tool observations. File presence alone does not establish execution, wiping, deletion, or sign-out."
 
     evidence_chain:
       - source: evtx_events

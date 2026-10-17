@@ -84,6 +84,743 @@ def _insert_durable_attempt(
 
 
 class PlannerRetryTests(unittest.TestCase):
+    def test_invalid_question_contract_can_be_corrected_on_retry(self) -> None:
+        from forensia.investigation.planner import discover_gap_evidence
+
+        with tempfile.TemporaryDirectory() as tmpdir, CaseDB(Case.init(tmpdir)) as db:
+            db.execute(
+                "INSERT INTO prefetch_executions (evidence_id, executable_name) "
+                "VALUES ('prefetch-contract-retry', 'VEGA.EXE')"
+            )
+            invalid_contract = {
+                "status": "resolved",
+                "scope_filters": [],
+                "requirements": [
+                    {
+                        "family": "prefetch",
+                        "field": "unknown_field",
+                        "kind": "observed_value",
+                    }
+                ],
+            }
+            valid_contract = {
+                "status": "resolved",
+                "scope_filters": [],
+                "requirements": [
+                    {
+                        "family": "prefetch",
+                        "field": "executable_name",
+                        "kind": "observed_value",
+                    }
+                ],
+            }
+            action = {
+                "intent": "Find the requested executable",
+                "target_table": "prefetch_executions",
+                "template_id": None,
+                "sql": "SELECT evidence_id, executable_name FROM prefetch_executions",
+            }
+            with patch(
+                "forensia.llm.json_response.request_llm_json",
+                side_effect=[
+                    {"request_contract": invalid_contract, "action": action},
+                    {"request_contract": valid_contract, "action": action},
+                ],
+            ):
+                first = discover_gap_evidence(
+                    "Which executable ran?",
+                    db=db,
+                    base_url="unused",
+                    model="unused",
+                    correction_budget=[0],
+                )
+                self.assertEqual("invalid", first["status"])
+                self.assertFalse(first.get("contract_validated", False))
+                second = discover_gap_evidence(
+                    "Which executable ran?",
+                    db=db,
+                    base_url="unused",
+                    model="unused",
+                    correction_budget=[0],
+                    feedback=first,
+                )
+
+        self.assertEqual("completed", second["status"], second)
+        self.assertTrue(second["contract_validated"])
+
+    def test_invalid_question_scope_value_can_be_corrected_on_retry(self) -> None:
+        from forensia.investigation.planner import discover_gap_evidence
+
+        with tempfile.TemporaryDirectory() as tmpdir, CaseDB(Case.init(tmpdir)) as db:
+            db.execute(
+                "INSERT INTO mft_entries (evidence_id, file_name, si_modified) "
+                "VALUES ('mft-scope-retry', 'active.bin', TIMESTAMP '2038-06-04 10:00:00')"
+            )
+            invalid_contract = {
+                "status": "resolved",
+                "scope_filters": [
+                    {
+                        "family": "mft",
+                        "field": "si_modified",
+                        "operator": "equals",
+                        "value": "09:00:00",
+                    }
+                ],
+                "requirements": [
+                    {
+                        "family": "mft",
+                        "field": "si_modified",
+                        "kind": "observed_value",
+                    }
+                ],
+            }
+            corrected_contract = {
+                "status": "resolved",
+                "scope_filters": [],
+                "requirements": [
+                    {
+                        "family": "mft",
+                        "field": "file_name",
+                        "kind": "observed_value",
+                    }
+                ],
+            }
+            action = {
+                "intent": "Find the requested file record",
+                "target_table": "mft_entries",
+                "template_id": None,
+                "sql": "SELECT evidence_id, file_name FROM mft_entries",
+            }
+            with patch(
+                "forensia.llm.json_response.request_llm_json",
+                side_effect=[
+                    {"request_contract": invalid_contract, "action": action},
+                    {"request_contract": corrected_contract, "action": action},
+                ],
+            ):
+                first = discover_gap_evidence(
+                    "Which file record is requested?",
+                    db=db,
+                    base_url="unused",
+                    model="unused",
+                    correction_budget=[0],
+                )
+                self.assertEqual("invalid", first["status"])
+                self.assertFalse(first["contract_validated"])
+                self.assertIn("question_scope_invalid_query", first["reason"])
+                second = discover_gap_evidence(
+                    "Which file record is requested?",
+                    db=db,
+                    base_url="unused",
+                    model="unused",
+                    correction_budget=[0],
+                    feedback=first,
+                )
+
+        self.assertEqual("completed", second["status"], second)
+
+    def test_empty_sql_retry_keeps_validated_contract_without_reasking_model(
+        self,
+    ) -> None:
+        from forensia.investigation.planner import discover_gap_evidence
+        from forensia.llm.schemas import QuestionRequestContract
+
+        with tempfile.TemporaryDirectory() as tmpdir, CaseDB(Case.init(tmpdir)) as db:
+            db.execute(
+                "INSERT INTO mft_entries "
+                "(evidence_id, file_name, si_modified, fn_modified) VALUES "
+                "('mft-orion-target', 'Report_Final.docx', "
+                "TIMESTAMP '2042-04-03 12:00:00', TIMESTAMP '2042-04-03 12:01:00'), "
+                "('mft-orion-old', 'Report_Final.docx', "
+                "TIMESTAMP '2042-04-02 12:00:00', TIMESTAMP '2042-04-02 12:01:00'), "
+                "('mft-other-file', 'Different.docx', "
+                "TIMESTAMP '2042-04-03 12:00:00', TIMESTAMP '2042-04-03 12:01:00')"
+            )
+            question = (
+                "What MFT SI and FN modified timestamps belong to Report_Final.docx "
+                "on 2042-04-03?"
+            )
+            contract = {
+                "status": "resolved",
+                "scope_filters": [
+                    {
+                        "family": "mft",
+                        "field": "file_name",
+                        "operator": "equals",
+                        "value": "Report_Final.docx",
+                    },
+                    {
+                        "family": "mft",
+                        "field": "si_modified",
+                        "operator": "greater_than",
+                        "value": "2042-04-03",
+                    },
+                    {
+                        "family": "mft",
+                        "field": "si_modified",
+                        "operator": "less_than",
+                        "value": "2042-04-04",
+                    },
+                ],
+                "requirements": [
+                    {
+                        "family": "mft",
+                        "field": "si_modified",
+                        "kind": "observed_value",
+                    },
+                    {
+                        "family": "mft",
+                        "field": "fn_modified",
+                        "kind": "observed_value",
+                    },
+                ],
+            }
+            normalized_contract = QuestionRequestContract.model_validate(
+                contract
+            ).model_dump(mode="json")
+            initial = {
+                "request_contract": contract,
+                "action": {
+                    "intent": "Find file timestamps",
+                    "target_table": "mft_entries",
+                    "template_id": None,
+                    "sql": (
+                        "SELECT evidence_id, file_name, si_modified, fn_modified "
+                        "FROM mft_entries WHERE file_name = 'Report_Final.docx' "
+                        "AND si_modified < TIMESTAMP '1900-01-01 00:00:00'"
+                    ),
+                },
+            }
+            retry = {
+                "action": {
+                    "intent": "Find file timestamps",
+                    "target_table": "mft_entries",
+                    "template_id": None,
+                    "sql": (
+                        "SELECT evidence_id, file_name, si_modified, fn_modified "
+                        "FROM mft_entries WHERE file_name = 'Report_Final.docx'"
+                    ),
+                }
+            }
+            with patch(
+                "forensia.llm.json_response.request_llm_json",
+                side_effect=[initial, retry],
+            ) as model:
+                first = discover_gap_evidence(
+                    question,
+                    db=db,
+                    base_url="unused",
+                    model="unused",
+                    correction_budget=[0],
+                )
+                second = discover_gap_evidence(
+                    question,
+                    db=db,
+                    base_url="unused",
+                    model="unused",
+                    correction_budget=[0],
+                    feedback=first,
+                )
+
+        self.assertEqual("empty", first["status"], first)
+        self.assertTrue(first["contract_validated"])
+        self.assertEqual("completed", second["status"], second)
+        self.assertEqual(normalized_contract, second["request_contract"])
+        self.assertEqual(first["contract_id"], second["contract_id"])
+        self.assertEqual(["mft-orion-target"], second["candidate"]["evidence_ids"])
+        self.assertEqual(2, model.call_count)
+        initial_schema, retry_schema = [
+            call.kwargs["json_schema"] for call in model.call_args_list
+        ]
+        self.assertIn("request_contract", initial_schema["required"])
+        self.assertNotIn("request_contract", retry_schema["properties"])
+        retry_system = model.call_args_list[1].kwargs["messages"][0]["content"]
+        self.assertIn(
+            "host has already validated and fixed request_contract",
+            retry_system.casefold(),
+        )
+        self.assertIn("return only the action property", retry_system.casefold())
+        self.assertNotIn(
+            "before querying, return request_contract", retry_system.casefold()
+        )
+
+    def test_validated_contract_survives_invalid_sql_correction(self) -> None:
+        from forensia.investigation.planner import discover_gap_evidence
+        from forensia.llm.schemas import QuestionRequestContract
+
+        with tempfile.TemporaryDirectory() as tmpdir, CaseDB(Case.init(tmpdir)) as db:
+            db.execute(
+                "INSERT INTO mft_entries (evidence_id, file_name, si_modified) "
+                "VALUES ('mft-nova-target', 'Nova.docx', "
+                "TIMESTAMP '2043-07-11 10:00:00')"
+            )
+            question = "What is the SI modified timestamp for Nova.docx?"
+            contract = {
+                "status": "resolved",
+                "scope_filters": [
+                    {
+                        "family": "mft",
+                        "field": "file_name",
+                        "operator": "equals",
+                        "value": "Nova.docx",
+                    }
+                ],
+                "requirements": [
+                    {
+                        "family": "mft",
+                        "field": "si_modified",
+                        "kind": "observed_value",
+                    }
+                ],
+            }
+            normalized_contract = QuestionRequestContract.model_validate(
+                contract
+            ).model_dump(mode="json")
+            initial = {
+                "request_contract": contract,
+                "action": {
+                    "intent": "Read the file timestamp",
+                    "target_table": "mft_entries",
+                    "template_id": None,
+                    "sql": "SELECT missing_column FROM mft_entries",
+                },
+            }
+            correction = {
+                "action": {
+                    "intent": "Read the file timestamp",
+                    "target_table": "mft_entries",
+                    "template_id": None,
+                    "sql": (
+                        "SELECT evidence_id, file_name, si_modified "
+                        "FROM mft_entries WHERE file_name = 'Nova.docx'"
+                    ),
+                }
+            }
+            with patch(
+                "forensia.llm.json_response.request_llm_json",
+                side_effect=[initial, correction],
+            ) as model:
+                first = discover_gap_evidence(
+                    question,
+                    db=db,
+                    base_url="unused",
+                    model="unused",
+                    correction_budget=[0],
+                )
+                second = discover_gap_evidence(
+                    question,
+                    db=db,
+                    base_url="unused",
+                    model="unused",
+                    correction_budget=[0],
+                    feedback=first,
+                )
+
+        self.assertEqual("invalid", first["status"], first)
+        self.assertTrue(first["contract_validated"])
+        self.assertEqual("completed", second["status"], second)
+        self.assertEqual(normalized_contract, second["request_contract"])
+        self.assertEqual(first["contract_id"], second["contract_id"])
+        self.assertEqual(["mft-nova-target"], second["candidate"]["evidence_ids"])
+        self.assertEqual(2, model.call_count)
+        self.assertNotIn(
+            "request_contract",
+            model.call_args_list[1].kwargs["json_schema"]["properties"],
+        )
+
+    def test_fixed_contract_retry_rejects_contract_and_family_rewrites(self) -> None:
+        from forensia.investigation.planner import discover_gap_evidence
+
+        with tempfile.TemporaryDirectory() as tmpdir, CaseDB(Case.init(tmpdir)) as db:
+            db.execute(
+                "INSERT INTO mft_entries (evidence_id, file_name) "
+                "VALUES ('mft-retry-target', 'Orion.docx')"
+            )
+            db.execute(
+                "INSERT INTO prefetch_executions (evidence_id, executable_name) "
+                "VALUES ('prefetch-unrelated', 'UNRELATED.EXE')"
+            )
+            question = "Which timestamps belong to Orion.docx?"
+            contract = {
+                "status": "resolved",
+                "scope_filters": [
+                    {
+                        "family": "mft",
+                        "field": "file_name",
+                        "operator": "equals",
+                        "value": "Orion.docx",
+                    }
+                ],
+                "requirements": [
+                    {
+                        "family": "mft",
+                        "field": "si_modified",
+                        "kind": "observed_value",
+                    }
+                ],
+            }
+            initial = {
+                "request_contract": contract,
+                "action": {
+                    "intent": "Search Orion file",
+                    "target_table": "mft_entries",
+                    "template_id": None,
+                    "sql": "SELECT evidence_id FROM mft_entries WHERE false",
+                },
+            }
+            with patch(
+                "forensia.llm.json_response.request_llm_json", return_value=initial
+            ):
+                empty = discover_gap_evidence(
+                    question,
+                    db=db,
+                    base_url="unused",
+                    model="unused",
+                    correction_budget=[0],
+                )
+            self.assertEqual("empty", empty["status"], empty)
+
+            malicious_contract = {
+                "request_contract": {
+                    **contract,
+                    "requirements": [
+                        {
+                            "family": "mft",
+                            "field": "is_deleted",
+                            "kind": "observed_value",
+                        }
+                    ],
+                },
+                "action": {
+                    "intent": "Search Orion file",
+                    "target_table": "mft_entries",
+                    "template_id": None,
+                    "sql": "SELECT evidence_id FROM mft_entries WHERE file_name = 'Orion.docx'",
+                },
+            }
+            wrong_family = {
+                "action": {
+                    "intent": "Search another family",
+                    "target_table": "prefetch_executions",
+                    "template_id": None,
+                    "sql": "SELECT evidence_id FROM prefetch_executions",
+                }
+            }
+            malformed_action = {"action": {"bad": True}}
+            for response, expected_reason in (
+                (
+                    malicious_contract,
+                    "request_contract_returned_during_action_only_retry",
+                ),
+                (wrong_family, "request_contract_family_changed_during_sql_retry"),
+                (malformed_action, "action"),
+            ):
+                with (
+                    patch(
+                        "forensia.llm.json_response.request_llm_json",
+                        return_value=response,
+                    ),
+                    patch(
+                        "forensia.db.query.fetch_bounded_records",
+                        side_effect=AssertionError("rejected action must not fetch"),
+                    ) as fetch,
+                ):
+                    rejected = discover_gap_evidence(
+                        question,
+                        db=db,
+                        base_url="unused",
+                        model="unused",
+                        correction_budget=[0],
+                        feedback=empty,
+                    )
+                self.assertEqual("invalid", rejected["status"], rejected)
+                self.assertIn(expected_reason, rejected["reason"])
+                self.assertEqual(
+                    empty["request_contract"], rejected["request_contract"]
+                )
+                self.assertEqual(empty["contract_id"], rejected["contract_id"])
+                self.assertTrue(rejected["contract_validated"])
+                fetch.assert_not_called()
+
+    def test_repeated_empty_query_ignores_comments_and_identifier_case(self) -> None:
+        from forensia.investigation.planner import discover_gap_evidence
+
+        with tempfile.TemporaryDirectory() as tmpdir, CaseDB(Case.init(tmpdir)) as db:
+            db.execute(
+                "INSERT INTO mft_entries (evidence_id, file_name) "
+                "VALUES ('mft-existing', 'present.txt')"
+            )
+            contract = {
+                "status": "resolved",
+                "scope_filters": [],
+                "requirements": [
+                    {
+                        "family": "mft",
+                        "field": "file_name",
+                        "kind": "observed_value",
+                    }
+                ],
+            }
+            sql = (
+                "SELECT evidence_id, file_name FROM mft_entries "
+                "WHERE file_name = 'absent.txt'"
+            )
+            retry_sql = (
+                "select /* retry with comment */ EVIDENCE_ID, FILE_NAME "
+                "from MFT_ENTRIES where FILE_NAME = 'absent.txt'"
+            )
+            responses = [
+                {
+                    "request_contract": contract,
+                    "action": {
+                        "intent": "Find requested file records",
+                        "target_table": "mft_entries",
+                        "template_id": None,
+                        "sql": sql,
+                    },
+                },
+                {
+                    "action": {
+                        "intent": "Find requested file records",
+                        "target_table": "mft_entries",
+                        "template_id": None,
+                        "sql": retry_sql,
+                    },
+                },
+            ]
+            with patch(
+                "forensia.llm.json_response.request_llm_json", side_effect=responses
+            ):
+                first = discover_gap_evidence(
+                    "Which file records are requested?",
+                    db=db,
+                    base_url="unused",
+                    model="unused",
+                    correction_budget=[0],
+                )
+            self.assertEqual("empty", first["status"])
+            self.assertEqual(0, first["row_count"])
+            self.assertTrue(first["contract_validated"])
+
+            with (
+                patch(
+                    "forensia.llm.json_response.request_llm_json",
+                    return_value=responses[1],
+                ),
+                patch(
+                    "forensia.db.query.fetch_bounded_records",
+                    side_effect=AssertionError("repeated query must not fetch"),
+                ) as fetch,
+            ):
+                second = discover_gap_evidence(
+                    "Which file records are requested?",
+                    db=db,
+                    base_url="unused",
+                    model="unused",
+                    correction_budget=[0],
+                    feedback=first,
+                )
+
+        self.assertEqual("empty", second["status"], second)
+        self.assertEqual("discovery_repeated_empty_query", second["reason"])
+        self.assertTrue(second["repeated_query"])
+        fetch.assert_not_called()
+
+    def test_question_contract_allows_a_partial_predicate_observation(self) -> None:
+        from forensia.knowledge.questions import question_contract_match_reason
+
+        contract = {
+            "status": "resolved",
+            "scope_filters": [],
+            "requirements": [
+                {
+                    "family": "prefetch",
+                    "field": "executable_name",
+                    "kind": "predicate",
+                    "operator": "contains",
+                    "value": "VEGA",
+                },
+                {
+                    "family": "prefetch",
+                    "field": "last_exec_time",
+                    "kind": "predicate",
+                    "operator": "greater_than",
+                    "value": "2030-01-01",
+                },
+            ],
+        }
+        spec = {
+            "support_conditions": {
+                "observation": {
+                    "family": "prefetch",
+                    "field": "executable_name",
+                    "operator": "contains",
+                    "value": "VEGA",
+                    "evidence_ids": ["prefetch-witness"],
+                }
+            }
+        }
+
+        self.assertIsNone(question_contract_match_reason(contract, spec))
+        spec["support_conditions"]["observation"]["value"] = "OTHER"
+        self.assertEqual(
+            "question_contract_observation_mismatch",
+            question_contract_match_reason(contract, spec),
+        )
+
+    def test_observed_value_requires_value_from_the_requested_record_field(
+        self,
+    ) -> None:
+        from datetime import datetime
+
+        from forensia.knowledge.questions import question_contract_match_reason
+
+        contract = {
+            "status": "resolved",
+            "requirements": [
+                {"family": "evtx", "field": "timestamp", "kind": "observed_value"}
+            ],
+        }
+        spec = {
+            "support_conditions": {
+                "observation": {
+                    "family": "evtx",
+                    "field": "timestamp",
+                    "operator": "greater_than",
+                    "value": "2044-06-12T09:14:00",
+                    "evidence_ids": ["evtx-row-1", "evtx-row-2"],
+                }
+            }
+        }
+        records = {
+            "evtx-row-1": {"timestamp": datetime(2044, 6, 12, 9, 14)},
+            "evtx-row-2": {"timestamp": datetime(2044, 6, 12, 9, 15)},
+        }
+
+        self.assertEqual(
+            "question_contract_observation_mismatch",
+            question_contract_match_reason(contract, spec, observation_records=records),
+        )
+        spec["support_conditions"]["observation"].update(operator="equals")
+        self.assertIsNone(
+            question_contract_match_reason(contract, spec, observation_records=records)
+        )
+        self.assertIsNone(
+            question_contract_match_reason(
+                contract,
+                spec,
+                observation_records={"evtx-row-1": records["evtx-row-1"]},
+            )
+        )
+        spec["support_conditions"]["min_count"] = 2
+        self.assertEqual(
+            "question_contract_observation_mismatch",
+            question_contract_match_reason(contract, spec, observation_records=records),
+        )
+
+    def test_observed_array_value_requires_an_exact_element(self) -> None:
+        from forensia.knowledge.questions import question_contract_match_reason
+
+        contract = {
+            "status": "resolved",
+            "requirements": [
+                {"family": "prefetch", "field": "filenames", "kind": "observed_value"}
+            ],
+        }
+        spec = {
+            "support_conditions": {
+                "observation": {
+                    "family": "prefetch",
+                    "field": "filenames",
+                    "operator": "contains",
+                    "value": "agent.exe",
+                    "evidence_ids": ["prefetch-row-1"],
+                }
+            }
+        }
+        records = {
+            "prefetch-row-1": {
+                "filenames": ["C:/Tools/agent.exe"],
+                "command_line": "agent.exe",
+            }
+        }
+
+        self.assertEqual(
+            "question_contract_observation_mismatch",
+            question_contract_match_reason(contract, spec, observation_records=records),
+        )
+        records["prefetch-row-1"]["filenames"] = ["agent.exe", "other.dll"]
+        self.assertIsNone(
+            question_contract_match_reason(contract, spec, observation_records=records)
+        )
+        records["prefetch-row-1"]["filenames"] = ["other.dll"]
+        self.assertEqual(
+            "question_contract_observation_mismatch",
+            question_contract_match_reason(contract, spec, observation_records=records),
+        )
+
+    def test_discovery_preserves_row_identity_and_does_not_rewrite_aggregates(
+        self,
+    ) -> None:
+        from forensia.investigation.planner import discover_gap_evidence
+
+        with tempfile.TemporaryDirectory() as tmpdir, CaseDB(Case.init(tmpdir)) as db:
+            db.execute(
+                "INSERT INTO prefetch_executions (evidence_id, executable_name, last_exec_time) VALUES "
+                "('prefetch-old', 'VEGA.EXE', '2029-12-01'), ('prefetch-latest', 'ASTER.EXE', '2032-08-17')"
+            )
+            for sql, status in (
+                (
+                    "SELECT executable_name, last_exec_time FROM prefetch_executions ORDER BY last_exec_time DESC LIMIT 1",
+                    "completed",
+                ),
+                (
+                    "SELECT 'prefetch-old' AS evidence_id, p.executable_name AS app FROM prefetch_executions p WHERE p.executable_name = 'ASTER.EXE' ORDER BY 2 LIMIT 1",
+                    "completed",
+                ),
+                ("SELECT DISTINCT executable_name FROM prefetch_executions", "invalid"),
+                ("SELECT MAX(last_exec_time) FROM prefetch_executions", "invalid"),
+            ):
+                with (
+                    self.subTest(sql=sql),
+                    patch(
+                        "forensia.llm.json_response.request_llm_json",
+                        return_value={
+                            "request_contract": {
+                                "status": "resolved",
+                                "scope_filters": [],
+                                "requirements": [
+                                    {
+                                        "family": "prefetch",
+                                        "field": "executable_name",
+                                        "kind": "observed_value",
+                                    }
+                                ],
+                            },
+                            "action": {
+                                "intent": "Find latest record",
+                                "target_table": "prefetch_executions",
+                                "template_id": None,
+                                "sql": sql,
+                            },
+                        },
+                    ),
+                ):
+                    result = discover_gap_evidence(
+                        "Which executable ran most recently?",
+                        db=db,
+                        base_url="unused",
+                        model="unused",
+                        correction_budget=[0],
+                    )
+                self.assertEqual(status, result["status"], result)
+                if status == "completed":
+                    self.assertEqual(
+                        ["prefetch-latest"], result["candidate"]["evidence_ids"]
+                    )
+                else:
+                    self.assertEqual(sql, result["sql"])
+
     """Query planning, SQL templates/validation, retry, and fingerprint behavior."""
 
     def test_validate_select_sql_allows_investigation_state_tables(self) -> None:
@@ -748,6 +1485,133 @@ class PlannerRetryTests(unittest.TestCase):
                 self.assertNotIn("_action_error", response)
                 request.assert_called_once()
 
+    def test_question_scope_ids_recompute_timestamp_upper_bound(self) -> None:
+        from forensia.knowledge.questions import question_scope_evidence_ids
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                db.execute(
+                    "INSERT INTO mft_entries (evidence_id, si_modified) "
+                    "VALUES ('mft-before', TIMESTAMP '2038-06-03 23:59:00'), "
+                    "('mft-boundary', TIMESTAMP '2038-06-04 00:00:00'), "
+                    "('mft-after', TIMESTAMP '2038-06-04 00:01:00')"
+                )
+                contract = {
+                    "status": "resolved",
+                    "scope_filters": [
+                        {
+                            "family": "mft",
+                            "field": "si_modified",
+                            "operator": "less_than",
+                            "value": "2038-06-04T00:00:00",
+                        }
+                    ],
+                    "requirements": [
+                        {
+                            "family": "mft",
+                            "field": "si_modified",
+                            "kind": "observed_value",
+                            "operator": None,
+                            "value": None,
+                        }
+                    ],
+                }
+                ids, truncated = question_scope_evidence_ids(db, contract)
+
+        self.assertEqual(["mft-before"], ids)
+        self.assertFalse(truncated)
+
+    def test_question_scope_candidate_lookup_is_not_limited_to_scope_sample(
+        self,
+    ) -> None:
+        from forensia.investigation.planner import discover_gap_evidence
+        from forensia.knowledge.questions import question_scope_evidence_ids
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                db.execute(
+                    "INSERT INTO mft_entries (evidence_id, file_name) "
+                    + "VALUES "
+                    + ", ".join(
+                        f"('mft-unrelated-{i:04}', 'other.txt')" for i in range(1100)
+                    )
+                    + ", ('mft-target-after-sample', 'other.txt'), "
+                    + "('mft-off-scope', 'target.txt')"
+                )
+                db.execute(
+                    "INSERT INTO prefetch_executions (evidence_id, executable_name) "
+                    "VALUES ('prefetch-wrong-family', 'UNRELATED.EXE')"
+                )
+                contract = {
+                    "status": "resolved",
+                    "scope_filters": [
+                        {
+                            "family": "mft",
+                            "field": "file_name",
+                            "operator": "equals",
+                            "value": "other.txt",
+                        }
+                    ],
+                    "requirements": [
+                        {
+                            "family": "mft",
+                            "field": "file_name",
+                            "kind": "observed_value",
+                            "operator": None,
+                            "value": None,
+                        }
+                    ],
+                }
+                ids, truncated = question_scope_evidence_ids(
+                    db, contract, max_rows=1000
+                )
+                matching, candidate_truncated = question_scope_evidence_ids(
+                    db,
+                    contract,
+                    max_rows=1000,
+                    evidence_ids=[
+                        "mft-target-after-sample",
+                        "mft-off-scope",
+                        "prefetch-wrong-family",
+                    ],
+                )
+                empty, empty_truncated = question_scope_evidence_ids(
+                    db, contract, evidence_ids=[]
+                )
+                with patch(
+                    "forensia.llm.json_response.request_llm_json",
+                    return_value={
+                        "request_contract": contract,
+                        "action": {
+                            "intent": "Find the requested MFT record",
+                            "target_table": "mft_entries",
+                            "template_id": None,
+                            "sql": "SELECT evidence_id, file_name FROM mft_entries "
+                            "WHERE evidence_id = 'mft-target-after-sample'",
+                        },
+                    },
+                ):
+                    receipt = discover_gap_evidence(
+                        "Which requested MFT record has file name other.txt?",
+                        db=db,
+                        base_url="unused",
+                        model="unused",
+                        correction_budget=[0],
+                    )
+
+        self.assertEqual(1000, len(ids))
+        self.assertTrue(truncated)
+        self.assertNotIn("mft-target-after-sample", ids)
+        self.assertEqual(["mft-target-after-sample"], matching)
+        self.assertFalse(candidate_truncated)
+        self.assertEqual([], empty)
+        self.assertFalse(empty_truncated)
+        self.assertEqual("completed", receipt["status"], receipt)
+        self.assertEqual(["mft-target-after-sample"], receipt["scoped_evidence_ids"])
+        self.assertTrue(receipt["canonical_scope_truncated"])
+
     def test_sql_path_schema_and_prompt_show_mutually_exclusive_valid_actions(
         self,
     ) -> None:
@@ -771,7 +1635,11 @@ class PlannerRetryTests(unittest.TestCase):
         }
         self.assertEqual(r"^\s*$", modes["string"]["sql"]["pattern"])
         self.assertEqual("null", modes["null"]["template_id"]["type"])
-        self.assertEqual(r".*\S.*", modes["null"]["sql"]["pattern"])
+        nonblank = r"^[\s\S]*\S[\s\S]*$"
+        self.assertEqual(nonblank, modes["null"]["sql"]["pattern"])
+        self.assertEqual(nonblank, modes["string"]["template_id"]["pattern"])
+        self.assertRegex("SELECT\n1", nonblank)
+        self.assertNotRegex(" \n\t", nonblank)
         self.assertIn("params", modes["string"])
         self.assertNotIn("params", modes["null"])
         dynamic_schema = query_intent_schema_for_catalog(
@@ -783,6 +1651,135 @@ class PlannerRetryTests(unittest.TestCase):
                 "enum"
             ],
         )
+        self.assertNotIn("request_contract", dynamic_schema["properties"])
+        self.assertNotIn("QuestionRequestContract", dynamic_schema["$defs"])
+        discovery_schema = query_intent_schema_for_catalog(
+            ["mft_entries"], [], require_request_contract=True
+        )
+        self.assertIn("request_contract", discovery_schema["properties"])
+        self.assertIn("QuestionRequestContract", discovery_schema["$defs"])
+        requirement_branches = discovery_schema["$defs"]["QuestionRequirement"]["oneOf"]
+        self.assertEqual(
+            {"mft"},
+            {
+                branch["properties"]["family"]["const"]
+                for branch in requirement_branches
+            },
+        )
+        self.assertEqual(
+            {"observed_value", "predicate"},
+            {branch["properties"]["kind"]["const"] for branch in requirement_branches},
+        )
+        self.assertIn(
+            "si_modified",
+            {
+                field
+                for branch in requirement_branches
+                for field in branch["properties"]["field"]["enum"]
+            },
+        )
+        observed_value_branch = next(
+            branch
+            for branch in requirement_branches
+            if branch["properties"]["kind"]["const"] == "observed_value"
+        )
+        self.assertEqual(
+            "null", observed_value_branch["properties"]["operator"]["type"]
+        )
+        self.assertEqual("null", observed_value_branch["properties"]["value"]["type"])
+        predicate_branch = next(
+            branch
+            for branch in requirement_branches
+            if branch["properties"]["kind"]["const"] == "predicate"
+        )
+        self.assertIn("operator", predicate_branch["required"])
+        predicate_operator = predicate_branch["properties"]["operator"]["anyOf"]
+        self.assertEqual(1, len(predicate_operator))
+        self.assertEqual("string", predicate_operator[0]["type"])
+        self.assertEqual(
+            ["equals", "contains", "greater_than"], predicate_operator[0]["enum"]
+        )
+        self.assertEqual(
+            {"boolean", "integer", "number", "string"},
+            {item["type"] for item in predicate_branch["properties"]["value"]["anyOf"]},
+        )
+        scope_branches = discovery_schema["$defs"]["QuestionScopeFilter"]["oneOf"]
+        self.assertEqual(
+            {"mft"},
+            {branch["properties"]["family"]["const"] for branch in scope_branches},
+        )
+        self.assertIn(
+            "si_modified",
+            {
+                field
+                for branch in scope_branches
+                for field in branch["properties"]["field"]["enum"]
+            },
+        )
+        contract_modes = discovery_schema["$defs"]["QuestionRequestContract"]["oneOf"]
+        self.assertEqual(
+            ["resolved", "unresolved"],
+            [mode["properties"]["status"]["const"] for mode in contract_modes],
+        )
+        self.assertEqual(0, contract_modes[1]["properties"]["requirements"]["maxItems"])
+
+        from forensia.db.evidence_lookup import canonical_record_table
+        from forensia.knowledge.coverage import observation_catalog
+
+        catalog = observation_catalog()
+        multi_family_tables = [
+            canonical_record_table(family)
+            for family in ("mft", "evtx")
+            if family in catalog and canonical_record_table(family)
+        ]
+        multi_family_schema = query_intent_schema_for_catalog(
+            multi_family_tables, [], require_request_contract=True
+        )
+        multi_contract = multi_family_schema["$defs"]["QuestionRequestContract"][
+            "oneOf"
+        ]
+        resolved_by_family = {
+            mode["properties"]["requirements"]["items"]["oneOf"][0]["properties"][
+                "family"
+            ]["const"]: mode
+            for mode in multi_contract
+            if mode["properties"]["status"]["const"] == "resolved"
+        }
+        self.assertEqual({"mft", "evtx"}, set(resolved_by_family))
+        for family, mode in resolved_by_family.items():
+            for collection in ("scope_filters", "requirements"):
+                item_families = {
+                    item["properties"]["family"]["const"]
+                    for item in mode["properties"][collection]["items"]["oneOf"]
+                }
+                self.assertEqual({family}, item_families)
+
+        from forensia.investigation.prompts import build_gap_discovery_messages
+
+        prompt = "\n".join(
+            message["content"]
+            for message in build_gap_discovery_messages(
+                "Which file changed?",
+                schema_context="schema",
+                request_catalog={"mft": ["si_modified", "file_name"]},
+            )
+        )
+        self.assertIn(
+            '"available_question_fields": {"mft": ["si_modified", "file_name"]}', prompt
+        )
+        self.assertIn("not whether its answer is known", prompt)
+        self.assertIn("set status=resolved", prompt)
+        self.assertIn("only literal subject/time constraints", prompt)
+        self.assertIn("requested unknown fields in requirements", prompt)
+        self.assertIn("status=unresolved with requirements=[] only", prompt)
+        self.assertIn("sibling properties of the root response", prompt)
+        self.assertIn("exactly one artifact family", prompt)
+        self.assertIn("matches the requested relation before validation", prompt)
+        self.assertIn("host never silently converts", prompt)
+        self.assertIn("unvalidated contract may be corrected", prompt)
+        self.assertIn("validated retry keeps its fixed contract", prompt)
+        self.assertIn("keep it unresolved rather than dropping requirements", prompt)
+        self.assertNotIn("request_contract_shape", prompt)
         self.assertNotIn("examples", dynamic_schema)
         raw_only = query_intent_schema_for_catalog(["mft_entries"], [])["$defs"][
             "SQLQueryAction"
@@ -1389,6 +2386,515 @@ def test_refutation_experiment_isolates_trials_and_bounds_searches(
     asyncio.run(refutation.run(experiment))
     assert len(json.loads((experiment / "round-2/results.json").read_text())) == 8
     assert refutation._sha(source.database_path) == source_hash
+
+
+class QuestionScopeLiteralGroundingTests(unittest.TestCase):
+    def test_section_instructions_do_not_contaminate_question_scope(self) -> None:
+        from forensia.investigation.planner import (
+            _validate_question_scope_literal,
+        )
+        from forensia.knowledge.questions import (
+            extract_time_qualifiers,
+            question_requests_local_time,
+            question_requests_utc,
+            strip_section_instructions,
+        )
+        from forensia.llm.schemas import QuestionScopeFilter
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = CaseDB(Case.init(tmpdir))
+            source_question = (
+                "Which files did delta.exe modify on 2038-06-04? "
+                "<!-- question_hint: use the filename stated in the question -->"
+                "<!-- section_instructions: Q13 local timezone, UTC, "
+                "2015-03-25, C:/Users/Desktop/ -->"
+            )
+            scope_question = strip_section_instructions(source_question)
+            self.assertEqual(
+                "2038-06-04", extract_time_qualifiers(scope_question)["date_from"]
+            )
+            self.assertFalse(question_requests_local_time(scope_question))
+            self.assertFalse(question_requests_utc(scope_question))
+            self.assertFalse(question_requests_local_time(source_question))
+            self.assertFalse(question_requests_utc(source_question))
+            self.assertEqual(
+                "2038-06-04", extract_time_qualifiers(source_question)["date_from"]
+            )
+            self.assertIn("question_hint", scope_question)
+            self.assertIn("filename stated in the question", scope_question)
+            self.assertIn("section_instructions", source_question)
+
+            requested_date = QuestionScopeFilter(
+                family="mft",
+                field="si_modified",
+                operator="greater_than",
+                value="2038-06-04",
+            )
+            _validate_question_scope_literal(requested_date, scope_question, db)
+            unrelated_date = requested_date.model_copy(update={"value": "2015-03-25"})
+            with self.assertRaisesRegex(ValueError, "scope_literal_ungrounded"):
+                _validate_question_scope_literal(unrelated_date, scope_question, db)
+
+            common_path = QuestionScopeFilter(
+                family="mft",
+                field="file_name",
+                operator="equals",
+                value="Desktop",
+            )
+            with self.assertRaisesRegex(ValueError, "scope_literal_ungrounded"):
+                _validate_question_scope_literal(common_path, scope_question, db)
+
+            block_hint_question = strip_section_instructions(
+                "Show records in local time on 2038-06-04. "
+                "<!-- question_hint: keep local event times -->"
+                "<!-- section_instructions: UTC is used in the shared report -->"
+            )
+            self.assertTrue(question_requests_local_time(block_hint_question))
+            self.assertFalse(question_requests_utc(block_hint_question))
+            self.assertEqual(
+                "2038-06-04",
+                extract_time_qualifiers(block_hint_question)["date_from"],
+            )
+            with self.assertRaisesRegex(ValueError, "scope_time_basis_unresolved"):
+                _validate_question_scope_literal(
+                    requested_date.model_copy(update={"value": "2038-06-04"}),
+                    block_hint_question,
+                    db,
+                )
+
+            utc_question = strip_section_instructions(
+                "Show UTC records on 2038-06-04. "
+                "<!-- section_instructions: use local time on 2015-03-25 -->"
+            )
+            self.assertTrue(question_requests_utc(utc_question))
+            self.assertFalse(question_requests_local_time(utc_question))
+            self.assertEqual(
+                "2038-06-04", extract_time_qualifiers(utc_question)["date_from"]
+            )
+
+    def test_offset_scope_matches_same_utc_instant_in_both_paths(self) -> None:
+        import sqlglot
+
+        from forensia.db.evidence_lookup import canonical_record_table
+        from forensia.investigation.planner import _apply_question_scope_filters
+        from forensia.knowledge.questions import question_scope_evidence_ids
+        from forensia.llm.schemas import QuestionRequestContract
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = CaseDB(Case.init(tmpdir))
+            db.execute(
+                "INSERT INTO mft_entries (evidence_id, si_modified) "
+                "VALUES ('utc-midnight', TIMESTAMP '2037-06-04 00:00:00')"
+            )
+            results = []
+            for timestamp in (
+                "2037-06-04T09:00:00+09:00",
+                "2037-06-04T00:00:00Z",
+                "2037-06-04T00:00:00z",
+            ):
+                contract = {
+                    "status": "resolved",
+                    "scope_filters": [
+                        {
+                            "family": "mft",
+                            "field": "si_modified",
+                            "operator": "equals",
+                            "value": timestamp,
+                        }
+                    ],
+                    "requirements": [
+                        {
+                            "family": "mft",
+                            "field": "si_modified",
+                            "kind": "observed_value",
+                        }
+                    ],
+                }
+                scoped_ids, _ = question_scope_evidence_ids(db, contract)
+                query = sqlglot.parse_one(
+                    "SELECT evidence_id FROM mft_entries", read="duckdb"
+                )
+                query = _apply_question_scope_filters(
+                    query,
+                    QuestionRequestContract.model_validate(contract),
+                    canonical_record_table,
+                    sqlglot.exp,
+                    db=db,
+                )
+                discovery_ids = [
+                    row[0] for row in db.execute(query.sql(dialect="duckdb")).fetchall()
+                ]
+                self.assertEqual(["utc-midnight"], scoped_ids)
+                self.assertEqual(scoped_ids, discovery_ids)
+                matching_record_ids, _ = question_scope_evidence_ids(
+                    db, contract, evidence_ids=["utc-midnight"]
+                )
+                self.assertEqual(["utc-midnight"], matching_record_ids)
+                results.append(scoped_ids)
+            self.assertEqual(results[0], results[1])
+
+    def test_string_scope_requires_literal_question_support(self) -> None:
+        from forensia.investigation.planner import _validate_question_scope_literal
+        from forensia.llm.schemas import QuestionScopeFilter
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = CaseDB(Case.init(tmpdir))
+            path_scope = QuestionScopeFilter(
+                family="mft",
+                field="file_path",
+                operator="path_under",
+                value="//SERVER/Share/Archive/",
+            )
+            _validate_question_scope_literal(
+                path_scope,
+                r"Find files under \\server\share\archive",
+                db,
+            )
+            _validate_question_scope_literal(
+                path_scope,
+                "Find files under //server/share/ARCHIVE/",
+                db,
+            )
+            unrelated_path_scope = path_scope.model_copy(
+                update={"value": "C:/Users/Other/Desktop/"}
+            )
+            with self.assertRaisesRegex(ValueError, "scope_literal_ungrounded"):
+                _validate_question_scope_literal(
+                    unrelated_path_scope,
+                    "Which files are under C:/Users/Desktop/?",
+                    db,
+                )
+            fabricated = QuestionScopeFilter(
+                family="mft",
+                field="file_path",
+                operator="equals",
+                value="C:/Users/Desktop/",
+            )
+            with self.assertRaisesRegex(ValueError, "literal_ungrounded"):
+                _validate_question_scope_literal(
+                    fabricated, "Which files are on Desktop?", db
+                )
+            _validate_question_scope_literal(
+                fabricated, "Which files are under C:/Users/Desktop/?", db
+            )
+            dated_name = fabricated.model_copy(
+                update={"value": "C:/Users/Desktop/report-2015-03-25.txt"}
+            )
+            with self.assertRaisesRegex(ValueError, "scope_literal_ungrounded"):
+                _validate_question_scope_literal(
+                    dated_name, "Which files are on Desktop?", db
+                )
+            numeric = fabricated.model_copy(update={"value": 3})
+            _validate_question_scope_literal(numeric, "Which files are on Desktop?", db)
+
+    def test_date_scope_and_inclusive_end_boundary(self) -> None:
+        from forensia.investigation.planner import _validate_question_scope_literal
+        from forensia.llm.schemas import QuestionScopeFilter
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = CaseDB(Case.init(tmpdir))
+            fabricated = QuestionScopeFilter(
+                family="mft",
+                field="si_modified",
+                operator="greater_than",
+                value="2015-03-25",
+            )
+            with self.assertRaisesRegex(ValueError, "literal_ungrounded"):
+                _validate_question_scope_literal(
+                    fabricated, "Between 09:00 and 18:00", db
+                )
+            end_boundary = fabricated.model_copy(
+                update={"operator": "less_than", "value": "2015-03-26"}
+            )
+            _validate_question_scope_literal(
+                end_boundary, "Between 2015-03-25 and 2015-03-25", db
+            )
+            lower_midnight = end_boundary.model_copy(
+                update={
+                    "operator": "greater_than",
+                    "value": "2015-03-25T00:00:00",
+                }
+            )
+            upper_midnight = end_boundary.model_copy(
+                update={"value": "2015-03-26T00:00:00"}
+            )
+            date_only_question = "Show records for 2015-03-25"
+            _validate_question_scope_literal(lower_midnight, date_only_question, db)
+            _validate_question_scope_literal(upper_midnight, date_only_question, db)
+
+    def test_naive_exact_datetime_is_grounded_without_assuming_utc(self) -> None:
+        from forensia.investigation.planner import _validate_question_scope_literal
+        from forensia.llm.schemas import QuestionScopeFilter
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = CaseDB(Case.init(tmpdir))
+            literal = QuestionScopeFilter(
+                family="mft",
+                field="si_modified",
+                operator="equals",
+                value="2015-03-25T09:00:00",
+            )
+            _validate_question_scope_literal(
+                literal, "Show the record modified at 2015-03-25T09:00:00.", db
+            )
+            prefix_only = literal.model_copy(update={"value": "2015-03-25T09:00"})
+            with self.assertRaises(ValueError):
+                _validate_question_scope_literal(
+                    prefix_only,
+                    "Show the record modified at 2015-03-25T09:00:30",
+                    db,
+                )
+            offset_prefix = literal.model_copy(update={"value": "2015-03-25T09:00"})
+            with self.assertRaises(ValueError):
+                _validate_question_scope_literal(
+                    offset_prefix,
+                    "Show the record modified at 2015-03-25T09:00+09:00",
+                    db,
+                )
+
+    def test_aware_datetime_scope_compares_explicit_instants(self) -> None:
+        from forensia.investigation.planner import _validate_question_scope_literal
+        from forensia.llm.schemas import QuestionScopeFilter
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = CaseDB(Case.init(tmpdir))
+            equivalent = QuestionScopeFilter(
+                family="mft",
+                field="si_modified",
+                operator="equals",
+                value="2015-03-26T00:30:00+01:00",
+            )
+            _validate_question_scope_literal(
+                equivalent, "Show record modified at 2015-03-25T23:30:00Z", db
+            )
+
+    def test_naive_local_time_scope_requires_known_basis(self) -> None:
+        from forensia.investigation.planner import _validate_question_scope_literal
+        from forensia.llm.schemas import QuestionScopeFilter
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = CaseDB(Case.init(tmpdir))
+            local_time = QuestionScopeFilter(
+                family="mft",
+                field="si_modified",
+                operator="greater_than",
+                value="2015-03-25T09:00:00",
+            )
+            with self.assertRaisesRegex(ValueError, "time_basis_unresolved"):
+                _validate_question_scope_literal(
+                    local_time,
+                    "Show local time between 2015-03-25 09:00 and 2015-03-25 18:00",
+                    db,
+                )
+            local_date_only = local_time.model_copy(update={"value": "2015-03-25"})
+            with self.assertRaisesRegex(ValueError, "time_basis_unresolved"):
+                _validate_question_scope_literal(
+                    local_date_only, "Show records on 2015-03-25 local time", db
+                )
+
+
+class PathUnderScopeTests(unittest.TestCase):
+    def test_path_under_uses_component_boundaries_and_shared_scope_sql(self) -> None:
+        import sqlglot
+
+        from forensia.db.evidence_lookup import canonical_record_table
+        from forensia.investigation.planner import _apply_question_scope_filters
+        from forensia.knowledge.questions import question_scope_evidence_ids
+        from forensia.llm.schemas import QuestionRequestContract
+
+        paths = {
+            "descendant": "Users/Aster/Archive/report.txt",
+            "nested": "Users/Aster/Archive/sub/report.txt",
+            "same_name_nested": "Users/Aster/Archive/Sub/Archive/report.txt",
+            "same_name_nested_trailing": "Users/Aster/Archive/Sub/Archive/",
+            "same_full_path_ends_scope": "Users/Aster/Archive/Sub/Users/Aster/Archive/",
+            "case_slash": r"users\aster\ARCHIVE\Case.docx",
+            "basename_only": "Users/Aster/Archive",
+            "trailing_self": "Users/Aster/Archive/",
+            "similar_name": "Users/Aster/Archive-old/report.txt",
+            "other_user": "Users/Other/Archive/report.txt",
+            "root_descendant": "/Archive/report.txt",
+            "root_same_name_nested": "/Archive/Sub/Archive/",
+            "root_self": "/Archive",
+            "root_trailing_self": "/Archive/",
+            "drive_descendant": "C:/Archive/report.txt",
+            "drive_same_name_nested": "C:/Archive/Sub/Archive/",
+            "drive_self": "C:/Archive/",
+            "unc_descendant": "//server/share/Archive/report.txt",
+            "unc_same_name_nested": "//server/share/Archive/Sub/Archive/",
+            "unc_self": "//server/share/Archive",
+            "unc_trailing_self": "//server/share/Archive/",
+            "wildcards": "Users/Aster/100%_[x]/report.txt",
+        }
+        contract = {
+            "status": "resolved",
+            "scope_filters": [
+                {
+                    "family": "mft",
+                    "field": "file_path",
+                    "operator": "path_under",
+                    "value": "Archive/",
+                }
+            ],
+            "requirements": [
+                {
+                    "family": "mft",
+                    "field": "file_path",
+                    "kind": "observed_value",
+                }
+            ],
+        }
+        with tempfile.TemporaryDirectory() as tmpdir, CaseDB(Case.init(tmpdir)) as db:
+            db.execute(
+                "INSERT INTO mft_entries (evidence_id, file_path) VALUES "
+                + ", ".join(f"('{key}', '{path}')" for key, path in paths.items())
+            )
+            for scope_path, expected in (
+                (
+                    "Archive/",
+                    {
+                        "descendant",
+                        "nested",
+                        "same_name_nested",
+                        "same_name_nested_trailing",
+                        "same_full_path_ends_scope",
+                        "case_slash",
+                        "other_user",
+                        "root_descendant",
+                        "root_same_name_nested",
+                        "drive_descendant",
+                        "drive_same_name_nested",
+                        "unc_descendant",
+                        "unc_same_name_nested",
+                    },
+                ),
+                (
+                    "Users/Aster/Archive/",
+                    {
+                        "descendant",
+                        "nested",
+                        "same_name_nested",
+                        "same_name_nested_trailing",
+                        "same_full_path_ends_scope",
+                        "case_slash",
+                    },
+                ),
+                ("/Archive/", {"root_descendant", "root_same_name_nested"}),
+                ("C:/Archive/", {"drive_descendant", "drive_same_name_nested"}),
+                (
+                    "//server/share/Archive/",
+                    {"unc_descendant", "unc_same_name_nested"},
+                ),
+            ):
+                contract["scope_filters"][0]["value"] = scope_path
+                scoped_ids, _ = question_scope_evidence_ids(db, contract)
+                query = sqlglot.parse_one(
+                    "SELECT evidence_id FROM mft_entries", read="duckdb"
+                )
+                query = _apply_question_scope_filters(
+                    query,
+                    QuestionRequestContract.model_validate(contract),
+                    canonical_record_table,
+                    sqlglot.exp,
+                    db=db,
+                )
+                discovery_ids = [
+                    row[0] for row in db.execute(query.sql(dialect="duckdb")).fetchall()
+                ]
+                self.assertEqual(scoped_ids, discovery_ids)
+                self.assertEqual(expected, set(scoped_ids), scope_path)
+
+    def test_path_under_literal_and_field_validation_preserve_equals(self) -> None:
+        import sqlglot
+
+        from forensia.knowledge.questions import (
+            question_scope_sql_predicate,
+            validate_question_scope_operator,
+        )
+
+        for bad_value in ("", "../Archive", "A/./B", None, 123):
+            with self.subTest(value=bad_value), self.assertRaises(ValueError):
+                validate_question_scope_operator(
+                    "mft", "file_path", "path_under", bad_value
+                )
+        for family, field in (
+            ("mft", "file_name"),
+            ("evtx", "file_path"),
+            ("registry", "key_path"),
+        ):
+            with (
+                self.subTest(family=family, field=field),
+                self.assertRaises(ValueError),
+            ):
+                validate_question_scope_operator(family, field, "path_under", "Archive")
+        with tempfile.TemporaryDirectory() as tmpdir, CaseDB(Case.init(tmpdir)) as db:
+            exact = question_scope_sql_predicate(
+                db,
+                "mft",
+                "file_path",
+                "equals",
+                "$MFT",
+                sqlglot.exp.column("file_path"),
+            )
+            db.execute(
+                "INSERT INTO mft_entries (evidence_id, file_path) VALUES "
+                "('root-file', '$MFT'), ('percent', 'Users/Aster/100%_[x]/file')"
+            )
+            self.assertEqual(
+                ["root-file"],
+                [
+                    row[0]
+                    for row in db.execute(
+                        "SELECT evidence_id FROM mft_entries WHERE "
+                        + exact.sql(dialect="duckdb")
+                    ).fetchall()
+                ],
+            )
+            literal_path = question_scope_sql_predicate(
+                db,
+                "mft",
+                "file_path",
+                "path_under",
+                "100%_[x]",
+                sqlglot.exp.column("file_path"),
+            )
+            self.assertEqual(
+                ["percent"],
+                [
+                    row[0]
+                    for row in db.execute(
+                        "SELECT evidence_id FROM mft_entries WHERE "
+                        + literal_path.sql(dialect="duckdb")
+                    ).fetchall()
+                ],
+            )
+
+    def test_path_under_schema_is_only_declared_for_mft_path(self) -> None:
+        from forensia.db.evidence_lookup import canonical_record_table
+        from forensia.knowledge.coverage import observation_catalog
+        from forensia.llm.schemas import query_intent_schema_for_catalog
+
+        tables = [
+            canonical_record_table(family)
+            for family in observation_catalog()
+            if canonical_record_table(family)
+        ]
+        schema = query_intent_schema_for_catalog(
+            tables, [], require_request_contract=True
+        )
+        scope_schema = schema["$defs"]["QuestionScopeFilter"]
+        path_under_branches = [
+            branch
+            for branch in scope_schema["oneOf"]
+            if branch["properties"].get("operator", {}).get("const") == "path_under"
+        ]
+        declarations = {
+            branch["properties"]["family"]["const"]: branch["properties"]["field"][
+                "enum"
+            ]
+            for branch in path_under_branches
+        }
+        self.assertEqual({"mft": ["file_path"]}, declarations)
 
 
 if __name__ == "__main__":

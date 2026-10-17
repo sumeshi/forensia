@@ -632,7 +632,7 @@ class SufficiencyEvaluationTests(unittest.TestCase):
         cases = (
             (
                 {"observation": {**observation, "family": "evtx"}},
-                "observation-family-unsupported",
+                "observation-capability-unsupported",
             ),
             (
                 {"observation": observation, "co_observed_event_ids": [4624]},

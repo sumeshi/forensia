@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -49,12 +49,69 @@ class SQLQueryAction(BaseModel):
         return self
 
 
+class QuestionScopeFilter(BaseModel):
+    """A literal subject or time constraint stated by the question."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    family: str = Field(min_length=1)
+    field: str = Field(min_length=1)
+    operator: Literal["equals", "greater_than", "less_than", "path_under"] = Field(
+        description=(
+            "Use equals for exact values. path_under selects descendants of a "
+            "directory and is available only on artifact fields declared for it."
+        )
+    )
+    value: str | int | float | bool
+
+
+class QuestionRequirement(BaseModel):
+    """One requested value, or one proposition with a known expected value."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    family: str = Field(min_length=1)
+    field: str = Field(min_length=1)
+    kind: Literal["observed_value", "predicate"]
+    operator: Literal["equals", "contains", "greater_than"] | None = None
+    value: str | int | float | bool | None = None
+
+    @model_validator(mode="after")
+    def _predicate_has_expected_value(self) -> QuestionRequirement:
+        if self.kind == "predicate" and (self.operator is None or self.value is None):
+            raise ValueError("predicate requires operator and value")
+        if self.kind == "observed_value" and (
+            self.operator is not None or self.value is not None
+        ):
+            raise ValueError("observed_value must leave its value unknown")
+        return self
+
+
+class QuestionRequestContract(BaseModel):
+    """Question meaning fixed before discovery sees any candidate records."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["resolved", "unresolved"]
+    scope_filters: list[QuestionScopeFilter] = Field(default_factory=list)
+    requirements: list[QuestionRequirement] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _resolved_request_has_requirements(self) -> QuestionRequestContract:
+        if self.status == "resolved" and not self.requirements:
+            raise ValueError("resolved request requires at least one requirement")
+        if self.status == "unresolved" and self.requirements:
+            raise ValueError("unresolved request cannot carry requirements")
+        return self
+
+
 class QueryIntentResponse(BaseModel):
     """The complete planner response: exactly one bounded action."""
 
     model_config = ConfigDict(extra="forbid")
 
     action: SQLQueryAction
+    request_contract: QuestionRequestContract | None = None
 
 
 QUERY_INTENT_SCHEMA: dict[str, Any] = QueryIntentResponse.model_json_schema()
@@ -76,7 +133,7 @@ for _template_mode in (True, False):
         _branch_properties["template_id"] = {
             "type": "string",
             "minLength": 1,
-            "pattern": r".*\S.*",
+            "pattern": r"^[\s\S]*\S[\s\S]*$",
             "description": _sql_properties["template_id"]["description"],
         }
         _branch_properties["sql"] = {
@@ -92,7 +149,7 @@ for _template_mode in (True, False):
         }
         _branch_properties["sql"] = {
             "type": "string",
-            "pattern": r".*\S.*",
+            "pattern": r"^[\s\S]*\S[\s\S]*$",
             "description": _sql_properties["sql"]["description"],
         }
         _branch_properties.pop("params")
@@ -109,10 +166,210 @@ for _template_mode in (True, False):
 
 
 def query_intent_schema_for_catalog(
-    tables: list[str] | tuple[str, ...], template_ids: list[str] | tuple[str, ...]
+    tables: list[str] | tuple[str, ...],
+    template_ids: list[str] | tuple[str, ...],
+    *,
+    require_request_contract: bool = False,
 ) -> dict[str, Any]:
     """Narrow the planner's structured action to its disclosed work catalog."""
     schema = deepcopy(QUERY_INTENT_SCHEMA)
+    if require_request_contract:
+        from forensia.db.evidence_lookup import canonical_record_table
+        from forensia.knowledge.coverage import observation_catalog
+        from forensia.knowledge.questions import question_directory_scope_fields
+
+        catalog = observation_catalog()
+        family_fields = {
+            family: details["fields"]
+            for family, details in catalog.items()
+            if canonical_record_table(family) in tables
+        }
+        scope_definition = schema["$defs"]["QuestionScopeFilter"]
+        scope_properties = scope_definition["properties"]
+        scope_required = list(scope_properties)
+        scope_definition.clear()
+        scope_definition.update(
+            {
+                "title": "QuestionScopeFilter",
+                "description": "A literal subject or time constraint stated by the question.",
+                "oneOf": [
+                    {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": scope_required,
+                        "properties": {
+                            **deepcopy(scope_properties),
+                            "family": {"const": family},
+                            "field": {"type": "string", "enum": sorted(fields)},
+                            "operator": {
+                                "enum": ["equals", "greater_than", "less_than"]
+                            },
+                        },
+                    }
+                    for family, fields in family_fields.items()
+                ]
+                + [
+                    {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": scope_required,
+                        "properties": {
+                            **deepcopy(scope_properties),
+                            "family": {"const": family},
+                            "field": {
+                                "type": "string",
+                                "enum": sorted(question_directory_scope_fields(family)),
+                            },
+                            "operator": {"const": "path_under"},
+                            "value": {"type": "string"},
+                        },
+                    }
+                    for family in family_fields
+                    if question_directory_scope_fields(family)
+                ],
+            }
+        )
+
+        requirement_definition = schema["$defs"]["QuestionRequirement"]
+        requirement_properties = requirement_definition["properties"]
+        requirement_definition.clear()
+        requirement_definition.update(
+            {
+                "title": "QuestionRequirement",
+                "description": "One requested value, or one proposition with a known expected value.",
+                "oneOf": [],
+            }
+        )
+        non_null_operator = deepcopy(requirement_properties["operator"])
+        non_null_operator["anyOf"] = [
+            branch
+            for branch in non_null_operator["anyOf"]
+            if branch.get("type") != "null"
+        ]
+        non_null_operator.pop("default", None)
+        non_null_value = deepcopy(requirement_properties["value"])
+        non_null_value["anyOf"] = [
+            branch for branch in non_null_value["anyOf"] if branch.get("type") != "null"
+        ]
+        non_null_value.pop("default", None)
+        for family, fields in family_fields.items():
+            for kind in ("observed_value", "predicate"):
+                branch_properties = deepcopy(requirement_properties)
+                branch_properties.update(
+                    {
+                        "family": {"const": family},
+                        "field": {"type": "string", "enum": sorted(fields)},
+                        "kind": {
+                            "type": "string",
+                            "const": kind,
+                            "title": requirement_properties["kind"]["title"],
+                        },
+                    }
+                )
+                if kind == "observed_value":
+                    branch_required = ["family", "field", "kind"]
+                    for name in ("operator", "value"):
+                        annotations = {
+                            key: requirement_properties[name][key]
+                            for key in ("title", "description")
+                            if key in requirement_properties[name]
+                        }
+                        branch_properties[name] = {
+                            **annotations,
+                            "type": "null",
+                        }
+                else:
+                    branch_required = [
+                        "family",
+                        "field",
+                        "kind",
+                        "operator",
+                        "value",
+                    ]
+                    branch_properties["operator"] = non_null_operator
+                    branch_properties["value"] = non_null_value
+                requirement_definition["oneOf"].append(
+                    {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": branch_required,
+                        "properties": branch_properties,
+                    }
+                )
+
+        contract = schema["$defs"]["QuestionRequestContract"]
+        contract_properties = contract["properties"]
+        scope_items = scope_definition["oneOf"]
+        requirement_items = requirement_definition["oneOf"]
+        unresolved = {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["status", "scope_filters", "requirements"],
+            "properties": {
+                "status": {"const": "unresolved"},
+                "scope_filters": contract_properties["scope_filters"],
+                "requirements": {
+                    **contract_properties["requirements"],
+                    "maxItems": 0,
+                },
+            },
+        }
+        contract.clear()
+        contract.update(
+            {
+                "title": "QuestionRequestContract",
+                "description": "Question meaning fixed before discovery sees any candidate records.",
+                "oneOf": [
+                    *[
+                        {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "required": ["status", "scope_filters", "requirements"],
+                            "properties": {
+                                "status": {"const": "resolved"},
+                                "scope_filters": {
+                                    **contract_properties["scope_filters"],
+                                    "items": {
+                                        "oneOf": [
+                                            branch
+                                            for branch in scope_items
+                                            if branch["properties"]["family"]["const"]
+                                            == family
+                                        ]
+                                    },
+                                },
+                                "requirements": {
+                                    **contract_properties["requirements"],
+                                    "minItems": 1,
+                                    "items": {
+                                        "oneOf": [
+                                            branch
+                                            for branch in requirement_items
+                                            if branch["properties"]["family"]["const"]
+                                            == family
+                                        ]
+                                    },
+                                },
+                            },
+                        }
+                        for family in family_fields
+                    ],
+                    unresolved,
+                ],
+            }
+        )
+        schema["required"].append("request_contract")
+        schema["properties"]["request_contract"] = {
+            "$ref": "#/$defs/QuestionRequestContract"
+        }
+    else:
+        schema["properties"].pop("request_contract", None)
+        for definition in (
+            "QuestionRequestContract",
+            "QuestionRequirement",
+            "QuestionScopeFilter",
+        ):
+            schema["$defs"].pop(definition, None)
     action = schema["$defs"]["SQLQueryAction"]
     table_enum = list(dict.fromkeys(str(table) for table in tables))
     template_enum = list(dict.fromkeys(str(item) for item in template_ids))

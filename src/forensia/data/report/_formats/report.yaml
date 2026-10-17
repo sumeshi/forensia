@@ -123,10 +123,15 @@ structured_answer:
   row_preview_note: "_Showing {shown} of {total} rows. Full data is available in the structured JSON/CSV export._"
   not_found_interpretation: "No rows directly matching this question were found. Before concluding 'not found', verify that the ingested logs and time range are sufficient."
   insufficient_interpretation: "Insufficient rows were retrieved for this question. Review the missing reason in the table and determine whether additional evidence exists."
+  pending_investigation_interpretation: "The investigation for this question has no current assessed result available. See the missing reason for its status."
+  partial_investigation_interpretation: "{row_count} evidence observation(s) are linked to this investigation. Current question requirements remain unresolved; these observations do not establish the requested answer.{timezone_basis}"
+  wrong_query_interpretation: "This question remains unresolved because the query could not validate its scope. See the missing reason; this does not establish whether matching evidence exists."
   default_interpretation: "This question has {row_count} rows of structured evidence. The table supports the answer, but evaluate conclusions by correlating time, host, user, and related artifacts.{timezone_basis}"
   headings:
     interpretation: Interpretation
     answer: Answer
+    observed_evidence: Observed evidence
+    unassessed_candidates: Unassessed search candidates
     missing_reason: Missing Reason
     queries_run: Queries Run
     structured_data: Structured Data

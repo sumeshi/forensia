@@ -18,6 +18,7 @@ from forensia.core.log import log as _log
 from forensia.core.progress_event import progress_event
 from forensia.core.session import Hypothesis, LLMBudgetExceededError, SessionState
 from forensia.db.database import CaseDB
+from forensia.db.evidence_lookup import canonical_record_table, routed_family
 from forensia.investigation.hypotheses.hypothesis_manager import (
     MAX_ACTIVE_HYPOTHESES,
     _guess_related_sections,
@@ -36,12 +37,18 @@ from forensia.investigation.investigation_session import (
     _call_with_outage_recovery,
     _save_step,
 )
-from forensia.investigation.planner import _compute_uncovered_keypoints
+from forensia.investigation.planner import (
+    _compute_uncovered_keypoints,
+    discover_gap_evidence,
+)
 from forensia.investigation.prompts import (
+    _has_observed_value,
     build_gap_identifier_messages,
     build_hypothesis_drafter_messages,
 )
-from forensia.investigation.report_gap import report_cycle_progress
+from forensia.investigation.report_gap import (
+    report_cycle_progress,
+)
 from forensia.investigation.selection import (
     select_focus_hypotheses,
 )
@@ -51,6 +58,10 @@ from forensia.investigation.work_judgment import (
     work_progress_snapshot,
 )
 from forensia.investigation.work_state import pause_hypothesis_work
+from forensia.knowledge.questions import (
+    gap_operational_reason,
+    question_contract_match_reason,
+)
 from forensia.knowledge.rules.loader import _get_rule_cache
 from forensia.llm import json_response
 from forensia.llm.llm_client import (
@@ -466,13 +477,19 @@ def _select_candidate_drafts(
                 "invalid_draft",
                 "admission_rejected",
                 "feasibility_rejected",
+                "question_contract_rejected",
+                "generation_failed",
                 "merge_missing",
+                "unresolved_observation",
             }
         ]
         prior_draft_calls = sum(
             int(attempt.get("draft_calls_used") or 0) for attempt in same_input_attempts
         )
-        if prior_draft_calls >= 1:
+        if prior_draft_calls >= 1 or any(
+            attempt.get("status") == "unresolved_observation"
+            for attempt in same_input_attempts
+        ):
             exhausted_count += 1
             return False
         if len(eligible_inputs) < max(0, limit):
@@ -635,6 +652,51 @@ async def _call_broad_drafter(
     return hypothesis, rejection_reason
 
 
+def _attach_explicit_gap_source(
+    hypothesis: Hypothesis, gap: dict[str, Any], db: CaseDB
+) -> None:
+    """Carry an explicit report question's exact Gap identity into its draft."""
+    gap_id = str(gap.get("gap_id") or "").strip()
+    if not gap_id:
+        return
+    row = db.execute(
+        "SELECT block_heading FROM report_gaps WHERE gap_id = ?", [gap_id]
+    ).fetchone()
+    if row and str(row[0] or "").strip():
+        hypothesis.source_gap_id = gap_id
+
+
+def _unobserved_requested_values(
+    candidate: dict[str, Any],
+) -> list[str]:
+    contract = candidate.get("request_contract") or {}
+    evidence = [row for row in candidate.get("evidence") or [] if isinstance(row, dict)]
+    observed_requirements = []
+    missing = []
+    for requirement in contract.get("requirements") or []:
+        if (
+            not isinstance(requirement, dict)
+            or requirement.get("kind") != "observed_value"
+        ):
+            continue
+        field = str(requirement.get("field") or "")
+        family = str(requirement.get("family") or "").strip().lower()
+        if not field or not family:
+            continue
+        observed_requirements.append((family, field))
+        source = canonical_record_table(family)
+        if not any(
+            routed_family(str(row.get("evidence_id") or "")) == family
+            and row.get("_source") == source
+            and _has_observed_value(row.get(field))
+            for row in evidence
+        ):
+            missing.append((family, field))
+    if any(requirement not in missing for requirement in observed_requirements):
+        return []
+    return sorted({field for _family, field in missing})
+
+
 async def _draft_and_admit_candidate(
     ctx: _BroadPlanContext, selected: dict[str, Any], draft_index: int
 ) -> tuple[Hypothesis | None, dict[str, Any]]:
@@ -649,6 +711,8 @@ async def _draft_and_admit_candidate(
     )
     input_payload = {
         "candidate_ref": candidate_ref,
+        "gap_id": (selected.get("gap") or {}).get("gap_id"),
+        "question": (selected.get("gap") or {}).get("description"),
         "candidate_fingerprint": candidate_fingerprint,
         "input_fingerprint": input_fingerprint,
         "policy_fingerprint": _policy_fingerprint(ctx),
@@ -697,6 +761,17 @@ async def _draft_and_admit_candidate(
             output_json=output,
             suffix=step_suffix,
         )
+        gap_id = (selected.get("gap") or {}).get("gap_id")
+        if gap_id and (output.get("reason") or output.get("error_type")):
+            reason = (
+                "investigation_attempt_failed"
+                if output.get("error_type")
+                else output["reason"]
+            )
+            ctx.db.execute(
+                "UPDATE report_gaps SET coverage_reason = ?, updated_at = now() WHERE gap_id = ?",
+                [reason, gap_id],
+            )
 
     save_outcome(
         {
@@ -715,11 +790,120 @@ async def _draft_and_admit_candidate(
             "scope": candidate.get("scope", {}),
         }
     )
+    discovery: dict[str, Any] | None = None
     try:
+        prompt_candidate = selected.get("prompt_candidate") or candidate
+        if gap.get("block_heading"):
+            discovery = await _call_with_outage_recovery(
+                discover_gap_evidence,
+                question=str(gap["description"]),
+                db=ctx.db,
+                base_url=ctx.base_url,
+                model=ctx.model,
+                case_policy=ctx.case_policy,
+                status_callback=ctx.llm_status_fn,
+                correction_budget=correction_budget,
+                _outage_progress_callback=ctx.progress_callback,
+            )
+            if discovery["status"] in {"invalid", "empty"} and correction_budget[0] > 0:
+                discovery["discovery_step_id"] = (
+                    f"{ctx.session_id}-{ctx.plan_cycle:02d}-plan-gap-discovery-"
+                    f"{step_suffix}-rejected"
+                )
+                _save_step(
+                    db=ctx.db,
+                    session_id=ctx.session_id,
+                    iteration=ctx.plan_cycle,
+                    phase="plan-gap-discovery",
+                    hypothesis_id=None,
+                    input_json={
+                        "gap_id": gap["gap_id"],
+                        "question": gap["description"],
+                    },
+                    output_json=discovery,
+                    suffix=step_suffix + "-rejected",
+                )
+                retry_feedback = discovery
+                if discovery["status"] == "empty":
+                    retry_feedback = {
+                        key: discovery[key]
+                        for key in (
+                            "status",
+                            "reason",
+                            "sql",
+                            "proposed_sql",
+                            "row_count",
+                            "truncated",
+                            "contract_validated",
+                            "request_contract",
+                        )
+                        if key in discovery
+                    }
+                correction_budget[0] -= 1
+                discovery = await _call_with_outage_recovery(
+                    discover_gap_evidence,
+                    question=str(gap["description"]),
+                    db=ctx.db,
+                    base_url=ctx.base_url,
+                    model=ctx.model,
+                    case_policy=ctx.case_policy,
+                    status_callback=ctx.llm_status_fn,
+                    correction_budget=correction_budget,
+                    feedback=retry_feedback,
+                    _outage_progress_callback=ctx.progress_callback,
+                )
+            discovery["discovery_step_id"] = (
+                f"{ctx.session_id}-{ctx.plan_cycle:02d}-plan-gap-discovery-{step_suffix}"
+            )
+            _save_step(
+                db=ctx.db,
+                session_id=ctx.session_id,
+                iteration=ctx.plan_cycle,
+                phase="plan-gap-discovery",
+                hypothesis_id=None,
+                input_json={"gap_id": gap["gap_id"], "question": gap["description"]},
+                output_json=discovery,
+                suffix=step_suffix,
+            )
+            if discovery["status"] != "completed":
+                outcome = {
+                    "candidate_ref": candidate_ref,
+                    "status": "discovery_failed",
+                    "reason": discovery["reason"],
+                    "draft_calls_used": draft_calls_used,
+                    "attempt_number": attempt_number,
+                    "correction_calls_used": prior_correction_calls
+                    + 1
+                    - correction_budget[0],
+                }
+                save_outcome(outcome)
+                logical_status = "success"
+                return None, outcome
+            prompt_candidate = discovery["candidate"]
+            prompt_candidate["candidate_ref"] = candidate_ref
+            prompt_candidate["discovery_step_id"] = discovery["discovery_step_id"]
+        missing_observations = _unobserved_requested_values(prompt_candidate)
+        if missing_observations:
+            outcome = {
+                "candidate_ref": candidate_ref,
+                "status": "unresolved_observation",
+                "reason": (
+                    "requested_observation_unavailable: "
+                    + ", ".join(missing_observations)
+                ),
+                "draft_calls_used": prior_draft_calls,
+                "attempt_number": attempt_number,
+                "correction_calls_used": prior_correction_calls
+                + 1
+                - correction_budget[0],
+            }
+            save_outcome(outcome)
+            logical_status = "success"
+            return None, outcome
         hypothesis, rejection_reason = await _call_broad_drafter(
             ctx,
             gap,
-            candidate=selected.get("prompt_candidate", candidate),
+            candidate=prompt_candidate,
             draft_index=draft_index,
             correction_budget=correction_budget,
             logical_call_id=logical_call_id,
@@ -732,6 +916,48 @@ async def _draft_and_admit_candidate(
         ) -> tuple[bool, str, str]:
             if value is None:
                 return False, parse_error or "invalid-draft", "invalid_draft"
+            if gap.get("block_heading"):
+                reason = question_contract_match_reason(
+                    prompt_candidate.get("request_contract"),
+                    value.verification_spec,
+                    observation_records={
+                        str(row.get("evidence_id")): row
+                        for row in prompt_candidate.get("evidence", [])
+                        if isinstance(row, dict) and row.get("evidence_id")
+                    },
+                )
+                if reason:
+                    return False, reason, "question_contract_rejected"
+                support = value.verification_spec.support_conditions
+                observation = (
+                    support.get("observation") if isinstance(support, dict) else None
+                )
+                candidate_ids = {
+                    str(evidence_id)
+                    for evidence_id in prompt_candidate.get("evidence_ids", [])
+                    if evidence_id
+                }
+                observation_ids = (
+                    observation.get("evidence_ids")
+                    if isinstance(observation, dict)
+                    else None
+                )
+                observed_ids = {
+                    str(evidence_id)
+                    for evidence_id in observation_ids or []
+                    if evidence_id
+                }
+                if (
+                    not observed_ids
+                    or not candidate_ids
+                    or not observed_ids.issubset(candidate_ids)
+                ):
+                    return (
+                        False,
+                        "question_observation_evidence_mismatch",
+                        "question_contract_rejected",
+                    )
+            _attach_explicit_gap_source(value, gap, ctx.db)
             qualify_event_contexts(value, ctx.db)
             support = value.verification_spec.support_conditions
             if isinstance(support, dict):
@@ -775,7 +1001,7 @@ async def _draft_and_admit_candidate(
             hypothesis, rejection_reason = await _call_broad_drafter(
                 ctx,
                 correction_gap,
-                candidate=selected.get("prompt_candidate", candidate),
+                candidate=prompt_candidate,
                 draft_index=draft_index,
                 correction_budget=correction_budget,
                 logical_call_id=logical_call_id,
@@ -875,11 +1101,16 @@ async def _draft_and_admit_candidate(
         save_outcome(
             {
                 "status": "admitted",
+                "reason": "question_has_unverified_candidate"
+                if gap.get("gap_id")
+                else "candidate_admitted",
                 "draft_hypothesis_id": hypothesis.id,
                 "admitted_hypothesis_id": merged.id,
                 "admitted_spec_fingerprint": _fingerprint(
                     merged.verification_spec.model_dump(mode="json")
                 ),
+                "discovery_step_id": (discovery or {}).get("discovery_step_id"),
+                "contract_id": (discovery or {}).get("contract_id"),
                 "settled_input_fingerprint": settled_fingerprint,
                 "linked_work": linked_work,
                 "attempt_number": attempt_number,
@@ -983,7 +1214,13 @@ async def _draft_and_admit_candidate(
 def _select_gap_drafts(
     ctx: _BroadPlanContext, gaps: list[dict[str, Any]], limit: int
 ) -> tuple[list[dict[str, Any]], int]:
+    if limit <= 0:
+        return [], 0
+
+    from forensia.investigation.hypotheses.execution import _evidence_scope_fingerprint
+
     prior = _prior_candidate_attempts(ctx.db)
+    evidence_revision = _evidence_scope_fingerprint(ctx.db, "SELECT 1")
     selected: list[dict[str, Any]] = []
     exhausted = 0
     for gap in gaps:
@@ -1002,9 +1239,9 @@ def _select_gap_drafts(
                     "keypoint_id": keypoint_id,
                     "section_key": gap.get("section_key"),
                     "description": gap.get("description"),
-                    "coverage_reason": gap.get("coverage_reason"),
                     "task_id": gap.get("task_id"),
                     "origin": gap.get("origin"),
+                    "evidence_revision": evidence_revision,
                     "observed_keypoints": ctx.observed_keypoint_labels,
                 }
             ),
@@ -1014,7 +1251,8 @@ def _select_gap_drafts(
             "scope": {},
             "title": str(gap.get("description") or keypoint_id or gap_id)[:200],
             "summary": str(
-                gap.get("coverage_reason")
+                gap_operational_reason(ctx.db, gap_id)
+                or gap.get("coverage_reason")
                 or gap.get("why_uncovered")
                 or "Existing case gap without a current Finding candidate."
             )[:500],
@@ -1037,7 +1275,11 @@ def _select_gap_drafts(
                 "invalid_draft",
                 "admission_rejected",
                 "feasibility_rejected",
+                "question_contract_rejected",
                 "merge_missing",
+                "discovery_failed",
+                "generation_failed",
+                "unresolved_observation",
             }
         ]
         if any(
@@ -1046,7 +1288,11 @@ def _select_gap_drafts(
             for attempt in prior.get(candidate_ref, [])
         ):
             continue
-        if sum(int(attempt.get("draft_calls_used") or 0) for attempt in attempts) >= 1:
+        if sum(
+            int(attempt.get("draft_calls_used") or 0) for attempt in attempts
+        ) >= 1 or any(
+            attempt.get("status") == "unresolved_observation" for attempt in attempts
+        ):
             exhausted += 1
             continue
         selected.append(
@@ -1069,13 +1315,14 @@ def _persisted_gap_drafts(ctx: _BroadPlanContext) -> list[dict[str, Any]]:
     """Project existing unlinked Gap/Task work into the bounded draft pool."""
     rows = ctx.db.execute(
         "SELECT g.gap_id, g.section_key, g.description, g.kind, g.status, "
-        "g.task_id, g.coverage_reason, g.origin "
+        "g.task_id, g.coverage_reason, g.origin, g.block_heading "
         "FROM report_gaps g "
         "LEFT JOIN investigation_tasks t ON t.task_id = g.task_id "
         "WHERE g.status IN ('open', 'in_progress', 'needs_review') "
         "AND g.hypothesis_id IS NULL "
         "AND (g.task_id IS NULL OR t.status IN ('open', 'in_progress')) "
-        "ORDER BY CASE g.origin WHEN 'configuration' THEN 0 ELSE 1 END, "
+        "ORDER BY CASE WHEN COALESCE(g.block_heading, '') <> '' THEN 0 ELSE 1 END, "
+        "CASE g.origin WHEN 'configuration' THEN 0 ELSE 1 END, "
         "g.created_at, g.gap_id"
     ).fetchall()
     return [
@@ -1088,9 +1335,14 @@ def _persisted_gap_drafts(ctx: _BroadPlanContext) -> list[dict[str, Any]]:
             "kind": str(row[3] or ""),
             "status": str(row[4] or ""),
             "task_id": str(row[5] or ""),
-            "coverage_reason": str(row[6] or ""),
+            "coverage_reason": (
+                gap_operational_reason(ctx.db, str(row[0])) or str(row[6] or "")
+            ),
             "origin": str(row[7] or ""),
-            "why_uncovered": str(row[6] or ""),
+            "block_heading": str(row[8] or ""),
+            "why_uncovered": (
+                gap_operational_reason(ctx.db, str(row[0])) or str(row[6] or "")
+            ),
         }
         for row in rows
     ]
@@ -1230,10 +1482,17 @@ async def _run_broad_plan_step(
         call_allowance = _remaining_broad_plan_calls(
             db, session_id, cap=min(4, available_slots)
         )
-        gap_selected: list[dict[str, Any]] = []
-        exhausted_gaps = 0
         gap_identification_error: str | None = None
-        if call_allowance >= 2 and available_slots:
+        persisted_gaps = _persisted_gap_drafts(ctx) if available_slots else []
+        gap_limit = min(
+            4 if any(g.get("block_heading") for g in persisted_gaps) else 1,
+            available_slots,
+            call_allowance,
+        )
+        gap_selected, exhausted_gaps = _select_gap_drafts(
+            ctx, persisted_gaps, gap_limit
+        )
+        if call_allowance >= 2 and available_slots and not gap_selected:
             try:
                 gap_areas = await _identify_broad_plan_gaps(ctx, max_gap_areas=4)
             except LLMBudgetExceededError:
@@ -1255,16 +1514,18 @@ async def _run_broad_plan_step(
                     f"gap identification failed; continuing with persisted work and findings: {gap_identification_error}",
                     level="warning",
                 )
-        persisted_gaps = _persisted_gap_drafts(ctx) if available_slots else []
         gap_areas = [*persisted_gaps, *gap_areas]
-        if available_slots:
+        if available_slots and not gap_selected:
             remaining_calls = _remaining_broad_plan_calls(
                 db, session_id, cap=min(4, available_slots)
             )
             gap_selected, exhausted_gaps = _select_gap_drafts(
                 ctx,
                 gap_areas,
-                limit=min(1, available_slots, remaining_calls),
+                limit=min(
+                    gap_limit,
+                    remaining_calls,
+                ),
             )
         remaining_calls = _remaining_broad_plan_calls(
             db, session_id, cap=min(4, available_slots)

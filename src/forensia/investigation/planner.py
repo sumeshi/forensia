@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import date, datetime, timedelta
 from typing import Any
 
+import duckdb
 from pydantic import ValidationError
 
 from forensia.context.case_profile import CaseEvidenceProfile
@@ -33,6 +37,7 @@ from forensia.investigation.hypotheses.execution import (
 from forensia.investigation.hypotheses.hypothesis_store import load_hypothesis_attempts
 from forensia.investigation.progress import query_fingerprint
 from forensia.investigation.prompts import (
+    build_gap_discovery_messages,
     build_query_intent_messages,
 )
 from forensia.investigation.verification.assessment import _observation_value_matches
@@ -43,10 +48,23 @@ from forensia.knowledge.coverage import (
     observation_catalog,
     observation_condition_error,
 )
+from forensia.knowledge.questions import (
+    extract_time_qualifiers,
+    normalize_directory_scope,
+    question_requests_local_time,
+    question_requests_utc,
+    question_scope_evidence_ids,
+    question_scope_sql_predicate,
+    strip_section_instructions,
+    validate_question_scope_operator,
+)
 from forensia.llm import json_response
 from forensia.llm.schemas import (
     QUERY_INTENT_SCHEMA,
     QueryIntentResponse,
+    QuestionRequestContract,
+    QuestionRequirement,
+    QuestionScopeFilter,
     SQLQueryAction,
     query_intent_schema_for_catalog,
 )
@@ -345,6 +363,537 @@ def request_query_intent(
     )
     action, error = normalize_query_intent_action(parsed)
     return _QueryIntentResult(action, parsed, error)
+
+
+def discover_gap_evidence(
+    question: str,
+    *,
+    db: CaseDB,
+    base_url: str,
+    model: str,
+    case_policy: Any | None = None,
+    status_callback: Callable[[str], None] | None = None,
+    correction_budget: list[int],
+    feedback: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Retrieve candidate evidence before a question has a verification claim."""
+    import sqlglot
+    from sqlglot import exp
+
+    from forensia.context.sql_templates import bounded_select_sql
+    from forensia.db.evidence_lookup import fetch_evidence_records, routed_family
+    from forensia.db.query import fetch_bounded_records
+    from forensia.db.schema import load_live_schema
+
+    live_schema = load_live_schema(db)
+    catalog = observation_catalog()
+    tables = [
+        table
+        for family in catalog
+        if (table := canonical_record_table(family)) in live_schema
+        and db.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone()
+    ]
+    if not tables:
+        return {"status": "no_evidence", "reason": "discovery_no_available_records"}
+    question_fields = {
+        family: catalog[family]["fields"]
+        for family in catalog
+        if canonical_record_table(family) in tables
+    }
+    fixed_contract_retry = (
+        isinstance(feedback, dict) and feedback.get("contract_validated") is True
+    )
+    fixed_contract = None
+    fixed_contract_payload = None
+    fixed_contract_id = None
+    if fixed_contract_retry:
+        try:
+            fixed_contract = QuestionRequestContract.model_validate(
+                feedback.get("request_contract")
+            )
+        except ValidationError as exc:
+            return {
+                "status": "invalid",
+                "reason": f"verified_question_contract_invalid: {str(exc)[:300]}",
+                "contract_validated": False,
+            }
+        if fixed_contract.status != "resolved":
+            fixed_contract_payload = fixed_contract.model_dump(mode="json")
+            return {
+                "status": "invalid",
+                "reason": "verified_question_contract_not_resolved",
+                "request_contract": fixed_contract_payload,
+                "contract_validated": False,
+            }
+        fixed_contract_payload = fixed_contract.model_dump(mode="json")
+        fixed_contract_id = hashlib.sha256(
+            json.dumps(
+                fixed_contract_payload, sort_keys=True, ensure_ascii=False
+            ).encode()
+        ).hexdigest()
+    messages = build_gap_discovery_messages(
+        question,
+        schema_context=_build_schema_guidance(tables, db=db),
+        request_catalog=question_fields,
+        case_policy=case_policy,
+        feedback=feedback,
+    )
+    result = request_query_intent(
+        messages,
+        base_url=base_url,
+        model=model,
+        status_callback=status_callback,
+        json_schema=query_intent_schema_for_catalog(
+            tables, [], require_request_contract=not fixed_contract_retry
+        ),
+        correction_budget=correction_budget,
+    )
+    receipt: dict[str, Any] = {"response": result.raw_response}
+    if fixed_contract_retry:
+        receipt.update(
+            request_contract=fixed_contract_payload,
+            contract_id=fixed_contract_id,
+            contract_validated=True,
+        )
+    try:
+        if result.error or result.action is None:
+            raise ValueError(result.error or "SQL action was not selected")
+        if fixed_contract_retry:
+            contract = fixed_contract
+            contract_payload = fixed_contract_payload
+            if "request_contract" in result.raw_response:
+                raise ValueError("request_contract_returned_during_action_only_retry")
+        else:
+            raw_contract = result.raw_response.get("request_contract")
+            contract = QuestionRequestContract.model_validate(raw_contract)
+            contract_payload = contract.model_dump(mode="json")
+            receipt.update(
+                request_contract=contract_payload,
+                contract_id=hashlib.sha256(
+                    json.dumps(
+                        contract_payload, sort_keys=True, ensure_ascii=False
+                    ).encode()
+                ).hexdigest(),
+                contract_validated=False,
+            )
+            if contract.status == "unresolved":
+                return receipt | {
+                    "status": "unresolved",
+                    "reason": "question_scope_unresolved",
+                }
+        _validate_question_request_contract(
+            contract, tables, strip_section_instructions(question), db
+        )
+        try:
+            canonical_scope_ids, canonical_scope_truncated = (
+                _canonical_question_scope_ids(db, contract)
+            )
+        except (
+            duckdb.ProgrammingError,
+            duckdb.DataError,
+            duckdb.NotSupportedError,
+        ) as exc:
+            raise ValueError(
+                f"question_scope_invalid_query: {str(exc).splitlines()[0][:300]}"
+            ) from exc
+        receipt["contract_validated"] = True
+        action = result.action
+        if fixed_contract_retry:
+            contract_families = {
+                item["family"].strip().lower()
+                for item in [
+                    *contract_payload["scope_filters"],
+                    *contract_payload["requirements"],
+                ]
+            }
+            contract_table = (
+                canonical_record_table(next(iter(contract_families)))
+                if len(contract_families) == 1
+                else None
+            )
+            if (
+                not contract_table
+                or contract_table.casefold() != action.target_table.casefold()
+            ):
+                raise ValueError("request_contract_family_changed_during_sql_retry")
+        query = _materialize_planned_query(
+            {
+                "query_id": "discovery",
+                "hypothesis_id": "",
+                "purpose": action.intent,
+                "target_table": action.target_table,
+                "sql": action.sql,
+                "template_id": action.template_id,
+                "params": action.params,
+            },
+            db,
+            tuple(tables),
+        )
+        receipt["proposed_sql"] = query.sql
+        tree = sqlglot.parse_one(query.sql, read="duckdb")
+        tree = _apply_question_scope_filters(
+            tree, contract, canonical_record_table, sqlglot.exp, db=db
+        )
+        query.sql = validate_select_sql_with_dryrun(tree.sql(dialect="duckdb"), db)
+        source = tree.args.get("from_")
+        source = source.this if source is not None else None
+        canonical_id = (
+            "artifact_id"
+            if action.target_table == "registry_artifacts"
+            else "evidence_id"
+        )
+        identity_column = None
+        # A plain row SELECT retains its rows/order when a canonical ID is appended.
+        if (
+            isinstance(tree, exp.Select)
+            and isinstance(source, exp.Table)
+            and source.name.casefold() == action.target_table.casefold()
+            and not any(
+                tree.args.get(key)
+                for key in ("distinct", "group", "having", "joins", "with_", "qualify")
+            )
+            and not any(
+                tree.find_all(exp.AggFunc, exp.Window, exp.Subquery, exp.Unnest)
+            )
+        ):
+            identity_column = "_forensia_evidence_id"
+            if identity_column in tree.named_selects:
+                raise ValueError("Discovery uses a reserved identity column")
+            tree = tree.select(
+                exp.alias_(
+                    exp.column(canonical_id, table=source.alias_or_name),
+                    identity_column,
+                ),
+                append=True,
+            )
+            query.sql = validate_select_sql_with_dryrun(tree.sql(dialect="duckdb"), db)
+        receipt["sql"] = query.sql
+        if (
+            isinstance(feedback, dict)
+            and feedback.get("status") == "empty"
+            and feedback.get("contract_validated") is True
+            and feedback.get("sql")
+        ):
+            try:
+                previous_sql = sqlglot.parse_one(feedback["sql"], read="duckdb").sql(
+                    dialect="duckdb", comments=False, normalize=True
+                )
+            except sqlglot.errors.ParseError:
+                previous_sql = None
+            if previous_sql == sqlglot.parse_one(query.sql, read="duckdb").sql(
+                dialect="duckdb", comments=False, normalize=True
+            ):
+                return receipt | {
+                    "status": "empty",
+                    "reason": "discovery_repeated_empty_query",
+                    "row_count": feedback.get("row_count", 0),
+                    "repeated_query": True,
+                }
+        try:
+            rows, truncated = fetch_bounded_records(
+                db, bounded_select_sql(query.sql), max_rows=MAX_SQL_ROWS
+            )
+        except (
+            duckdb.ProgrammingError,
+            duckdb.DataError,
+            duckdb.NotSupportedError,
+        ) as exc:
+            raise ValueError(str(exc).splitlines()[0]) from exc
+        identifiers = [
+            row.get(identity_column)
+            if identity_column
+            else row.get("evidence_id") or row.get("artifact_id")
+            for row in rows
+        ]
+        ids = list(dict.fromkeys(str(value) for value in identifiers if value))
+        records = fetch_evidence_records(db, ids)
+        receipt.update(
+            row_count=len(rows),
+            truncated=truncated,
+            evidence_ids=list(records),
+            canonical_scope_evidence_ids=canonical_scope_ids,
+            canonical_scope_truncated=canonical_scope_truncated,
+        )
+        if not rows:
+            return receipt | {
+                "status": "empty",
+                "reason": "discovery_no_matching_records",
+            }
+        if not all(identifiers) or len(records) != len(ids):
+            raise ValueError(
+                "Discovery must return existing evidence_id or artifact_id values"
+            )
+        # Discovery rows only nominate candidates; canonical records supply their values.
+        for eid in records:
+            records[eid]["source_family"] = routed_family(eid)
+        # The scope list is a capped receipt sample, so check candidates against DuckDB.
+        candidate_scope_ids, _ = question_scope_evidence_ids(
+            db,
+            contract.model_dump(mode="json"),
+            max_rows=MAX_SQL_ROWS,
+            evidence_ids=ids,
+        )
+        canonical_id_set = set(candidate_scope_ids)
+        evidence = [
+            records[eid] for eid in ids if eid in canonical_id_set and eid in records
+        ]
+        scoped_ids = [str(record["evidence_id"]) for record in evidence]
+        receipt["scoped_evidence_ids"] = scoped_ids
+        receipt["omitted_scoped_evidence_count"] = max(0, len(scoped_ids) - 3)
+        evidence = evidence[:3]
+        if not evidence:
+            return receipt | {
+                "status": "empty",
+                "reason": "discovery_no_scope_matching_records",
+            }
+        receipt.update(
+            sampled_count=len(evidence),
+            omitted_evidence_count=len(records) - len(evidence),
+        )
+        families = {routed_family(row["evidence_id"]) for row in evidence}
+        return receipt | {
+            "status": "completed",
+            "candidate": {
+                "title": question,
+                "summary": "Search results are leads, not proof of the whole question.",
+                "scope": {
+                    "source_family": next(iter(families)) if len(families) == 1 else ""
+                },
+                "evidence": evidence,
+                "evidence_ids": [row["evidence_id"] for row in evidence],
+                "request_contract": contract_payload,
+                "contract_id": receipt["contract_id"],
+                "discovery_step_id": "",
+            },
+        }
+    except ValueError as exc:
+        return receipt | {
+            "status": "invalid",
+            "reason": f"discovery_invalid_query: {str(exc)[:300]}",
+        }
+
+
+def _validate_question_request_contract(
+    contract: QuestionRequestContract,
+    tables: list[str],
+    question: str,
+    db: CaseDB,
+) -> None:
+    catalog = observation_catalog()
+    allowed_tables = {str(table).casefold() for table in tables}
+    for item in [*contract.scope_filters, *contract.requirements]:
+        family = item.family.strip().lower()
+        fields = catalog.get(family)
+        table = canonical_record_table(family)
+        if (
+            not fields
+            or table not in allowed_tables
+            or item.field not in fields["fields"]
+        ):
+            raise ValueError(
+                f"request_contract_field_unsupported:{family}.{item.field}"
+            )
+        if isinstance(item, QuestionScopeFilter):
+            validate_question_scope_operator(
+                family, item.field, item.operator, item.value
+            )
+            if item.operator == "greater_than" and isinstance(item.value, bool):
+                raise ValueError("request_contract_scope_value_invalid")
+            _validate_question_scope_literal(item, question, db)
+        elif isinstance(item, QuestionRequirement) and item.kind == "predicate":
+            if item.field in fields["boolean_fields"]:
+                if item.operator != "equals" or not isinstance(item.value, bool):
+                    raise ValueError("request_contract_predicate_value_invalid")
+            elif isinstance(item.value, bool):
+                raise ValueError("request_contract_predicate_value_invalid")
+    families = {
+        item.family.strip().lower()
+        for item in [*contract.scope_filters, *contract.requirements]
+    }
+    if len(families) != 1:
+        raise ValueError("request_contract_requires_one_artifact_family")
+
+
+def _validate_question_scope_literal(
+    item: QuestionScopeFilter, question: str, db: CaseDB
+) -> None:
+    """Require string scope values to be stated or implied by explicit time bounds."""
+    value = item.value
+    if not isinstance(value, str):
+        return
+    text = question.casefold()
+    literal = value.strip()
+    if not literal:
+        raise ValueError("question_scope_invalid_query: scope_literal_ungrounded")
+    if item.operator == "path_under":
+        normalized_question = re.sub(
+            r"/{2,}", "//", question.replace("\\", "/")
+        ).casefold()
+        if normalize_directory_scope(literal) not in normalized_question:
+            raise ValueError("question_scope_invalid_query: scope_literal_ungrounded")
+        return
+    column = db.execute(
+        "SELECT data_type FROM information_schema.columns "
+        "WHERE table_schema = 'main' AND table_name = ? AND column_name = ?",
+        [canonical_record_table(item.family), item.field],
+    ).fetchone()
+    column_type = str(column[0]).upper() if column else ""
+    if column_type != "DATE" and "TIMESTAMP" not in column_type:
+        if literal.casefold() not in text:
+            raise ValueError("question_scope_invalid_query: scope_literal_ungrounded")
+        return
+
+    qualifiers = extract_time_qualifiers(question)
+    explicit_dates = {d for d in (qualifiers["date_from"], qualifiers["date_to"]) if d}
+    timestamp_pattern = (
+        r"(?<![\d])\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}"
+        r"(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?"
+        r"(?![\d:]|\.\d|[+-]\d)"
+    )
+    question_timestamps = []
+    for raw in re.findall(timestamp_pattern, question, re.IGNORECASE):
+        try:
+            question_timestamps.append(
+                datetime.fromisoformat(
+                    raw.replace("z", "+00:00").replace("Z", "+00:00")
+                )
+            )
+        except ValueError:
+            continue
+
+    aware_scope = re.fullmatch(
+        r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}"
+        r"(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})",
+        literal,
+        re.IGNORECASE,
+    )
+    if aware_scope:
+        scoped = datetime.fromisoformat(
+            literal.replace("z", "+00:00").replace("Z", "+00:00")
+        )
+        if any(
+            candidate.utcoffset() is not None and candidate == scoped
+            for candidate in question_timestamps
+        ):
+            return
+        raise ValueError("question_scope_invalid_query: scope_datetime_ungrounded")
+
+    if (
+        column_type != "DATE"
+        and "TIMESTAMP" in column_type
+        and question_requests_local_time(question)
+        and not question_requests_utc(question)
+    ):
+        raise ValueError("question_scope_invalid_query: scope_time_basis_unresolved")
+
+    naive_scope = re.fullmatch(
+        r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}"
+        r"(?::\d{2}(?:\.\d+)?)?",
+        literal,
+        re.IGNORECASE,
+    )
+    if naive_scope:
+        scoped = datetime.fromisoformat(literal.replace(" ", "T"))
+        if any(
+            candidate.utcoffset() is None and candidate == scoped
+            for candidate in question_timestamps
+        ):
+            return
+    date_match = re.search(r"\d{4}-\d{2}-\d{2}", literal)
+    if date_match is None:
+        raise ValueError("question_scope_invalid_query: scope_datetime_ungrounded")
+    scoped_date = date_match.group()
+    date_grounded = scoped_date in explicit_dates
+    if not date_grounded and item.operator == "less_than" and explicit_dates:
+        try:
+            date_grounded = (
+                scoped_date
+                == (
+                    date.fromisoformat(max(explicit_dates)) + timedelta(days=1)
+                ).isoformat()
+            )
+        except ValueError:
+            pass
+    if not date_grounded:
+        raise ValueError("question_scope_invalid_query: scope_literal_ungrounded")
+
+    # A timestamp inferred from a date/hour range must match the stated boundary.
+    scoped_dt_match = re.fullmatch(
+        r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?",
+        literal,
+        re.IGNORECASE,
+    )
+    if scoped_dt_match:
+        qualifiers = extract_time_qualifiers(question)
+        scoped_date = scoped_dt_match.group()[:10]
+        scoped_time = scoped_dt_match.group().split("T")[-1].split(" ")[-1]
+        next_day_end = False
+        if explicit_dates:
+            try:
+                next_day_end = (
+                    scoped_date
+                    == (
+                        date.fromisoformat(max(explicit_dates)) + timedelta(days=1)
+                    ).isoformat()
+                )
+            except ValueError:
+                pass
+        is_midnight = bool(re.fullmatch(r"00:00(?::00(?:\.0+)?)?", scoped_time))
+        if is_midnight and (
+            (item.operator == "greater_than" and scoped_date == qualifiers["date_from"])
+            or (item.operator == "less_than" and next_day_end)
+        ):
+            return
+        scope_clock = datetime.fromisoformat(
+            scoped_dt_match.group().replace(" ", "T")
+        ).time()
+        if (
+            scope_clock.second != 0
+            or scope_clock.microsecond != 0
+            or scoped_time[:5] not in {qualifiers["hour_from"], qualifiers["hour_to"]}
+        ):
+            raise ValueError("question_scope_invalid_query: scope_datetime_ungrounded")
+
+
+def _apply_question_scope_filters(
+    tree: Any,
+    contract: QuestionRequestContract,
+    canonical_table: Any,
+    exp: Any,
+    *,
+    db: CaseDB,
+) -> Any:
+    """Bind literal request scope to discovery SQL before reading any rows."""
+    for item in contract.scope_filters:
+        table_name = canonical_table(item.family)
+        matches = [
+            table
+            for table in tree.find_all(exp.Table)
+            if table.name.casefold() == str(table_name).casefold()
+        ]
+        if len(matches) != 1:
+            raise ValueError(f"request_contract_scope_table_ambiguous:{item.family}")
+        column = exp.column(item.field, table=matches[0].alias_or_name)
+        tree = tree.where(
+            question_scope_sql_predicate(
+                db,
+                item.family,
+                item.field,
+                item.operator,
+                item.value,
+                column,
+            ),
+            append=True,
+        )
+    return tree
+
+
+def _canonical_question_scope_ids(
+    db: CaseDB, contract: QuestionRequestContract
+) -> tuple[list[str], bool]:
+    return question_scope_evidence_ids(
+        db, contract.model_dump(mode="json"), max_rows=MAX_SQL_ROWS
+    )
 
 
 def _compute_uncovered_keypoints(

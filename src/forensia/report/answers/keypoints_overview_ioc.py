@@ -20,7 +20,6 @@ from forensia.report.answers.keypoint_sql import (
 )
 from forensia.report.evidence_refs import (
     EvidenceResolver,
-    _path_like_any,
     _report_keypoint_rows,
 )
 
@@ -225,17 +224,6 @@ OVERVIEW_IOC_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
             f"""
             SELECT file_name, file_path, si_modified FROM mft_entries
             WHERE {_EMAIL_DATA_FILE_SQL} OR {_EMAIL_PATH_SQL}
-            """,
-        ),
-    ),
-    "structured_desktop_rename_candidates": (
-        "Files on Desktop with si_modified < fn_modified (rename indicator).",
-        lambda db: _report_keypoint_rows(
-            db,
-            f"""
-            SELECT file_name, file_path, si_modified, fn_modified
-            FROM mft_entries
-            WHERE {_path_like_any("file_path", "desktop")} AND si_modified < fn_modified
             """,
         ),
     ),

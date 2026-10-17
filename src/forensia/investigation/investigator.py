@@ -73,6 +73,10 @@ from forensia.report.sections.report_input import (
     decide_report_sources,
     ensure_report_output_paths,
 )
+from forensia.report.sections.section_assembly import (
+    block_question_request,
+    prepare_section_request,
+)
 from forensia.report.sections.section_refresher import async_refresh_report_sections
 from forensia.report.sections.section_store import mark_report_sections_ai_exhausted
 from forensia.report.sections.status import build_report_status
@@ -176,6 +180,7 @@ async def _run_report_phase(
         gaps=report_result["gaps"],
         session_id=session_id,
         progress_callback=progress_callback,
+        question_requests=report_result.get("question_requests"),
     )
     # Gap/Task/Hypothesis admission mutates Case State after section refresh;
     # rebuild the status after that mutation, while retaining the section body
@@ -656,6 +661,23 @@ async def investigate(
     try:
         if report_decision.notice:
             _log("REPORT", report_decision.notice)
+        if not report_only:
+            question_requests = []
+            for source in report_sections:
+                request = prepare_section_request(case, db, source, {})
+                question_requests.extend(
+                    question
+                    for block in request["block_requests"]
+                    if (question := block_question_request(source.section_key, block))
+                )
+            inject_gap_hypotheses(
+                db,
+                state,
+                [],
+                session_id,
+                progress_callback=session_progress,
+                question_requests=question_requests,
+            )
         notice_event = collect_policy_progress_event(ctx.forensia_policy)
         if notice_event is not None:
             _log("FORENSIA", str(ctx.forensia_policy.notice))

@@ -24,6 +24,7 @@ from forensia.context.sql_templates import query_template_catalog_for_tables
 from forensia.core.session import Hypothesis
 from forensia.db.evidence_lookup import canonical_record_table, routed_family
 from forensia.db.query import normalize_value
+from forensia.db.schema import load_live_schema
 from forensia.investigation.case_policy import case_policy_block
 from forensia.knowledge.catalog import load_benign_context_rules
 from forensia.knowledge.coverage import (
@@ -778,6 +779,88 @@ def build_gap_identifier_messages(
     return messages, schema
 
 
+def build_gap_discovery_messages(
+    question: str,
+    *,
+    schema_context: str,
+    request_catalog: dict[str, list[str]],
+    case_policy: Any | None = None,
+    feedback: dict[str, Any] | None = None,
+) -> list[dict[str, str]]:
+    fixed_contract_retry = (
+        isinstance(feedback, dict) and feedback.get("contract_validated") is True
+    )
+    empty_contract_retry = fixed_contract_retry and feedback.get("status") == "empty"
+    contract_response_instruction = (
+        "The host has already validated and fixed request_contract. Return only the action property and omit request_contract entirely. "
+        if fixed_contract_retry
+        else "Before querying, return request_contract and action as sibling properties of the root response. A resolved request_contract uses exactly one artifact family across all scope_filters and requirements; use only exact family-to-field mappings in available_question_fields. If the whole request cannot be represented within one family, keep it unresolved rather than dropping requirements. Include every explicit subject/time scope filter and requested field or predicate. "
+    )
+    request_contract_guidance = (
+        "For unknown requested values use kind=observed_value and omit operator/value; never fill them from search results. "
+        "For a question about a known predicate use kind=predicate with its exact operator/value. "
+        "Contract status means whether the request can be represented with available fields, not whether its answer is known. If a requested value is unknown but its field is available, set status=resolved; put only literal subject/time constraints stated in the question in scope_filters, and put requested unknown fields in requirements. Use status=unresolved with requirements=[] only when a requested field or constraint cannot be represented with available fields. "
+        if not fixed_contract_retry
+        else ""
+    )
+    scope_operator_guidance = "For scope_filters, equals means one exact value or complete path. For a declared path field, path_under means a descendant of the stated directory path: match whole path components, case-insensitively, treating / and \\ as separators; do not treat %, _, or other characters as wildcards. Keep drive, leading-slash, and UNC roots intact. Choose the operator that matches the requested relation before validation; the host never silently converts between equals and path_under. An unvalidated contract may be corrected, while a validated retry keeps its fixed contract. "
+    zero_row_retry = (
+        "The previous query returned no scoped evidence. Keep the fixed contract's artifact family and scope; do not relax scope filters or predicates. Try one materially different bounded SELECT within that same family, removing incidental filters or using another justified field from the supplied schema. Do not invent search values or treat zero results as proof of absence. Do not repeat the prior SQL; if no distinct search is justified, return the prior action unchanged so the host can stop without executing it again. "
+        if empty_contract_retry
+        else ""
+    )
+    contract_retry_instruction = (
+        "The previous SQL action was rejected. Keep the host-fixed request_contract and artifact family; return only a corrected action and do not include request_contract. Correct the SQL using the previous rejection reason. "
+        if fixed_contract_retry and not empty_contract_retry
+        else "On a correction retry, preserve the previous request_contract only when previous_attempt.contract_validated is true; otherwise correct the contract as needed. "
+        if not fixed_contract_retry
+        else ""
+    )
+    return [
+        {
+            "role": "system",
+            "content": (
+                "Find evidence relevant to the user's exact unresolved question. "
+                + contract_response_instruction
+                + request_contract_guidance
+                + scope_operator_guidance
+                + contract_retry_instruction
+                + zero_row_retry
+                + "Choose one bounded SELECT using only the supplied tables and columns. "
+                "Return evidence_id (artifact_id for Registry) for every candidate; do not aggregate away IDs. "
+                "Unknown answers are what the query must discover, never invented search literals. "
+                "Preserve explicit subjects, files and time scope. A result is only a lead, "
+                "not proof of completeness, absence, intent or causality. Use raw SQL with template_id null."
+            ),
+        },
+        {
+            "role": "user",
+            "content": json.dumps(
+                {
+                    "question": question,
+                    "available_question_fields": request_catalog,
+                    "policy": str(getattr(case_policy, "body", "") or ""),
+                    "available_schema": schema_context,
+                    "previous_attempt": feedback,
+                },
+                ensure_ascii=False,
+                default=str,
+            ),
+        },
+    ]
+
+
+def _has_observed_value(value: Any) -> bool:
+    value = normalize_value(value)
+    if isinstance(value, list):
+        return any(
+            isinstance(item, (str, int, float))
+            and not (isinstance(item, str) and not item.strip())
+            for item in value
+        )
+    return value is not None and not (isinstance(value, str) and not value.strip())
+
+
 @capture_prompt_retrieval
 def build_hypothesis_drafter_messages(
     gap_area: dict,
@@ -796,7 +879,17 @@ def build_hypothesis_drafter_messages(
         .strip()
         .lower()
     )
-    observation_only = candidate_family in typed_catalog and candidate_family != "evtx"
+    question_candidate = bool((observed_candidate or {}).get("request_contract"))
+    observation_only = candidate_family in typed_catalog and (
+        candidate_family != "evtx" or question_candidate
+    )
+    requested_observations = {
+        (str(item.get("family") or "").strip().lower(), str(item.get("field") or ""))
+        for item in ((observed_candidate or {}).get("request_contract") or {}).get(
+            "requirements", []
+        )
+        if isinstance(item, dict)
+    }
     if observation_only:
         typed_catalog = {candidate_family: typed_catalog[candidate_family]}
     evidence_fields = (
@@ -841,19 +934,30 @@ def build_hypothesis_drafter_messages(
         "object_dn",
     )
     if candidate_family:
+        metadata_fields = {
+            "evidence_id",
+            "_source",
+            "source_file",
+            "event_id",
+            "channel",
+            "provider",
+        }
+        candidate_fields = set(
+            typed_catalog.get(candidate_family, {}).get("fields", [])
+        )
         evidence_fields = tuple(
-            field
-            for field in evidence_fields
-            if field in typed_catalog.get(candidate_family, {}).get("fields", [])
-            or field
-            in {
-                "evidence_id",
-                "_source",
-                "source_file",
-                "event_id",
-                "channel",
-                "provider",
-            }
+            sorted(
+                metadata_fields
+                | (
+                    {
+                        field
+                        for family, field in requested_observations
+                        if family == candidate_family
+                    }
+                    if question_candidate
+                    else set(evidence_fields) & candidate_fields
+                )
+            )
         )
     typed_observations: dict[str, dict[str, Any]] = {}
     typed_observation_examples: dict[tuple[str, str, str, str], dict[str, Any]] = {}
@@ -864,6 +968,7 @@ def build_hypothesis_drafter_messages(
         if (
             family is None
             or family == "evtx"
+            and not question_candidate
             or row.get("_source") != canonical_record_table(family)
             or family not in typed_catalog
         ):
@@ -872,9 +977,8 @@ def build_hypothesis_drafter_messages(
             field
             for field in typed_catalog[family]["fields"]
             if field in evidence_fields
-            and row.get(field) is not None
-            and row.get(field) != ""
-            and row.get(field) != []
+            and (not question_candidate or (family, field) in requested_observations)
+            and _has_observed_value(row.get(field))
         ]
         if fields:
             definition = typed_observations.setdefault(
@@ -915,19 +1019,68 @@ def build_hypothesis_drafter_messages(
                     {"value": value, "evidence_ids": set()},
                 )
                 example["evidence_ids"].add(evidence_id)
-    typed_observation_entries = [
-        {
-            "family": family,
-            **definition,
-            "operators": ["equals", "contains", "greater_than"],
-            **(
-                {"boolean_operators": ["equals"]}
-                if definition["boolean_fields"]
-                else {}
-            ),
-        }
-        for family, definition in sorted(typed_observations.items())
-    ]
+    if observed_candidate is None and db is not None:
+        available_tables = load_live_schema(db)
+        for family, definition in typed_catalog.items():
+            table = canonical_record_table(family)
+            if family == "evtx" or table not in available_tables:
+                continue
+            if db.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone() is None:
+                continue
+            typed_observations[family] = {
+                "capabilities": definition["capabilities"],
+                "fields": sorted(
+                    set(definition["fields"]) - set(definition["boolean_fields"])
+                ),
+                "boolean_fields": definition["boolean_fields"],
+            }
+    typed_observation_entries = []
+    for family, definition in sorted(typed_observations.items()):
+        operators = ["equals", "contains", "greater_than"]
+        if question_candidate:
+            operators = set()
+            requirements = [
+                item
+                for item in (observed_candidate.get("request_contract") or {}).get(
+                    "requirements", []
+                )
+                if isinstance(item, dict)
+                and str(item.get("family") or "").strip().lower() == family
+            ]
+            for field in (*definition["fields"], *definition["boolean_fields"]):
+                field_requirements = [
+                    item for item in requirements if item.get("field") == field
+                ]
+                if any(
+                    item.get("kind") == "observed_value" for item in field_requirements
+                ):
+                    operators.update(
+                        "contains" if isinstance(value, list) else "equals"
+                        for row in (observed_candidate.get("evidence") or [])
+                        if isinstance(row, dict)
+                        and routed_family(str(row.get("evidence_id") or "")) == family
+                        and row.get("_source") == canonical_record_table(family)
+                        and _has_observed_value(row.get(field))
+                        and (value := normalize_value(row.get(field))) is not None
+                    )
+                operators.update(
+                    str(item["operator"])
+                    for item in field_requirements
+                    if item.get("kind") == "predicate" and item.get("operator")
+                )
+            operators = sorted(operators)
+        typed_observation_entries.append(
+            {
+                "family": family,
+                **definition,
+                "operators": operators,
+                **(
+                    {"boolean_operators": ["equals"]}
+                    if definition["boolean_fields"]
+                    else {}
+                ),
+            }
+        )
     typed_condition_examples = []
     for count in (1, 2):
         for (
@@ -973,6 +1126,16 @@ def build_hypothesis_drafter_messages(
         if canonical_table
         else None
     )
+    if allowed_entities is None and db is not None:
+        live_schema = load_live_schema(db)
+        allowed_entities = sorted(
+            (set(SNAKE_CASE_COLUMNS) - {"evidence_id"})
+            & {
+                column
+                for family in typed_catalog
+                for column in live_schema.get(canonical_record_table(family), ())
+            }
+        )
     schema = hypothesis_drafter_schema(
         observation_only=observation_only,
         allowed_entities=allowed_entities,
@@ -980,9 +1143,78 @@ def build_hypothesis_drafter_messages(
     confirm_properties = schema["properties"]["hypothesis"]["properties"][
         "confirm_when"
     ]["properties"]
+    if db is not None:
+        live_schema = load_live_schema(db)
+        counts = [
+            int(db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+            for family in typed_catalog
+            if (table := canonical_record_table(family)) in live_schema
+        ]
+        target_ids = {
+            row.get("evidence_id")
+            for row in (observed_candidate or {}).get("evidence", [])
+            if isinstance(row, dict) and row.get("evidence_id")
+        }
+        maximum = (
+            len(target_ids)
+            if observation_only and target_ids
+            else max(counts, default=1)
+        )
+        confirm_properties["min_count"]["maximum"] = max(1, maximum)
     observation_variants = []
     base_observation_schema = confirm_properties["observation"]
     for family, definition in sorted(typed_observations.items()):
+        if question_candidate:
+            requirements = [
+                item
+                for item in (observed_candidate.get("request_contract") or {}).get(
+                    "requirements", []
+                )
+                if isinstance(item, dict)
+                and str(item.get("family") or "").strip().lower() == family
+            ]
+            boolean_fields = set(definition["boolean_fields"])
+            for field in (*definition["fields"], *definition["boolean_fields"]):
+                field_requirements = [
+                    item for item in requirements if item.get("field") == field
+                ]
+                operators = {
+                    str(item["operator"])
+                    for item in field_requirements
+                    if item.get("kind") == "predicate" and item.get("operator")
+                }
+                if any(
+                    item.get("kind") == "observed_value" for item in field_requirements
+                ):
+                    operators.update(
+                        "contains" if isinstance(value, list) else "equals"
+                        for row in (observed_candidate.get("evidence") or [])
+                        if isinstance(row, dict)
+                        and routed_family(str(row.get("evidence_id") or "")) == family
+                        and row.get("_source") == canonical_record_table(family)
+                        and _has_observed_value(row.get(field))
+                        and (value := normalize_value(row.get(field))) is not None
+                    )
+                for operator in sorted(operators):
+                    variant = copy.deepcopy(base_observation_schema)
+                    variant["properties"]["family"]["enum"] = [family]
+                    variant["properties"]["capability"]["enum"] = definition[
+                        "capabilities"
+                    ]
+                    variant["properties"]["field"]["enum"] = [field]
+                    variant["properties"]["operator"]["enum"] = [operator]
+                    variant["properties"]["value"] = (
+                        {"type": "boolean"}
+                        if field in boolean_fields
+                        else {
+                            "anyOf": [
+                                {"type": "string", "minLength": 1},
+                                {"type": "number"},
+                            ]
+                        }
+                    )
+                    observation_variants.append(variant)
+            continue
         if definition["fields"]:
             variant = copy.deepcopy(base_observation_schema)
             variant["properties"]["family"]["enum"] = [family]
@@ -1007,6 +1239,13 @@ def build_hypothesis_drafter_messages(
         confirm_properties["observation"] = {"anyOf": observation_variants}
     else:
         confirm_properties.pop("observation", None)
+        schema["properties"]["hypothesis"]["properties"]["confirm_when"]["required"] = [
+            key
+            for key in schema["properties"]["hypothesis"]["properties"][
+                "confirm_when"
+            ].get("required", [])
+            if key != "observation"
+        ]
     eligible_event_contexts: list[dict[str, Any]] = []
     observed_event_ids: set[int] = set()
     candidate_event_contexts: set[tuple[int, str, str]] = set()
@@ -1102,6 +1341,7 @@ def build_hypothesis_drafter_messages(
             "match_count": observed_candidate.get("match_count"),
             "evidence_count": observed_candidate.get("evidence_count"),
             "evidence_ids": observed_candidate.get("evidence_ids", [])[:3],
+            "request_contract": observed_candidate.get("request_contract"),
             "observations": observations,
         }
         observed_block = (
@@ -1135,8 +1375,13 @@ def build_hypothesis_drafter_messages(
         "<AVAILABLE_TYPED_OBSERVATIONS>\n"
         + json.dumps(typed_observation_entries, ensure_ascii=False)
         + "\nUse only the listed family, capability, and field combinations. Choose values "
-        "from that field in OBSERVED_CANDIDATE. `contains` requires a string value; "
-        "For array fields, use a disclosed element with `contains`, not the serialized JSON array or its sample wrapper. "
+        + (
+            "from that field in OBSERVED_CANDIDATE. "
+            if observed_candidate is not None
+            else "from the supplied gap's explicit search criteria. These are proposed search conditions, not observed facts; do not invent unknown values or evidence IDs. A narrow observation does not answer the entire question. "
+        )
+        + "`contains` requires a string value; "
+        "For array fields, use a string element with `contains`, not the serialized JSON array or its sample wrapper. "
         "`greater_than` requires a number or ISO datetime. Boolean fields require a "
         "JSON boolean and support only `equals`.\n"
         + (
@@ -1144,6 +1389,11 @@ def build_hypothesis_drafter_messages(
             + json.dumps(typed_condition_examples, ensure_ascii=False)
             + "\n"
             if typed_condition_examples
+            else ""
+        )
+        + (
+            'For a typed search, default min_count to 1 and use this exact description format: At least 1 <family> observation has <field> <operator> <JSON value>. Render greater_than as "greater than".\n'
+            if observed_candidate is None
             else ""
         )
         + "</AVAILABLE_TYPED_OBSERVATIONS>\n"
@@ -1234,9 +1484,10 @@ def build_hypothesis_drafter_messages(
         "Treat supplied observations as leads, not proof. For an observed candidate, test that candidate using only fields/ref IDs shown there. Do not infer facts from match counts, severity, titles, or rule names.\n"
         "Use source_rule_ids only from the host-supplied matched_rule_ids. They identify observed matches and are not evidence support.\n"
         "For a gap without an observed candidate, stay within its stated objective, gap, keypoint, and available evidence. Do not invent an event, entity, or source.\n"
+        "For an explicit question candidate, the request_contract is authoritative: use a requested family/field and, for predicate requirements, the exact operator/value. Do not substitute a related field or weaken a predicate. For observed_value requirements, use equals with the exact scalar value from that field in the same canonical evidence row; for an array field, use contains with one exact array element from that field. Never use a range or substring search to stand in for an unknown value.\n"
         "required_entities must be valid snake_case evidence column names. Keep verification conditions explicit and use only event ID/context combinations supplied by the host.\n"
         "Typed observations use fields from canonical evidence records, not derived timeline projections such as prefetch_timeline.exec_time or mft_timeline.timestamp.\n"
-        "Preserve the supplied subject. The host binds a typed observation to this candidate's canonical evidence IDs; matching a different record will not confirm it. Keep each timestamp paired with its named field. Consider what additional observation could distinguish an alternative explanation; do not turn uncertainty about intent into a claim of malicious intent.\n"
+        "Preserve the supplied subject. For an observed candidate, the host binds a typed observation to that candidate's canonical evidence IDs; matching a different record will not confirm it. Keep each timestamp paired with its named field. Consider what additional observation could distinguish an alternative explanation; do not turn uncertainty about intent into a claim of malicious intent.\n"
         + (
             "This candidate uses one canonical artifact family. Use only its listed columns and capability. confirm_when is observation-only in this mode; the schema rejects event/correlation mixes. Return conditions only, without description. The host renders the precise observation from the validated conditions. This observation does not resolve a broader causal question.\n"
             if observation_only

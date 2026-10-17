@@ -15,7 +15,8 @@ from forensia.core.progress_event import progress_event
 from forensia.core.session import Hypothesis, SessionState
 from forensia.core.textutil import normalize_text as _normalize_text
 from forensia.db.database import CaseDB
-from forensia.evidence.links import EvidenceLink
+from forensia.db.evidence_lookup import fetch_evidence_records
+from forensia.evidence.links import EvidenceLink, load_evidence_links
 from forensia.investigation.hypotheses.hypothesis_manager import admit_new_hypothesis
 from forensia.investigation.hypotheses.hypothesis_model import (
     _extract_entities_from_text,
@@ -25,6 +26,14 @@ from forensia.investigation.hypotheses.hypothesis_model import (
 from forensia.investigation.hypotheses.hypothesis_store import _upsert_hypothesis
 from forensia.investigation.verification.sufficiency import derivation_root_key
 from forensia.investigation.work_judgment import open_work_refs
+from forensia.knowledge.questions import (
+    admitted_question_receipt,
+    question_contract_match_reason,
+    question_scope_evidence_ids,
+    question_timestamp_coverage,
+    verification_spec_payload,
+)
+from forensia.llm.schemas import QuestionRequestContract
 from forensia.report.sections.section_store import fetch_report_sections
 
 
@@ -88,6 +97,210 @@ class GapHypothesisOutput(BaseModel):
         ):
             raise ValueError("Description names an unknown entity")
         return v
+
+
+def link_settled_question_gap(db: CaseDB, hypothesis_id: str) -> str:
+    """Link only a question whose frozen contract has current scoped witnesses."""
+    row = db.execute(
+        "SELECT status, source_gap_id, verification_spec FROM hypotheses WHERE hypothesis_id = ?",
+        [hypothesis_id],
+    ).fetchone()
+    if not row or not row[1]:
+        return "not_question"
+    gap_id = str(row[1])
+    gap = db.execute(
+        "SELECT description, block_heading FROM report_gaps WHERE gap_id = ?",
+        [gap_id],
+    ).fetchone()
+    if not gap or not str(gap[1] or "").strip():
+        return "not_question"
+    if row[0] not in {"confirmed", "refuted"}:
+        _mark_question_gap_unverified(db, gap_id, hypothesis_id)
+        return "partial"
+
+    receipt = admitted_question_receipt(
+        db,
+        gap_id=gap_id,
+        question_text=str(gap[0]),
+        hypothesis_id=hypothesis_id,
+        verification_spec=row[2],
+    )
+    if not receipt or receipt.get("status") != "completed":
+        _mark_question_gap_unverified(db, gap_id, hypothesis_id)
+        return "unlinked"
+
+    try:
+        contract = QuestionRequestContract.model_validate(
+            receipt.get("request_contract")
+        )
+    except Exception:
+        _mark_question_gap_unverified(db, gap_id, hypothesis_id)
+        return "unlinked"
+    contract_payload = contract.model_dump(mode="json")
+    spec_payload = verification_spec_payload(row[2])
+    observation = spec_payload.get("support_conditions", {}).get("observation", {})
+    observation_ids = (
+        observation.get("evidence_ids") if isinstance(observation, dict) else None
+    )
+    observation_records = (
+        fetch_evidence_records(db, observation_ids)
+        if isinstance(observation_ids, list)
+        and all(isinstance(item, str) for item in observation_ids)
+        else {}
+    )
+    if question_contract_match_reason(
+        contract_payload, spec_payload, observation_records=observation_records
+    ):
+        _mark_question_gap_unverified(db, gap_id, hypothesis_id)
+        return "unlinked"
+
+    try:
+        current_scope_ids, current_scope_truncated = question_scope_evidence_ids(
+            db, contract_payload
+        )
+    except Exception:
+        _mark_question_gap_unverified(db, gap_id, hypothesis_id)
+        return "unlinked"
+
+    canonical_ids = set(receipt.get("canonical_scope_evidence_ids") or [])
+    returned_ids = set(receipt.get("scoped_evidence_ids") or [])
+    current_links = [
+        link
+        for link in load_evidence_links(db, hypothesis_id, current_only=True)
+        if link.assessment_id
+        and link.evidence_id in returned_ids
+        and link.role in {"supporting", "corroborating", "contradictory"}
+    ]
+    linked_ids = {link.evidence_id for link in current_links}
+    records = fetch_evidence_records(db, sorted(linked_ids))
+    try:
+        scoped_ids, _ = question_scope_evidence_ids(
+            db,
+            contract_payload,
+            evidence_ids=sorted(records),
+            max_rows=max(len(records), 1),
+        )
+    except Exception:
+        _mark_question_gap_unverified(db, gap_id, hypothesis_id)
+        return "unlinked"
+    scoped_id_set = set(scoped_ids)
+    scoped_records = {
+        evidence_id: record
+        for evidence_id, record in records.items()
+        if evidence_id in scoped_id_set
+    }
+    usable_links = [
+        link for link in current_links if link.evidence_id in scoped_records
+    ]
+    if not usable_links:
+        _mark_question_gap_unverified(db, gap_id, hypothesis_id)
+        return "unlinked"
+
+    _, timestamp_missing = question_timestamp_coverage(
+        db,
+        str(gap[0]),
+        contract.model_dump(mode="json"),
+        scoped_records,
+    )
+    requirements_complete = _question_requirements_complete(
+        contract,
+        verification_spec_payload(row[2]),
+        scoped_records,
+        usable_links,
+        timestamp_missing,
+    )
+    complete = bool(
+        requirements_complete
+        and not receipt.get("truncated")
+        and not receipt.get("canonical_scope_truncated")
+        and not current_scope_truncated
+        and canonical_ids == set(current_scope_ids)
+        and canonical_ids == returned_ids == linked_ids
+    )
+    db.execute(
+        "UPDATE report_gaps SET hypothesis_id = ?, status = ?, coverage_reason = ?, "
+        "updated_at = now() WHERE gap_id = ?",
+        [
+            hypothesis_id,
+            "resolved" if complete else "open",
+            None
+            if complete
+            else "question_timestamp_coverage_incomplete"
+            if timestamp_missing
+            else "question_requirements_unverified",
+            gap_id,
+        ],
+    )
+    return "complete" if complete else "partial"
+
+
+def _mark_question_gap_unverified(db: CaseDB, gap_id: str, hypothesis_id: str) -> None:
+    db.execute(
+        "UPDATE report_gaps SET status = CASE WHEN status = 'resolved' THEN 'open' ELSE status END, "
+        "hypothesis_id = CASE WHEN hypothesis_id = ? THEN NULL ELSE hypothesis_id END, "
+        "coverage_reason = 'question_relevance_unverified', updated_at = now() "
+        "WHERE gap_id = ? AND (hypothesis_id = ? OR hypothesis_id IS NULL)",
+        [hypothesis_id, gap_id, hypothesis_id],
+    )
+
+
+def _question_requirements_complete(
+    contract: QuestionRequestContract,
+    spec_payload: dict[str, Any],
+    records: dict[str, dict[str, Any]],
+    links: list[EvidenceLink],
+    timestamp_missing: dict[str, tuple[str, ...]],
+) -> bool:
+    from forensia.investigation.verification.assessment import (
+        _observation_value_matches,
+    )
+
+    reason = question_contract_match_reason(
+        contract.model_dump(mode="json"),
+        spec_payload,
+        observation_records=records,
+    )
+    if reason:
+        return False
+    if timestamp_missing:
+        return False
+    observation = spec_payload.get("support_conditions", {}).get("observation", {})
+    relevant_links = [link for link in links if link.evidence_id in records]
+    if not relevant_links:
+        return False
+    for link in relevant_links:
+        record = records[link.evidence_id]
+        for requirement in contract.requirements:
+            value = record.get(requirement.field)
+            if value is None:
+                return False
+            if requirement.kind == "observed_value":
+                if requirement.field != observation.get("field"):
+                    continue
+                matches = _observation_value_matches(
+                    value,
+                    str(observation.get("operator") or ""),
+                    observation.get("value"),
+                )
+                if link.role in {"supporting", "corroborating"} and not matches:
+                    return False
+                if link.role == "contradictory" and matches:
+                    return False
+            else:
+                if (
+                    requirement.field != observation.get("field")
+                    or requirement.operator != observation.get("operator")
+                    or requirement.value != observation.get("value")
+                ):
+                    return False
+                matches = _observation_value_matches(
+                    value, requirement.operator, requirement.value
+                )
+                if link.role in {"supporting", "corroborating"} and not matches:
+                    return False
+                if link.role == "contradictory" and matches:
+                    return False
+    return True
 
 
 def evaluation_snapshot(db: CaseDB) -> dict[str, Any]:
@@ -397,12 +610,13 @@ def inject_gap_hypotheses(
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
     *,
     origin: Literal["section", "human"] = "section",
+    question_requests: list[dict[str, str]] | None = None,
 ) -> int:
     """Convert unresolved report gaps into active hypotheses, skipping duplicates and non-DB gaps.
 
     Uses the unified admission gate (admit_new_hypothesis) to check against
-    active, resolved, and refuted hypotheses — preventing refuted claims like
-    poqexec.exe from being re-admitted through the gap injection path.
+    active, resolved, and refuted hypotheses — preventing refuted claims
+    from being re-admitted through the gap injection path.
 
     Prose absence is not resolution (GOAL 9.4): an open section-origin Gap
     whose request string left the report prose keeps its open state. Similarity
@@ -410,9 +624,26 @@ def inject_gap_hypotheses(
     closed by its own owner (resolve_linked_work).
     """
     added = 0
+    requests = [
+        {
+            "section_key": str(item.get("section_key") or ""),
+            "block_heading": str(item.get("block_heading") or ""),
+            "question_text": str(item.get("question_text") or ""),
+        }
+        for item in (question_requests or [])
+        if _normalize_text(str(item.get("question_text") or ""))
+    ]
+    request_ids = {
+        report_gap_id(
+            item["question_text"],
+            section_key=item["section_key"],
+            block_heading=item["block_heading"],
+        )
+        for item in requests
+    }
     current_gap_ids = {
         report_gap_id(str(gap)) for gap in gaps if _normalize_text(str(gap))
-    }
+    } | request_ids
     gap_sections: dict[str, str] = {}
     prose_gap_ids: set[str] = set()
     for row in fetch_report_sections(db):
@@ -435,33 +666,88 @@ def inject_gap_hypotheses(
     keep_open_ids = prose_gap_ids | current_gap_ids
     if origin == "section":
         _handle_orphaned_section_gaps(db, keep_open_ids)
-    for gap in gaps:
+    admissions = [
+        (str(gap), gap_sections.get(_normalize_text(str(gap)), ""), "", False)
+        for gap in gaps
+    ] + [
+        (item["question_text"], item["section_key"], item["block_heading"], True)
+        for item in requests
+    ]
+    for gap, section_key, block_heading, explicit_request in admissions:
         normalized_gap = _normalize_text(gap)
         if not normalized_gap:
             continue
 
-        gap_id = report_gap_id(gap)
+        gap_id = (
+            report_gap_id(gap, section_key=section_key, block_heading=block_heading)
+            if explicit_request
+            else report_gap_id(gap)
+        )
+        canonical_hypothesis_id = (
+            gap_hypothesis_id(
+                gap,
+                section_key=section_key,
+                block_heading=block_heading,
+            )
+            if explicit_request
+            else gap_hypothesis_id(gap)
+        )
         gap_hash = gap_id.removeprefix("GAP-")
-        gap_kind = classify_gap_kind(gap)
+        gap_kind = "internal_db_check" if explicit_request else classify_gap_kind(gap)
         # Normalize gap to report_gaps table
-        section_key = gap_sections.get(normalized_gap, "")
         prior_gap = db.execute(
-            "SELECT status FROM report_gaps WHERE gap_id = ?", [gap_id]
+            "SELECT status, coverage_reason FROM report_gaps WHERE gap_id = ?",
+            [gap_id],
         ).fetchone()
+        if explicit_request and prior_gap:
+            if prior_gap[0] == "resolved":
+                linked_hypothesis = db.execute(
+                    "SELECT hypothesis_id FROM report_gaps WHERE gap_id = ?",
+                    [gap_id],
+                ).fetchone()
+                hypothesis_id = (
+                    str(linked_hypothesis[0] or "") if linked_hypothesis else ""
+                )
+                if hypothesis_id:
+                    result = link_settled_question_gap(db, hypothesis_id)
+                    if result == "not_question":
+                        db.execute(
+                            "UPDATE report_gaps SET status = 'open', hypothesis_id = NULL, "
+                            "coverage_reason = 'question_relevance_unverified', updated_at = now() "
+                            "WHERE gap_id = ?",
+                            [gap_id],
+                        )
+                else:
+                    db.execute(
+                        "UPDATE report_gaps SET status = 'open', coverage_reason = "
+                        "'question_relevance_unverified', updated_at = now() WHERE gap_id = ?",
+                        [gap_id],
+                    )
+            continue
         db.execute(
-            """INSERT INTO report_gaps (gap_id, section_key, description, kind, status, origin, created_at, updated_at)
-               VALUES (?, ?, ?, ?, 'open', ?, now(), now())
+            """INSERT INTO report_gaps
+               (gap_id, section_key, block_heading, description, kind, status, origin, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, 'open', ?, now(), now())
                ON CONFLICT (gap_id) DO UPDATE SET
                    description = EXCLUDED.description,
                    kind = EXCLUDED.kind,
                    section_key = CASE WHEN EXCLUDED.section_key = '' THEN report_gaps.section_key ELSE EXCLUDED.section_key END,
-                   status = 'open',
+                   block_heading = CASE WHEN EXCLUDED.block_heading = '' THEN report_gaps.block_heading ELSE EXCLUDED.block_heading END,
+                   status = CASE WHEN ? AND report_gaps.status = 'resolved' THEN report_gaps.status ELSE 'open' END,
                    origin = CASE
                        WHEN report_gaps.origin = 'human' OR EXCLUDED.origin = 'human'
                        THEN 'human' ELSE 'section' END,
                    coverage_reason = NULL,
                    updated_at = now()""",
-            [gap_id, section_key, gap, gap_kind, origin],
+            [
+                gap_id,
+                section_key,
+                block_heading,
+                gap,
+                gap_kind,
+                origin,
+                explicit_request,
+            ],
         )
         if progress_callback and (prior_gap is None or prior_gap[0] != "open"):
             progress_callback(
@@ -479,7 +765,19 @@ def inject_gap_hypotheses(
                 )
             )
 
-        existing = _existing_hypothesis(state, gap)
+        existing = (
+            next(
+                (
+                    item
+                    for item in [*state.active_hypotheses, *state.resolved_hypotheses]
+                    if item.id == canonical_hypothesis_id
+                    and item.source_gap_id == gap_id
+                ),
+                None,
+            )
+            if explicit_request
+            else _existing_hypothesis(state, gap)
+        )
         if existing is not None:
             if existing.status in {"confirmed", "refuted"}:
                 db.execute(
@@ -511,11 +809,18 @@ def inject_gap_hypotheses(
                 )
             continue
 
-        existing_task = db.execute(
-            "SELECT task_id FROM investigation_tasks WHERE lower(trim(description)) = "
-            "lower(trim(?)) AND status IN ('open', 'in_progress') LIMIT 1",
-            [gap],
-        ).fetchone()
+        if explicit_request:
+            existing_task = db.execute(
+                "SELECT task_id FROM investigation_tasks WHERE gap_id = ? "
+                "AND status IN ('open', 'in_progress') LIMIT 1",
+                [gap_id],
+            ).fetchone()
+        else:
+            existing_task = db.execute(
+                "SELECT task_id FROM investigation_tasks WHERE lower(trim(description)) = "
+                "lower(trim(?)) AND status IN ('open', 'in_progress') LIMIT 1",
+                [gap],
+            ).fetchone()
         if existing_task:
             db.execute(
                 "UPDATE report_gaps SET task_id = ?, updated_at = now() WHERE gap_id = ?",
@@ -574,12 +879,16 @@ def inject_gap_hypotheses(
                 )
             continue
 
+        if explicit_request:
+            # A question is a discovery request, not yet a verifiable claim.
+            _persist_admission_outcome(db, gap_id, "open", "discovery_pending")
+            continue
         required_entities, confirm_when = _parse_gap_hypothesis_output(
             llm_output or {}, gap
         )
         try:
             candidate = Hypothesis(
-                id=gap_hypothesis_id(gap),
+                id=canonical_hypothesis_id,
                 description=gap,
                 status="active",
                 required_entities=required_entities,

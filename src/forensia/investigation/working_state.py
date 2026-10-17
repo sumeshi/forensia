@@ -7,6 +7,7 @@ from typing import Any
 from forensia.db.database import CaseDB
 from forensia.db.investigation_state import load_investigation_state
 from forensia.investigation.work_judgment import open_work_refs, work_context_snapshot
+from forensia.knowledge.questions import gap_operational_reason
 
 
 def build_working_state(
@@ -23,14 +24,18 @@ def build_working_state(
         if len(work) >= max_work:
             break
         item: dict[str, Any] = {}
+        source_gap_id = ""
         if ref.hypothesis_ids:
             ids = list(ref.hypothesis_ids)
             rows = db.execute(
-                "SELECT hypothesis_id, description, status FROM hypotheses "
+                "SELECT hypothesis_id, description, status, source_gap_id FROM hypotheses "
                 f"WHERE hypothesis_id IN ({', '.join('?' for _ in ids)}) "
                 "ORDER BY hypothesis_id",
                 ids,
             ).fetchall()
+            source_gap_id = next(
+                (str(r[3] or "") for r in rows if r[0] == hypothesis_id), ""
+            )
             item["hypotheses"] = [
                 {
                     "id": str(r[0]),
@@ -67,9 +72,15 @@ def build_working_state(
             item["gaps"] = [
                 {
                     "id": str(r[0]),
-                    "description": str(r[1] or "")[:200],
+                    "description": (
+                        str(r[1] or "")
+                        if str(r[0]) == source_gap_id
+                        else str(r[1] or "")[:200]
+                    ),
                     "kind": str(r[2] or ""),
-                    "reason": str(r[3] or "")[:160],
+                    "reason": (
+                        gap_operational_reason(db, str(r[0])) or str(r[3] or "")[:160]
+                    ),
                 }
                 for r in rows
             ]

@@ -27,7 +27,5 @@ aliases:
   benchmark_daily_logon_shutdown: structured_daily_session_activity
   benchmark_browser_artifacts: structured_browser_artifacts
   benchmark_email_ost_paths: structured_email_artifacts
-  benchmark_desktop_rename_candidates: structured_desktop_rename_candidates
-  benchmark_resignation_file: structured_resignation_files
   benchmark_cloud_artifacts: structured_cloud_artifacts
   benchmark_antiforensics_last_day: structured_antiforensics

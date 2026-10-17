@@ -80,6 +80,110 @@ class TestHypothesisAdmissionConformance(unittest.TestCase):
                 ).fetchone()
                 self.assertEqual((expected,) if expected else None, result)
 
+    def test_distinct_report_questions_admit_and_replay_exact_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                gap_ids = {"GAP-A", "GAP-B"}
+                for gap_id, heading, description in (
+                    ("GAP-A", "Logons", "Logon events for user Alice"),
+                    ("GAP-B", "Logons", "Logon events for user Alicia"),
+                ):
+                    db.execute(
+                        "INSERT INTO report_gaps (gap_id, section_key, block_heading, "
+                        "description, kind, status, origin, created_at, updated_at) "
+                        "VALUES (?, 'activity', ?, ?, 'internal_db_check', 'open', "
+                        "'section', now(), now())",
+                        [gap_id, heading, description],
+                    )
+                persisted_gap_ids = {
+                    str(row[0])
+                    for row in db.execute(
+                        "SELECT gap_id FROM report_gaps WHERE block_heading IS NOT NULL "
+                        "AND trim(block_heading) <> ''"
+                    ).fetchall()
+                }
+                self.assertEqual(persisted_gap_ids, gap_ids)
+
+                condition = {
+                    "co_observed_event_ids": [4624, 4625],
+                    "within_minutes": 30,
+                    "event_contexts": [
+                        {
+                            "event_id": event_id,
+                            "channel": "Security",
+                            "provider": "Microsoft-Windows-Security-Auditing",
+                        }
+                        for event_id in (4624, 4625)
+                    ],
+                    "same_entities": ["src_ip", "target_user"],
+                    "min_count": 2,
+                }
+
+                def candidate(gap_id: str, user: str) -> Hypothesis:
+                    return Hypothesis(
+                        id=f"hyp-{gap_id}",
+                        description=(
+                            f"Repeated logon events for user {user} from src_ip "
+                            "against target_user within 30 minutes indicate automated access"
+                        ),
+                        source_gap_id=gap_id,
+                        required_entities=["src_ip", "target_user"],
+                        confirm_when=condition,
+                    )
+
+                state = SessionState(session_id="S-report-gap")
+                first = candidate("GAP-A", "Alice")
+                second = candidate("GAP-B", "Alicia")
+                self.assertEqual(
+                    admit_new_hypothesis(first, state),
+                    (True, "accepted"),
+                )
+                state.active_hypotheses.append(first)
+                self.assertEqual(
+                    admit_new_hypothesis(second, state),
+                    (True, "accepted"),
+                )
+                replay = candidate("GAP-A", "Alice")
+                self.assertEqual(
+                    admit_new_hypothesis(replay, state),
+                    (False, "duplicate-of-active"),
+                )
+                ordinary = candidate("GAP-ordinary", "Alice")
+                ordinary.source_gap_id = None
+                ordinary_state = SessionState(
+                    session_id="S-ordinary", active_hypotheses=[ordinary]
+                )
+                self.assertEqual(
+                    admit_new_hypothesis(second, ordinary_state),
+                    (True, "accepted"),
+                )
+                refuted = ordinary.model_copy(deep=True)
+                refuted.status = "refuted"
+                refuted_state = SessionState(
+                    session_id="S-refuted", resolved_hypotheses=[refuted]
+                )
+                self.assertEqual(
+                    admit_new_hypothesis(second, refuted_state),
+                    (True, "accepted"),
+                )
+                merged = merge_active_hypotheses(
+                    db,
+                    current=[],
+                    updates=[
+                        first.model_copy(deep=True),
+                        ordinary.model_copy(deep=True),
+                        second.model_copy(deep=True),
+                    ],
+                    resolved=[],
+                    session_id="S-report-gap",
+                    origin="report_gap",
+                )
+                self.assertEqual(
+                    {item.source_gap_id for item in merged},
+                    {None, "GAP-A", "GAP-B"},
+                )
+
     def test_rejects_unmaterialized_or_unverifiable_claims(self) -> None:
         state = SessionState(session_id="S-admission")
 

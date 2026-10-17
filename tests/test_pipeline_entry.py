@@ -201,7 +201,6 @@ def test_public_run_records_provider_planned_query_or_bounded_rejection(
         def __init__(self) -> None:
             self.schemas: list[str] = []
             self.requests: list[dict] = []
-            self.rejected_modes: list[str] = []
             self.query_actions: list[dict] = []
 
         def post(self, url, json, headers):
@@ -210,20 +209,6 @@ def test_public_run_records_provider_planned_query_or_bounded_rejection(
                 json.get("response_format", {}).get("json_schema", {}).get("schema", {})
             )
             title = str(schema.get("title") or "")
-            if not title:
-                prompt = "\n".join(
-                    str(message.get("content") or "")
-                    for message in json.get("messages", [])
-                )
-                roles = (
-                    ("GapIdentifier", "You are a gap_identifier"),
-                    ("HypothesisDrafter", "You are a hypothesis_drafter"),
-                    ("QueryIntentResponse", "Return exactly one action as JSON"),
-                    ("VerdictReview", "You are a verdict_reviewer"),
-                    ("FindingExtractor", "You are a finding_extractor"),
-                    ("ParagraphNarrate", "You are a section_narrator"),
-                )
-                title = next((name for name, marker in roles if marker in prompt), "")
             self.schemas.append(title)
             if title not in {
                 "GapIdentifier",
@@ -234,23 +219,7 @@ def test_public_run_records_provider_planned_query_or_bounded_rejection(
                 "ParagraphNarrate",
             }:
                 raise AssertionError(f"unexpected provider schema: {title}")
-            prompt = "\n".join(
-                str(message.get("content") or "")
-                for message in json.get("messages", [])
-            )
-            if json.get("response_format"):
-                mode = (
-                    "strict"
-                    if json["response_format"].get("json_schema", {}).get("strict")
-                    else "compatible"
-                )
-                self.rejected_modes.append(mode)
-                request = httpx.Request("POST", url)
-                return httpx.Response(
-                    400,
-                    json={"error": {"message": "response_format unsupported"}},
-                    request=request,
-                )
+            assert json.get("response_format", {}).get("type") == "json_schema"
             responses = {
                 "GapIdentifier": {"gap_areas": []},
                 "HypothesisDrafter": {
@@ -396,8 +365,11 @@ def test_public_run_records_provider_planned_query_or_bounded_rejection(
         max_llm_calls=12,
         pre_investigation=seed_observation,
     )
-    assert provider.rejected_modes[:2] == ["strict", "compatible"]
-    assert any(not request.get("response_format") for request in provider.requests)
+    assert provider.requests
+    assert all(
+        request.get("response_format", {}).get("type") == "json_schema"
+        for request in provider.requests
+    )
     assert report.is_file()
     from forensia.core.case import Case
     from forensia.db.database import CaseDB

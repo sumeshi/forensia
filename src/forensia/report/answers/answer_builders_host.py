@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import re
 from typing import Any
 
 from forensia.core.case import Case, detect_epochs
@@ -17,6 +16,8 @@ from forensia.knowledge.catalog import (
 )
 from forensia.knowledge.questions import (
     extract_time_qualifiers,
+    local_time_basis_unresolved,
+    question_requests_utc,
 )
 from forensia.report.answers.answer_store import (
     _dedupe_dict_rows,
@@ -521,20 +522,13 @@ def _build_daily_session_timeline(
     from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
     qualifiers = extract_time_qualifiers(question_text, case.source_timezone)
-    local_scope = bool(
-        re.search(
-            r"\b(?:local|timezone|time zone)\b|現地|タイムゾーン",
-            question_text,
-            re.IGNORECASE,
-        )
-    )
-    explicit_utc = bool(re.search(r"\bUTC\b(?!\s*[+-])", question_text, re.IGNORECASE))
+    explicit_utc = question_requests_utc(question_text)
     if explicit_utc:
         qualifiers["basis"] = "UTC"
     missing: list[str] = []
     try:
         ZoneInfo(str(qualifiers["basis"]))
-        if local_scope and not explicit_utc and case.source_timezone == "UTC":
+        if local_time_basis_unresolved(question_text, case.source_timezone):
             missing.append(
                 "The requested local-time basis is unknown; the local time/date window was not applied."
             )

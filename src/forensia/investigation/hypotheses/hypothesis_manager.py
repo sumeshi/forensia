@@ -84,6 +84,12 @@ def _merge_active_hypotheses_in_transaction(
     alias_map_out: dict[str, str] | None = None,
 ) -> list[Hypothesis]:
     """Merge incoming hypotheses into the active set with dedup, aliasing, and an active cap."""
+
+    def independent_report_requests(left: Hypothesis, right: Hypothesis) -> bool:
+        return (left.source_gap_id is not None or right.source_gap_id is not None) and (
+            left.source_gap_id != right.source_gap_id or left.id != right.id
+        )
+
     resolved_ids = {item.id for item in resolved}
     by_id = {item.id: item for item in current if item.id not in resolved_ids}
     skipped_for_cap: list[str] = []
@@ -109,12 +115,23 @@ def _merge_active_hypotheses_in_transaction(
         incoming_id = alias_map.get(item.id, item.id)
         # FIRST: Check against resolved hypotheses — prevents the same claim
         # from existing as both confirmed AND refuted.
-        resolved_existing = same_id_resolved or resolved_by_description.get(
-            _hypothesis_key(item)
-        )
+        resolved_existing = same_id_resolved
+        if resolved_existing is None and item.source_gap_id is None:
+            resolved_existing = resolved_by_description.get(_hypothesis_key(item))
+            if resolved_existing and independent_report_requests(
+                resolved_existing, item
+            ):
+                resolved_existing = None
         resolved_score: float | None = None
         if resolved_existing is None:
-            best_resolved, best_resolved_score = _best_hypothesis_match(resolved, item)
+            best_resolved, best_resolved_score = _best_hypothesis_match(
+                [
+                    candidate
+                    for candidate in resolved
+                    if not independent_report_requests(candidate, item)
+                ],
+                item,
+            )
             if best_resolved is not None and best_resolved_score > 0.85:
                 resolved_existing = best_resolved
                 resolved_score = best_resolved_score
@@ -174,11 +191,18 @@ def _merge_active_hypotheses_in_transaction(
         # of a resolved hypothesis is always caught regardless of coincidental
         # similarity with an existing active hypothesis.
         existing = by_id.get(incoming_id)
-        if existing is None:
+        if existing is None and item.source_gap_id is None:
             existing = active_by_description.get(_hypothesis_key(item))
+            if existing and independent_report_requests(existing, item):
+                existing = None
         if existing is None:
             best_active, best_active_score = _best_hypothesis_match(
-                list(by_id.values()), item
+                [
+                    candidate
+                    for candidate in by_id.values()
+                    if not independent_report_requests(candidate, item)
+                ],
+                item,
             )
             if best_active is not None and best_active_score > 0.85:
                 existing = best_active
@@ -940,8 +964,16 @@ def admit_new_hypothesis(
         return False, conformance_error
 
     # --- 1. Check against RESOLVED hypotheses ----------------------------
+    def independent_request(other: Hypothesis) -> bool:
+        return (
+            candidate.source_gap_id is not None or other.source_gap_id is not None
+        ) and (
+            candidate.source_gap_id != other.source_gap_id or candidate.id != other.id
+        )
+
     resolved_match, resolved_score = _best_hypothesis_match(
-        state.resolved_hypotheses, candidate
+        [item for item in state.resolved_hypotheses if not independent_request(item)],
+        candidate,
     )
     if resolved_match is not None and resolved_score >= threshold:
         _log(
@@ -954,7 +986,8 @@ def admit_new_hypothesis(
 
     # --- 2. Check against ACTIVE hypotheses ------------------------------
     active_match, active_score = _best_hypothesis_match(
-        state.active_hypotheses, candidate
+        [item for item in state.active_hypotheses if not independent_request(item)],
+        candidate,
     )
     if active_match is not None and active_score >= threshold:
         _log(
@@ -967,7 +1000,9 @@ def admit_new_hypothesis(
 
     # --- 3. Check against REFUTED hypothesis tokens ----------------------
     refuted_descriptions = [
-        h.description for h in state.resolved_hypotheses if h.status == "refuted"
+        h.description
+        for h in state.resolved_hypotheses
+        if h.status == "refuted" and not independent_request(h)
     ]
     refuted_tokens = _extract_refuted_tokens(refuted_descriptions)
     if (
