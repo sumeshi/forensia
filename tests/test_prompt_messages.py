@@ -26,6 +26,70 @@ from forensia.report.sections.section_quality import validate_body_evidence_ids
 
 
 class PromptMessageTests(unittest.TestCase):
+    def test_rendered_prompts_use_nested_evtx_fields_and_neutral_claims(self) -> None:
+        from pathlib import Path
+
+        import duckdb
+        import yaml
+
+        from forensia.context.playbook import _dfir_playbook
+
+        playbook = _dfir_playbook("hypothesis_plan")
+        self.assertIn("$.winlog.event_data.TargetUserName", playbook)
+        self.assertNotIn("$.winlog.event_data.TargetDomainName') as fallback", playbook)
+        check_prompt = _dfir_playbook("check")
+        self.assertIn(
+            "VerificationSpec's support conditions pass in Assessment", check_prompt
+        )
+        self.assertIn("never translate a numeric confidence threshold", check_prompt)
+        self.assertIn("at least three consecutive zero-row", check_prompt)
+        self.assertNotIn(
+            "MUST explicitly name the specific missing entity type", check_prompt
+        )
+        self.assertNotIn(
+            "Use 'refuted' if the hypothesis claim is clearly disproven", check_prompt
+        )
+
+        schema_path = (
+            Path(__file__).parents[1] / "src/forensia/data/schema/evtx_events.yaml"
+        )
+        extractors = yaml.safe_load(schema_path.read_text())["json_field_extractors"]
+        with duckdb.connect() as connection:
+            connection.execute("CREATE TABLE events (raw_json JSON)")
+            connection.execute(
+                "INSERT INTO events VALUES (?)",
+                [
+                    '{"winlog":{"event_data":{"TargetUserName":"alice",'
+                    '"TargetDomainName":"EXAMPLE"}}}'
+                ],
+            )
+            user_sql = extractors["TargetUserName"]
+            self.assertEqual(
+                connection.execute(f"SELECT {user_sql} FROM events").fetchone()[0],
+                "alice",
+            )
+            self.assertNotEqual(
+                connection.execute(
+                    f"SELECT {extractors['TargetDomainName']} FROM events"
+                ).fetchone()[0],
+                "alice",
+            )
+
+        messages, _ = build_paragraph_narrate_messages(
+            heading="Authentication Activity",
+            key_points=[],
+            evidence_rows=[],
+            template_body="",
+        )
+        rendered = messages[0]["content"]
+        self.assertIn(
+            "Distinguish an observed attempt from a successful logon", rendered
+        )
+        self.assertNotIn("localhost credential injection", rendered)
+        self.assertNotIn("All attempts succeeded", rendered)
+        self.assertIn("<raw evidence_id from the supporting row>", rendered)
+        self.assertNotIn("identified host", rendered)
+
     def test_prompt_projection_decodes_and_bounds_json_arrays(self) -> None:
         from forensia.context.prompt_context import prompt_value_projection
 

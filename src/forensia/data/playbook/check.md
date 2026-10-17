@@ -1,23 +1,20 @@
 ## Verdict Determination Principles
 
 <CRITICAL_RULES>
-- 'confirmed': required_entities are co-observed in same rows, OR all confirm_when.co_observed_event_ids are present with correct temporal ordering.
-- 'refuted': assessed evidence contradicts the hypothesis, or valid empty retrieval proves the declared absence scope with sufficient Coverage. Repeating empty searches is not proof of absence.
-- 'inconclusive': some entities observed but key ones missing. You MUST explicitly name the specific missing entity type in the rationale. DO NOT use vague phrasing.
+- 'confirmed': only when the admitted VerificationSpec's support conditions pass in Assessment. Apply its declared event context, event constraints, co-observation, host, entity, time, and count requirements; presence of event IDs alone does not establish a verdict.
+- 'refuted': the checker identifies contradiction or the admitted refutation condition passes, and Settlement accepts the evidence and scope. Empty retrieval is refutation evidence only when the rule declares `refute_when.zero_rows`, at least three consecutive zero-row inconclusive checks occur, and Settlement finds the absence scope observable with valid retrieval and available Coverage. Otherwise, empty retrieval alone does not refute.
+- 'inconclusive': use when Assessment or Settlement cannot establish confirmation or refutation, including unmet support conditions or insufficient/unknown Coverage. State the specific Assessment or Settlement reason when available; do not require a missing entity when that is not the reason.
 - 'newlead': genuinely new attack surface or actor is identified. Use sparingly — only when the finding opens an entirely new line of investigation.
 </CRITICAL_RULES>
 
 <FORBIDDEN_PATTERNS>
-- Zero-evidence rule: 0 rows means 'confirmed' is FORBIDDEN. Period. Use 'refuted' if the hypothesis claim is clearly disproven; use 'inconclusive' only if genuinely ambiguous.
-- DO NOT use these prohibited phrases in verdict rationale: 'direct causation not proven', 'full attack chain not visible', 'cannot be ruled out', 'warrants further analysis', 'cannot confirm or deny'.
+- Zero-evidence rule: 0 rows cannot confirm a hypothesis. They also do not refute it by themselves; apply the declared zero-row refutation condition and Settlement's observable-scope and Coverage gates. Otherwise preserve the Assessment/Settlement inconclusive outcome and reason.
+- Give the concrete evidence, unmet condition, retrieval status, or Coverage reason. Avoid generic caveats that do not describe the Assessment or Settlement outcome.
 - Account names ending with '$' are machine accounts (computer accounts), NOT user accounts. Do NOT label them as suspicious_user or attacker.
-- confirm_when all-events rule: If confirm_when.co_observed_event_ids specifies event IDs (e.g., [4624, 4672]), all listed event IDs must be observed for auto-confirm. Partial overlap is only a partial signal. Only the host's Assessment and Settlement can establish a refutation. A zero citable row_count with a nonzero observed_row_count indicates unusable retrieval, not absence.
+- VerificationSpec is authoritative for assessment. Raw event presence, partial overlap, or narrative confidence cannot independently set a hypothesis to confirmed. Only the host's Assessment and Settlement can establish refutation. A zero citable row_count with a nonzero observed_row_count indicates unusable retrieval, not absence.
 </FORBIDDEN_PATTERNS>
 
-Confidence mapping for report text:
-- >= 0.8: 'confirmed' / 'observed'
-- >= 0.5: 'strongly suggests'
-- < 0.5: 'requires further investigation'
+Confidence is a separate assessment value; never translate a numeric confidence threshold into a confirmed verdict. Use the assessment status and its evidence rationale.
 
 <!-- AUTO-FROM: event_ids.yaml -->
 - Event 12 (OS started (Kernel-General Event 12)) | ONLY meaningful on channel(s): System | ONLY meaningful for provider(s): Microsoft-Windows-Kernel-General | query columns: computer, timestamp | may claim: event 12 was observed; the referenced Windows event was present in the evidence | DO NOT claim: attacker action (needs corroborating evidence); compromise (needs supporting process, account, or file evidence)

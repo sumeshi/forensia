@@ -76,13 +76,13 @@ def build_paragraph_narrate_messages(
         "</RULES>\n"
         f"{digest_block}"
         "<EXAMPLE_GOOD>\n"
-        "Eight explicit-credential logon attempts (4648) targeting jdoe, admin02, and tempuser were observed from WS-SALES-03$ between 14:33 and 15:55 on 2024-05-14 (evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000122, evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000152). All attempts succeeded and produced no subsequent 4624 from the same src_ip, suggesting localhost credential injection rather than network-reused access.\n"
+        "Describe only the supported observation, such as the event type, relevant account or host fields, and time range shown in the supplied evidence. Distinguish an observed attempt from a successful logon, and do not infer a cause or mechanism without corroborating evidence.\n"
         "</EXAMPLE_GOOD>\n"
         "<EXAMPLE_BAD>\n"
         "The investigation revealed multiple high-severity findings related to logon attempts using explicit credentials (windows-security-4648-logon-explicit-creds-0001, ..., 0011).\n"
         "</EXAMPLE_BAD>\n"
         "<EXAMPLE_JSON>\n"
-        '{"body":"Eight explicit-credential logon attempts targeting jdoe and admin02 were observed from WS-SALES-03$ on 2024-05-14 (evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000122, evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000152)."}\n'
+        '{"body":"[Concise observed fact supported by the supplied evidence] (<raw evidence_id from the supporting row>)."}\n'
         "</EXAMPLE_JSON>"
     )
     user = (

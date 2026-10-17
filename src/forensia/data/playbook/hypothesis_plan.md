@@ -9,17 +9,17 @@
 
 <SCHEMA_CONSTRAINTS>
 - IMPORTANT: prefetch_executions has NO computer column — do NOT filter by host there.
-- IMPORTANT: user_name, target_user, subject_user columns may be NULL. When NULL, you MUST use json_extract_string(raw_json, '$.TargetUserName') or json_extract_string(raw_json, '$.SubjectUserName') or json_extract_string(raw_json, '$.TargetDomainName') as fallback.
+- IMPORTANT: user_name, target_user, subject_user columns may be NULL. For EVTX raw_json, extract event fields from the nested path `$.winlog.event_data.<FieldName>` (for example `$.winlog.event_data.TargetUserName` or `$.winlog.event_data.SubjectUserName`). Never use TargetDomainName as a user-name fallback; it is a domain, not an account.
 - IMPORTANT: Do NOT use datetime('now') — it refers to current system time, not the case time period. Use literal timestamps from the case time range instead.
 </SCHEMA_CONSTRAINTS>
 
 Common NULL fallback patterns:
-- user_name NULL → json_extract_string(raw_json, '$.TargetUserName') or '$.SubjectUserName'
-- src_ip NULL → json_extract_string(raw_json, '$.IpAddress')
-- logon_type NULL → CAST(json_extract_string(raw_json, '$.LogonType') AS INTEGER)
-- service_name NULL → json_extract_string(raw_json, '$.ServiceName')
-- process_name NULL → json_extract_string(raw_json, '$.ProcessName')
-- command_line NULL → json_extract_string(raw_json, '$.CommandLine')
+- user_name NULL → json_extract_string(raw_json, '$.winlog.event_data.TargetUserName') or '$.winlog.event_data.SubjectUserName'
+- src_ip NULL → json_extract_string(raw_json, '$.winlog.event_data.IpAddress')
+- logon_type NULL → CAST(json_extract_string(raw_json, '$.winlog.event_data.LogonType') AS INTEGER)
+- service_name NULL → json_extract_string(raw_json, '$.winlog.event_data.ServiceName')
+- process_name NULL → json_extract_string(raw_json, '$.winlog.event_data.ProcessName')
+- command_line NULL → json_extract_string(raw_json, '$.winlog.event_data.CommandLine')
 
 <!-- AUTO-FROM: event_ids.yaml -->
 - Event 12 (OS started (Kernel-General Event 12)) | ONLY meaningful on channel(s): System | ONLY meaningful for provider(s): Microsoft-Windows-Kernel-General | query columns: computer, timestamp | may claim: event 12 was observed; the referenced Windows event was present in the evidence | DO NOT claim: attacker action (needs corroborating evidence); compromise (needs supporting process, account, or file evidence)
