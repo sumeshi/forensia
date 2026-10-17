@@ -14,12 +14,13 @@ from pathlib import Path
 import pytest
 
 from forensia.core.case import Case
+from forensia.core.ownership import case_lock
 from forensia.core.session import Hypothesis
 from forensia.core.verification import VerificationSpec
 from forensia.db.database import CaseDB
 from forensia.db.evidence_sources import register_evidence_source
 from forensia.investigation.hypotheses.hypothesis_store import _upsert_hypothesis
-from forensia.runtime import RuntimeClient, start_runtime
+from forensia.runtime import RuntimeClient, probe_runtime, start_runtime
 
 
 class _FixedProvider(ThreadingHTTPServer):
@@ -212,6 +213,10 @@ def test_public_background_runtime_stop_busy_and_idle_overwrite(tmp_path):
         )
         assert busy.returncode != 0
         assert "busy" in (busy.stdout + busy.stderr).lower()
+
+        with pytest.raises(TimeoutError, match="/kill"):
+            client.shutdown(timeout=0.1)
+        assert client.request({"type": "status"})["ready"] is True
 
         accepted_stop = client.request(
             {"type": "command", "command_id": "public-stop-1", "operation": "stop"}
@@ -558,8 +563,13 @@ def test_runtime_process_crash_recovers_receipts_and_session_lease(tmp_path):
 
         process = owner._process
         assert process is not None
-        process.terminate()
+        RuntimeClient(case.path).shutdown(force=True)
         process.wait(timeout=5)
+        assert process.returncode != 0
+        assert not provider.release_request.is_set()
+        assert not probe_runtime(case.path)
+        with case_lock(case.path):
+            pass
         provider.release_request.set()
 
         replacement = start_runtime(case.path, env=env, timeout=10)

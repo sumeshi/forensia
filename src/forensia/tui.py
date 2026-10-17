@@ -13,6 +13,7 @@ from typing import Any
 from rich.style import Style
 from rich.text import Text
 from textual.app import App, ComposeResult
+from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Button, Footer, Input, RichLog, Rule, Static
@@ -43,6 +44,8 @@ Natural language          Steer the investigation
 /more                    Read the next detail page
 /older, /newer           Browse earlier events / follow current events
 /detach                  Close the TUI; keep the Runtime alive
+/quit                    Stop the investigation and exit (Ctrl+Q)
+/kill                    Force termination; interrupt unfinished work
 
 Click a log timestamp to open the event details.
 F1 opens Help. Escape closes this window.
@@ -109,8 +112,8 @@ def _command(value: str) -> tuple[str, dict[str, Any]]:
         and (len(parts) == 1 or parts[1] == "--write")
     ):
         return "report", {"write": len(parts) == 2}
-    if command == "/detach" and stripped.lower() == command:
-        return "detach", {}
+    if command in {"/detach", "/quit", "/kill"} and stripped.lower() == command:
+        return command[1:], {}
     raise ValueError("Use /help to see supported commands")
 
 
@@ -301,7 +304,10 @@ class CaseApp(App[None]):
     .narrow #sidebar { width: 1fr; height: auto; max-height: 12; border-left: none; border-top: solid $primary-darken-2; }
     """
     TITLE = "FORENSIA"
-    BINDINGS = [("f1", "help", "Help")]
+    BINDINGS = [
+        ("f1", "help", "Help"),
+        Binding("ctrl+q", "quit", "Quit", priority=True),
+    ]
     HORIZONTAL_BREAKPOINTS = [(0, "narrow"), (90, "wide")]
 
     def __init__(self, case: Case):
@@ -323,6 +329,7 @@ class CaseApp(App[None]):
         self._last_read_error: tuple[type[Exception], str] | None = None
         self._last_view_at: str | None = None
         self._closed = False
+        self._owns_control = False
 
     def compose(self) -> ComposeResult:
         self._header = Static("Opening case…", id="case-state")
@@ -388,6 +395,37 @@ class CaseApp(App[None]):
     def action_help(self) -> None:
         self._open_window("Help", Text(_HELP))
 
+    async def action_quit(self) -> None:
+        await self._quit()
+
+    async def _quit(self, *, force: bool = False) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        if self.client is not None and self._owns_control:
+            self._notice(
+                "Terminating investigation…" if force else "Stopping investigation…"
+            )
+            try:
+                await asyncio.to_thread(self.client.shutdown, force=force)
+            except Exception as exc:
+                self._closed = False
+                self._notice(f"Unable to exit: {exc}", "error")
+                return
+        elif self._owns_control:
+            try:
+                with CaseLock(self.case.path):
+                    pass
+            except RuntimeError:
+                self._closed = False
+                self._notice(
+                    "Process exit is unconfirmed: Runtime is unavailable. "
+                    "Reconnect with attach or use /detach to close only the TUI.",
+                    "error",
+                )
+                return
+        self.exit()
+
     def _show_detail(self) -> None:
         if self._detail is None:
             self._notice("No matching detail", "warning")
@@ -446,6 +484,7 @@ class CaseApp(App[None]):
                 lock.path = controller_lock_path(self.case.path)
                 await asyncio.to_thread(lock.acquire)
                 self._stopped_lock = lock
+            self._owns_control = True
         except Exception as exc:
             self._notice(f"Unable to control this case: {exc}", "error")
             self._header.update(
@@ -571,6 +610,9 @@ class CaseApp(App[None]):
                 self.action_help()
             elif operation == "detach":
                 self.exit()
+                return
+            elif operation in {"quit", "kill"}:
+                await self._quit(force=operation == "kill")
                 return
             elif operation == "detail":
                 self._detail = await asyncio.to_thread(

@@ -166,6 +166,11 @@ def test_runtime_ipc_and_lock_cross_process(tmp_path):
             other.claim_control()
         with pytest.raises(RuntimeError, match="Another TUI currently controls"):
             other.request({"type": "command", "command_id": "c2", "operation": "stop"})
+        with pytest.raises(RuntimeError, match="Another TUI currently controls"):
+            other.shutdown(force=True)
+        with pytest.raises(RuntimeError, match="Runtime was replaced"):
+            client.request({"type": "kill", "startup_id": "previous-owner"})
+        assert probe_runtime(case)
         client.release_control()
         with pytest.raises(ValueError, match="Unsupported Runtime request"):
             client.request({"type": "arbitrary"})
@@ -268,6 +273,45 @@ def test_runtime_ipc_reads_committed_state_during_writes(tmp_path):
         if process.is_alive():
             process.terminate()
             process.join(timeout=2)
+        if sys.platform != "win32":
+            Path(runtime_address(case.path)).unlink(missing_ok=True)
+        _key_path(case.path).unlink(missing_ok=True)
+
+
+def test_runtime_kill_during_write_preserves_committed_state(tmp_path):
+    case = Case.init(tmp_path / "interrupted-write")
+    with CaseDB(case) as db:
+        db.execute(
+            "INSERT INTO findings (finding_id, rule_id, title, severity) "
+            "VALUES ('saved-finding', 'fixture', 'Saved finding', 'info')"
+        )
+    context = multiprocessing.get_context("spawn")
+    busy = context.Event()
+    release = context.Event()
+    process = context.Process(
+        target=_serve_busy_test_runtime,
+        args=(str(case.path), busy, release),
+    )
+    process.start()
+    try:
+        assert busy.wait(5)
+        for _ in range(100):
+            if probe_runtime(case.path):
+                break
+            time.sleep(0.01)
+        RuntimeClient(case.path).shutdown(force=True)
+        process.join(timeout=3)
+        assert process.exitcode == 1
+        assert not release.is_set()
+        assert not probe_runtime(case.path)
+        with case_lock(case.path), CaseDB(case, read_only=True) as db:
+            assert db.execute("SELECT finding_id FROM findings").fetchall() == [
+                ("saved-finding",)
+            ]
+    finally:
+        if process.is_alive():
+            process.terminate()
+        process.join(timeout=3)
         if sys.platform != "win32":
             Path(runtime_address(case.path)).unlink(missing_ok=True)
         _key_path(case.path).unlink(missing_ok=True)

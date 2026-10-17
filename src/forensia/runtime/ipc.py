@@ -63,9 +63,10 @@ class RuntimeClient:
             "claim",
             "release",
             "retire",
+            "kill",
         }:
             raise ValueError("Unsupported Runtime request")
-        if kind == "command" and self._controller:
+        if kind in {"command", "kill"} and self._controller:
             request = {**request, "client_id": self._controller}
         payload = json.dumps(
             request, ensure_ascii=False, separators=(",", ":")
@@ -140,6 +141,41 @@ class RuntimeClient:
             if self._controller_lock:
                 self._controller_lock.release()
                 self._controller_lock = None
+
+    def shutdown(self, *, force: bool = False, timeout: float = 5.0) -> None:
+        deadline = time.monotonic() + timeout
+        startup_id = self.request({"type": "status"})["startup_id"]
+        if force:
+            self.request({"type": "kill", "startup_id": startup_id})
+        else:
+            self.request(
+                {
+                    "type": "command",
+                    "operation": "stop",
+                    "command_id": f"quit-{uuid.uuid4().hex}",
+                    "startup_id": startup_id,
+                }
+            )
+        retired = force
+        while True:
+            if not retired:
+                retired = (
+                    self.request({"type": "retire", "startup_id": startup_id}).get(
+                        "retired"
+                    )
+                    is True
+                )
+            try:
+                with CaseLock(self.case_dir):
+                    return
+            except RuntimeError:
+                pass
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    "Investigation process is still stopping; "
+                    "use /kill to force termination or /detach to close only the TUI"
+                )
+            time.sleep(0.05)
 
     def __enter__(self) -> RuntimeClient:
         return self
@@ -326,6 +362,7 @@ class RuntimeServer:
                     continue
                 with conn:
                     retire = False
+                    kill = False
                     try:
                         if not conn.poll(10):
                             continue
@@ -336,6 +373,7 @@ class RuntimeServer:
                             and request.get("type") == "retire"
                             and result.get("retired") is True
                         )
+                        kill = request.get("type") == "kill"
                         response = {"ok": True, "result": result}
                     except CaseDBBusyError as exc:
                         response = {"ok": False, "code": "case_busy", "error": str(exc)}
@@ -352,6 +390,9 @@ class RuntimeServer:
                         conn.send_bytes(encoded)
                     except OSError:
                         pass
+                    if kill:
+                        # An explicit kill must not wait for the worker or DB lock.
+                        os._exit(1)
                     if retire:
                         self._running = False
         finally:
@@ -365,6 +406,10 @@ class RuntimeServer:
     def _dispatch(self, req: Any) -> Any:
         if not isinstance(req, dict):
             raise ValueError("Request must be an object")
+        if req.get("startup_id") is not None and req["startup_id"] != self.startup_id:
+            raise RuntimeError(
+                "Runtime was replaced; reconnect before sending commands"
+            )
         kind = req.get("type")
         if kind == "claim":
             client_id = req.get("client_id")
@@ -381,6 +426,13 @@ class RuntimeServer:
             return {"ready": True, "startup_id": self.startup_id}
         if kind == "retire":
             return {"retired": bool(self.engine.retire_if_idle())}
+        if kind == "kill":
+            if (
+                self.controller_id is not None
+                and req.get("client_id") != self.controller_id
+            ):
+                raise RuntimeError("Another TUI currently controls this Runtime")
+            return {"killed": True}
         if kind == "snapshot":
             return self.engine.snapshot()
         if kind == "events":

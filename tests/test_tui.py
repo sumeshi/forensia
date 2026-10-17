@@ -1,19 +1,65 @@
 from __future__ import annotations
 
 import asyncio
+import subprocess
 
 import pytest
 
 from forensia.core.case import Case
+from forensia.core.ownership import case_lock
 from forensia.core.progress_event import progress_event
 from forensia.db.database import CaseDB, CaseDBBusyError
 from forensia.db.progress import record_progress_event
 from forensia.db.views import case_snapshot
+from forensia.runtime import probe_runtime, start_runtime
 from forensia.tui import CaseApp, InfoWindow, _command, _format_header, _format_sidebar
+
+
+@pytest.mark.parametrize("command", ["ctrl+q", "/quit", "/kill", "/detach"])
+def test_tui_exit_controls_real_runtime_lifetime(tmp_path, command) -> None:
+    case = Case.init(tmp_path / "exit-case")
+    with CaseDB(case):
+        pass
+    owner = start_runtime(case.path, timeout=10)
+    process = owner._process
+    assert process is not None
+
+    async def exercise() -> None:
+        app = CaseApp(case)
+        async with app.run_test(size=(120, 40)) as pilot:
+            if command == "ctrl+q":
+                await pilot.press(command)
+            else:
+                app._prompt.value = command
+                await pilot.press("enter")
+            await pilot.pause()
+            if command == "/detach":
+                assert probe_runtime(case.path)
+                assert process.poll() is None
+            else:
+                await asyncio.to_thread(process.wait, timeout=3)
+                assert not probe_runtime(case.path)
+                with case_lock(case.path):
+                    pass
+            assert app._closed
+
+    try:
+        asyncio.run(exercise())
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=3)
 
 
 def test_tui_command_boundary_maps_to_runtime_operations() -> None:
     assert _command("/stop") == ("stop", {})
+    assert _command("/quit") == ("quit", {})
+    assert _command("/kill") == ("kill", {})
+    assert _command("/detach") == ("detach", {})
     assert _command("/resume") == ("resume", {})
     assert _command("/add /tmp/evidence") == ("add", {"input_dir": "/tmp/evidence"})
     assert _command("/add /tmp/evidence dir") == (
@@ -39,7 +85,13 @@ def test_tui_command_boundary_maps_to_runtime_operations() -> None:
 
 
 def test_tui_rejects_unknown_commands() -> None:
-    for value in ("/shell whoami", "/stop now", "/resume later", "/quit"):
+    for value in (
+        "/shell whoami",
+        "/stop now",
+        "/resume later",
+        "/quit now",
+        "/kill all",
+    ):
         with pytest.raises(ValueError, match="/help"):
             _command(value)
 
@@ -220,5 +272,48 @@ def test_tui_retains_runtime_and_last_view_on_read_failure(
             assert app._runtime_lost
             assert app.client is None
             assert client.released
+
+    asyncio.run(exercise())
+
+
+def test_tui_quit_keeps_screen_and_control_when_stop_times_out(
+    tmp_path, monkeypatch
+) -> None:
+    case = Case.init(tmp_path / "waiting-case")
+    with CaseDB(case) as db:
+        snapshot = case_snapshot(case, db)
+
+    class Client:
+        released = False
+
+        def claim_control(self):
+            pass
+
+        def release_control(self):
+            self.released = True
+
+        def request(self, request):
+            return snapshot if request["type"] == "snapshot" else []
+
+        def shutdown(self, *, force):
+            raise TimeoutError("Still waiting; use /kill to force termination")
+
+    client = Client()
+    monkeypatch.setattr("forensia.tui.probe_runtime", lambda _: True)
+    monkeypatch.setattr("forensia.tui.RuntimeClient", lambda _: client)
+
+    async def exercise() -> None:
+        app = CaseApp(case)
+        async with app.run_test(size=(120, 40)) as pilot:
+            app._prompt.value = "/quit"
+            await pilot.press("enter")
+            await pilot.pause()
+            assert not app._closed
+            assert app.client is client
+            assert not client.released
+            assert any("/kill" in line.text for line in app._log.lines)
+            app._prompt.value = "/detach"
+            await pilot.press("enter")
+        assert client.released
 
     asyncio.run(exercise())

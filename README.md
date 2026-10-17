@@ -203,6 +203,8 @@ See `--help` for other options.
 
 To start over in the same output location for testing, use `--overwrite`. This deletes the entire case directory and reingests the original artifacts. Keep originals and any configuration documents you want to reuse outside the case directory, and stop the investigation before using it.
 
+In the TUI, `/quit` or `Ctrl+Q` also shuts down the investigation process. Use `/kill` to force termination while stopping, or `/detach` to close the screen while the investigation continues. Forced termination interrupts unfinished work.
+
 ## Limitations and Evaluation
 
 FORENSIA is experimental.\
