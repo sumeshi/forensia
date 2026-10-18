@@ -2,7 +2,7 @@
 
 ![forensia-logo](https://gist.githubusercontent.com/sumeshi/c2f430d352ae763273faadf9616a29e5/raw/f0b46d7a1801f359ddae0927ba5c4c4f969b1953/forensia2.svg)
 
-[日本語](README-ja.md)
+[Read in Japanese](README-ja.md)
 
 FORENSIA is an experimental harness for LLM-assisted Windows digital forensics.
 
@@ -230,7 +230,7 @@ Evaluation covers more than whether the final answers are correct: it also exami
 
 The project builds on the following work.
 
-- [Do Local LLMs Dream of Forensic Investigators?](https://sumeshi.github.io/posts/works/do-localllms-dream-of-forensic-investigator) (Japanese) — Project background and design philosophy
+- [Do Local LLMs Dream of Forensic Investigators?](https://sumeshi.github.io/posts/works/do-localllms-dream-of-forensic-investigator-en) — Project background and design philosophy
 - `*2es` — Parsing and normalization of Windows artifacts
   - [evtx2es](https://github.com/sumeshi/evtx2es)
   - [mft2es](https://github.com/sumeshi/mft2es)
