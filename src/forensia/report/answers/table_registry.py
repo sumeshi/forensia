@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -81,6 +82,40 @@ class TableSpec:
     builder: Callable[[CaseDB], list[dict[str, Any]]]
     columns: tuple[tuple[str, str], ...] | None  # None = use default
     optional_keys: tuple[str, ...] = ("evidence_id",)
+    source_tables: tuple[str, ...] = ()
+    source_families: tuple[str, ...] = ()
+    query_description: str = ""
+
+
+def source_receipt_metadata(db: CaseDB, spec: TableSpec) -> dict[str, object]:
+    """Return canonical table recipe and current evidence source receipt metadata."""
+    rows = (
+        db.execute(
+            """
+            SELECT source_id, artifact_family, ingest_status, parser_name,
+                   parser_version, row_count, channel, CAST(hosts AS VARCHAR),
+                   volume_id, CAST(min_time AS VARCHAR), CAST(max_time AS VARCHAR),
+                   error_code
+            FROM evidence_sources
+            WHERE artifact_family IN (SELECT UNNEST(?))
+            ORDER BY source_id
+            """,
+            [list(spec.source_families)],
+        ).fetchall()
+        if spec.source_families
+        else []
+    )
+    encoded = json.dumps(
+        rows, ensure_ascii=False, sort_keys=True, default=str, separators=(",", ":")
+    )
+    digest = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+    return {
+        "source_tables": list(spec.source_tables),
+        "source_families": list(spec.source_families),
+        "query_description": spec.query_description,
+        "source_ids": [str(row[0]) for row in rows],
+        "source_receipt_sha256": digest,
+    }
 
 
 @dataclass
@@ -150,6 +185,16 @@ TABLE_BLOCKS: dict[str, TableSpec] = {
             ("value", "Value"),
             ("scope", "Scope"),
         ),
+        source_tables=(
+            "evidence_sources",
+            "evidence_coverage",
+            "evtx_events",
+            "mft_entries",
+            "prefetch_executions",
+            "registry_artifacts",
+        ),
+        source_families=("evtx", "mft", "prefetch", "registry"),
+        query_description="normalized row counts by artifact family, source receipt counts and rows/status, capability coverage, and distinct EVTX channels",
     ),
     "overview_systems_observed": TableSpec(
         builder=_build_systems_observed_table,
@@ -159,6 +204,9 @@ TABLE_BLOCKS: dict[str, TableSpec] = {
             ("first_seen", "First seen"),
             ("last_seen", "Last seen"),
         ),
+        source_tables=("evtx_events",),
+        source_families=("evtx",),
+        query_description="non-empty computers grouped case-insensitively, ordered by event count, limited to 5",
     ),
     "overview_key_findings": TableSpec(
         builder=_build_key_findings_table,
@@ -170,6 +218,8 @@ TABLE_BLOCKS: dict[str, TableSpec] = {
             ("reference", "Ref"),
         ),
         optional_keys=("reference",),
+        source_tables=("findings",),
+        query_description="current report key findings",
     ),
     "timeline_phase_summary": TableSpec(
         builder=_build_timeline_phase_table,
@@ -179,6 +229,9 @@ TABLE_BLOCKS: dict[str, TableSpec] = {
             ("interpretation", "Interpretation"),
             ("window", "Event window"),
         ),
+        source_tables=("evtx_events", "prefetch_executions"),
+        source_families=("evtx", "prefetch"),
+        query_description="phase summary derived from the bounded chronological activity rows",
     ),
     "timeline_chronological": TableSpec(
         builder=_build_timeline_chronological_table,
@@ -190,6 +243,9 @@ TABLE_BLOCKS: dict[str, TableSpec] = {
             ("artifact", "Artifact"),
             ("evidence_id", "Ref"),
         ),
+        source_tables=("evtx_events", "prefetch_executions"),
+        source_families=("evtx", "prefetch"),
+        query_description="event-context-filtered EVTX rows (up to 80) and notable Prefetch executions (up to 12), ordered by time",
     ),
     "technical_accounts": TableSpec(
         builder=_build_accounts_table,
@@ -201,7 +257,11 @@ TABLE_BLOCKS: dict[str, TableSpec] = {
             ("explicit_credential_events", "4648"),
             ("first_seen", "First seen"),
             ("last_seen", "Last seen"),
+            ("evidence_id", "Evidence ID"),
         ),
+        source_tables=("evtx_events",),
+        source_families=("evtx",),
+        query_description="context-valid events 4624, 4625, and 4648 grouped by account and host; top 10",
     ),
     "technical_execution": TableSpec(
         builder=_build_execution_table,
@@ -211,6 +271,9 @@ TABLE_BLOCKS: dict[str, TableSpec] = {
             ("last_execution", "Last execution"),
             ("evidence_id", "Ref"),
         ),
+        source_tables=("prefetch_executions",),
+        source_families=("prefetch",),
+        query_description="deterministic execution summary from Prefetch rows",
     ),
     "technical_files": TableSpec(
         builder=_build_file_artifacts_table,
@@ -220,6 +283,9 @@ TABLE_BLOCKS: dict[str, TableSpec] = {
             ("file_path", "Path"),
             ("evidence_id", "Ref"),
         ),
+        source_tables=("mft_entries",),
+        source_families=("mft",),
+        query_description="deterministic file artifact rows from normalized MFT entries",
     ),
     "technical_antiforensic": TableSpec(
         builder=_build_antiforensic_table,
@@ -231,6 +297,9 @@ TABLE_BLOCKS: dict[str, TableSpec] = {
             ("computer", "Host"),
             ("evidence_id", "Ref"),
         ),
+        source_tables=("findings", "evtx_events", "prefetch_executions", "mft_entries"),
+        source_families=("evtx", "prefetch", "mft"),
+        query_description="deterministic anti-forensic observations and linked findings",
     ),
     "technical_network": TableSpec(
         builder=_build_network_table,
@@ -241,6 +310,9 @@ TABLE_BLOCKS: dict[str, TableSpec] = {
             ("inbound_rows", "Inbound rows"),
             ("interpretation", "Interpretation"),
         ),
+        source_tables=("evtx_events",),
+        source_families=("evtx",),
+        query_description="normalized network activity grouped by area and IP address",
     ),
     "gaps_unresolved": TableSpec(
         builder=_build_gaps_unresolved_table,
@@ -248,12 +320,14 @@ TABLE_BLOCKS: dict[str, TableSpec] = {
             ("hypothesis_id", "Hypothesis ID"),
             ("hypothesis", "Hypothesis"),
             ("status", "State"),
-            ("evidence_rows", "Evidence rows"),
+            ("evidence_rows", "Linked evidence"),
             ("missing_rationale", "Missing rationale"),
             ("next_step", "Next step"),
-            ("task_id", "Task ID"),
-            ("gap_id", "Gap ID"),
+            ("task_id", "Task / admission state"),
+            ("gap_id", "Gap / admission state"),
         ),
+        source_tables=("hypotheses", "investigation_tasks", "report_gaps"),
+        query_description="unresolved hypotheses joined to their admitted open/in-progress Tasks and linked Gaps",
     ),
     "gaps_untestable": TableSpec(
         builder=_build_gaps_untestable_table,
@@ -263,9 +337,11 @@ TABLE_BLOCKS: dict[str, TableSpec] = {
             ("missing_telemetry", "Missing telemetry"),
             ("rationale", "Rationale"),
             ("next_step", "Next step"),
-            ("task_id", "Task ID"),
-            ("gap_id", "Gap ID"),
+            ("task_id", "Task / admission state"),
+            ("gap_id", "Gap / admission state"),
         ),
+        source_tables=("hypotheses", "investigation_tasks", "report_gaps"),
+        query_description="untestable hypotheses joined to their admitted open/in-progress Tasks and linked Gaps",
     ),
     "gaps_confirmed": TableSpec(
         builder=_build_gaps_confirmed_table,
@@ -276,6 +352,8 @@ TABLE_BLOCKS: dict[str, TableSpec] = {
             ("related_context", "Related context"),
             ("summary", "Summary"),
         ),
+        source_tables=("hypotheses", "hypothesis_evidence", "claims"),
+        query_description="settled confirmed hypotheses with linked evidence and related context",
     ),
     "gaps_evidence": TableSpec(
         builder=_build_evidence_gaps_table,
@@ -284,6 +362,8 @@ TABLE_BLOCKS: dict[str, TableSpec] = {
             ("why_it_matters", "Why it matters"),
             ("next_step", "Next step"),
         ),
+        source_tables=("report_gaps", "investigation_tasks"),
+        query_description="admitted evidence gaps and their linked Tasks",
     ),
     "recommendations_action_plan": TableSpec(
         builder=_build_recommendations_table,
@@ -294,6 +374,8 @@ TABLE_BLOCKS: dict[str, TableSpec] = {
             ("evidence_or_gap", "Evidence/Gap"),
             ("validation", "Validation criterion"),
         ),
+        source_tables=("report_gaps", "investigation_tasks", "hypotheses"),
+        query_description="recommendations derived from current unresolved work",
     ),
 }
 
@@ -325,19 +407,27 @@ def _table_block_columns(
         else [("key", "Key"), ("value", "Value")]
     )
     if builder_name == "overview_systems_observed" and any("note" in r for r in rows):
-        return [
+        base = [
             ("host", "Host"),
             ("note", "Note"),
             ("events", "EVTX rows"),
             ("first_seen", "First seen"),
             ("last_seen", "Last seen"),
         ]
+    from forensia.config import get_llm_settings
+
+    language = str(get_llm_settings().get("output_language", "ja")).casefold()
+    localized = (_load_table_captions().get(builder_name) or {}).get(
+        f"columns_{language}"
+    )
+    if isinstance(localized, dict):
+        base = [(key, str(localized.get(key) or label)) for key, label in base]
     return base
 
 
 @lru_cache(maxsize=1)
-def _load_table_captions() -> dict[str, dict[str, str]]:
-    """Load per-builder caption/empty templates from rulepacks/_schema/report_tables.yaml."""
+def _load_table_captions() -> dict[str, dict[str, Any]]:
+    """Load per-builder caption/empty templates from data/schema/report_tables.yaml."""
     import yaml
 
     path = schema_dir() / "report_tables.yaml"
@@ -349,14 +439,18 @@ def _load_table_captions() -> dict[str, dict[str, str]]:
     if not isinstance(tables, dict):
         return {}
     return {
-        str(name): {str(k): str(v) for k, v in spec.items() if isinstance(v, str)}
+        str(name): {str(k): v for k, v in spec.items()}
         for name, spec in tables.items()
         if isinstance(spec, dict)
     }
 
 
 def render_table_block(
-    db: CaseDB, builder_name: str, *, max_rows: int | None = None
+    db: CaseDB,
+    builder_name: str,
+    *,
+    max_rows: int | None = None,
+    rows: list[dict[str, Any]] | None = None,
 ) -> str | None:
     """Render a `mode: table` block deterministically: caption paragraph + table.
 
@@ -373,10 +467,14 @@ def render_table_block(
     builder_fn = table_spec.builder if table_spec else None
     if builder_fn is None:
         return None
-    rows = builder_fn(db)
+    rows = builder_fn(db) if rows is None else rows
     caption_spec = _load_table_captions().get(builder_name) or {}
+    from forensia.config import get_llm_settings
+
+    language = str(get_llm_settings().get("output_language", "ja")).casefold()
     if not rows:
-        return str(caption_spec.get("empty") or "").strip() or "_No rows available._"
+        empty = caption_spec.get(f"empty_{language}") or caption_spec.get("empty")
+        return str(empty or "").strip() or "_No rows available._"
     if max_rows is None:
         try:
             max_rows = int(caption_spec.get("max_rows") or 0)
@@ -396,9 +494,10 @@ def render_table_block(
                 f"table_schema: {error.message}",
                 level="error",
             )
-    caption = render_rows_template(
-        str(caption_spec.get("caption") or "").strip(), rows
-    ).strip()
+    caption_template = caption_spec.get(f"caption_{language}") or caption_spec.get(
+        "caption"
+    )
+    caption = render_rows_template(str(caption_template or "").strip(), rows).strip()
     table = _markdown_table(rows, columns, max_rows=max_rows)
     return f"{caption}\n\n{table}" if caption else table
 

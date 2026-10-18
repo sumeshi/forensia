@@ -13,6 +13,7 @@ from forensia.knowledge.catalog import (
     catalog_exe_globs,
     catalog_names,
     catalog_path_terms,
+    event_context_sql,
     exe_glob_sql,
     matches_exe_globs,
 )
@@ -38,26 +39,75 @@ logger = logging.getLogger(__name__)
 def _count_table(db: CaseDB) -> list[dict[str, Any]]:
     metrics = query_case_metrics(db)
     artifact_counts = metrics["artifact_row_counts"]
+    source_coverage = {
+        str(row.get("artifact_family") or ""): row
+        for row in metrics["artifact_source_coverage"]
+    }
     channels = db.execute(
         "SELECT COUNT(DISTINCT channel) FROM evtx_events WHERE COALESCE(channel, '') != ''"
     ).fetchone()
     time_range = _query_evtx_time_range(db)
+    families = (
+        ("evtx", "EVTX events", "evtx_events"),
+        ("mft", "MFT entries", "mft_entries"),
+        ("prefetch", "Prefetch executions", "prefetch_executions"),
+        ("registry", "Registry artifacts", "registry_artifacts"),
+    )
+    rows = []
+    for family, label, table in families:
+        source = source_coverage.get(family) or source_coverage.get(table)
+        source_scope = (
+            "no ingested source receipt"
+            if source is None
+            else (
+                f"sources={source['source_count']}; source rows={source['source_rows']}; "
+                f"ingest status={source['statuses']}"
+            )
+        )
+        detail = f"{table}; normalized rows; {source_scope}"
+        if family == "evtx":
+            detail += (
+                f"; observed event time={time_range.get('first_event', 'unknown')}"
+                f" to {time_range.get('last_event', 'unknown')}"
+            )
+        rows.append(
+            {
+                "metric": label,
+                "value": artifact_counts[family],
+                "scope": detail,
+            }
+        )
+    for coverage in fetch_records(
+        db,
+        """
+        SELECT capability, source_family, host, channel, state, reason_code,
+               start_time, end_time
+        FROM evidence_coverage
+        ORDER BY capability, source_family, host, channel
+        """,
+    ):
+        scope = [
+            f"source family={coverage.get('source_family') or 'unknown'}",
+            f"reason={coverage.get('reason_code') or 'unspecified'}",
+        ]
+        if coverage.get("host"):
+            scope.append(f"host={coverage['host']}")
+        if coverage.get("channel"):
+            scope.append(f"channel={coverage['channel']}")
+        if coverage.get("start_time") or coverage.get("end_time"):
+            scope.append(
+                f"period={coverage.get('start_time') or 'unknown'} to "
+                f"{coverage.get('end_time') or 'unknown'}"
+            )
+        rows.append(
+            {
+                "metric": f"Capability: {coverage.get('capability') or 'unknown'}",
+                "value": coverage.get("state") or "unknown",
+                "scope": "; ".join(scope),
+            }
+        )
     return [
-        {
-            "metric": "EVTX events",
-            "value": artifact_counts["evtx"],
-            "scope": f"{time_range.get('first_event', 'unknown')} to {time_range.get('last_event', 'unknown')}",
-        },
-        {
-            "metric": "MFT entries",
-            "value": artifact_counts["mft"],
-            "scope": "Filesystem metadata",
-        },
-        {
-            "metric": "Prefetch executions",
-            "value": artifact_counts["prefetch"],
-            "scope": "Application execution artifacts",
-        },
+        *rows,
         {
             "metric": "Hosts",
             "value": metrics["normalized_host_count"],
@@ -125,19 +175,21 @@ def _account_summary_rows(db: CaseDB, limit: int = 10) -> list[dict[str, Any]]:
     """
     return fetch_records(
         db,
-        """
+        f"""
         SELECT
           COALESCE(NULLIF(target_user, ''), NULLIF(user_name, ''), NULLIF(subject_user, ''), '-') AS account,
-          ANY_VALUE(computer) AS computer,
+          MIN(computer) AS computer,
           COUNT(*) FILTER (WHERE event_id = 4624) AS logons,
           COUNT(*) FILTER (WHERE event_id = 4625) AS failed_logons,
           COUNT(*) FILTER (WHERE event_id = 4648) AS explicit_credential_events,
           MIN(timestamp) AS first_seen,
-          MAX(timestamp) AS last_seen
+          MAX(timestamp) AS last_seen,
+          MIN(evidence_id) AS evidence_id
         FROM evtx_events
-        WHERE event_id IN (4624, 4625, 4648)
+        WHERE {event_context_sql([4624, 4625, 4648])}
         GROUP BY account, UPPER(TRIM(COALESCE(computer, '')))
-        ORDER BY explicit_credential_events DESC, failed_logons DESC, logons DESC
+        ORDER BY explicit_credential_events DESC, failed_logons DESC, logons DESC,
+                 account, UPPER(TRIM(COALESCE(computer, '')))
         LIMIT ?
         """,
         (limit,),
@@ -149,34 +201,22 @@ def _event_interpretation(event_id: Any) -> str:
         event = int(event_id)
     except TypeError, ValueError:
         return "Event"
-    return {
-        4624: "Successful logon",
-        4625: "Failed logon",
-        4648: "Explicit credentials",
-        1100: "Event log service stopped",
-        104: "Event log cleared",
-        1074: "Shutdown/restart initiated",
-        6006: "Event log service stopped",
-    }.get(event, f"Event {event}")
+    from forensia.knowledge.catalog import load_event_id_hints
+
+    return str(load_event_id_hints().get(event, {}).get("title") or f"Event {event}")
 
 
 def _timeline_rows(db: CaseDB, limit: int = 18) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     evtx_rows = fetch_records(
         db,
-        """
+        f"""
         SELECT timestamp, computer, event_id,
                COALESCE(NULLIF(target_user, ''), NULLIF(user_name, ''), NULLIF(subject_user, ''), '-') AS actor,
                COALESCE(NULLIF(process_name, ''), NULLIF(service_name, ''), '-') AS object,
                evidence_id
         FROM evtx_events
-        WHERE (
-            (event_id IN (1074))
-            OR (event_id = 1100 AND (channel IS NULL OR LOWER(channel) LIKE '%security%'))
-            OR (event_id = 6006 AND (channel IS NULL OR LOWER(channel) LIKE '%system%'))
-            OR (event_id IN (4648, 4625) AND LOWER(COALESCE(channel, '')) LIKE '%security%')
-            OR (event_id = 104 AND LOWER(COALESCE(channel, '')) LIKE '%eventlog%')
-        )
+        WHERE {event_context_sql([1074, 1100, 6006, 4648, 4625, 104])}
         ORDER BY timestamp
         LIMIT 80
         """,

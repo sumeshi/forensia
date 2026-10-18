@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from forensia.db.database import CaseDB
     from forensia.evidence.artifacts import IngestResult
 
-REG2ES_VERSION = "2.0.0"
+REG2ES_VERSION = "2.4.1"
 _PARSER_CONFIG = {"error_policy": "raise", "primary_only_inputs": True}
 
 
@@ -51,14 +51,6 @@ def _parse_registry_timestamp(value: Any) -> datetime | None:
     if parsed.tzinfo is not None:
         parsed = parsed.astimezone(UTC).replace(tzinfo=None)
     return parsed
-
-
-def _source_id(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _registry_member_paths(db: CaseDB, source_ids: object) -> frozenset[str] | None:
@@ -168,8 +160,10 @@ def _project_registry_source_state(
     every member would make source-level aggregation multiply the result.
     """
     ordered_ids = list(dict.fromkeys(str(item) for item in source_ids if item))
-    member_status = ingest_status if row_count > 0 else (
-        "empty" if ingest_status == "normalized" else ingest_status
+    member_status = (
+        ingest_status
+        if row_count > 0
+        else ("empty" if ingest_status == "normalized" else ingest_status)
     )
     for index, source_id in enumerate(ordered_ids):
         register_evidence_source(
@@ -321,7 +315,7 @@ def normalize_registry(
         "SELECT dataset_id, raw_path, member_source_ids FROM registry_datasets "
         "WHERE raw_path IS NOT NULL AND raw_path != '' ORDER BY dataset_id"
     ).fetchall()
-    selected = {str(key) for key in (source_keys or ()) if key}
+    selected = None if source_keys is None else {str(key) for key in source_keys if key}
     total = 0
     for dataset_id, raw_path, member_source_ids in rows:
         # A newer dataset with the same trusted identity may have replaced this
@@ -339,9 +333,7 @@ def normalize_registry(
             if isinstance(member_source_ids, str)
             else member_source_ids or []
         )
-        if selected and not any(
-            str(source).startswith(tuple(selected)) for source in source_ids
-        ):
+        if selected is not None and not (set(map(str, source_ids)) & selected):
             continue
         path = Path(str(raw_path))
         if not path.exists():
@@ -623,7 +615,9 @@ class RegistryArtifactAdapter:
     ) -> IngestResult:
         from forensia.evidence.artifacts import IngestResult
 
-        digest = _dataset_id(dataset, source_ids)[:12]
+        # Keep the complete parser/config/member digest in the raw filename so
+        # distinct datasets cannot collide through a shortened prefix.
+        digest = _dataset_id(dataset, source_ids)
         output_path = case.raw_dir / f"registry-{digest}.jsonl"
         temporary_path = output_path.with_suffix(".jsonl.tmp")
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -637,7 +631,7 @@ class RegistryArtifactAdapter:
                         + "\n"
                     )
             temporary_path.replace(output_path)
-        except Exception:
+        except BaseException:
             temporary_path.unlink(missing_ok=True)
             raise
         if progress_callback:
@@ -648,7 +642,7 @@ class RegistryArtifactAdapter:
         self,
         case: Case,
         path: Path,
-        source_sha: str | None = None,
+        source_sha: str,
         progress_callback=None,
     ) -> IngestResult:
         from forensia.evidence.artifacts import IngestResult
@@ -660,7 +654,7 @@ class RegistryArtifactAdapter:
         return self.ingest_dataset(
             case,
             dataset,
-            source_ids={path: source_sha or _source_id(path)},
+            source_ids={path: source_sha},
             progress_callback=progress_callback,
         )
 

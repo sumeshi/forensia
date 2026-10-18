@@ -1,0 +1,1036 @@
+"""Hypothesis admission, merge, and settlement lifecycle."""
+
+from __future__ import annotations
+
+import json
+import logging
+import re
+from typing import Any
+
+from forensia.core.identifiers import gap_hypothesis_id
+from forensia.core.log import log as _log
+from forensia.core.session import Hypothesis, SessionState
+from forensia.core.textutil import normalize_text as _normalize_text
+from forensia.db.database import CaseDB
+from forensia.investigation.hypotheses.hypothesis_model import (
+    _best_hypothesis_match,
+    _description_has_material_unknown,
+    _extract_entities_from_text,
+    _extract_refuted_tokens,
+    _filter_valid_entities,
+    _gap_references_refuted,
+    _hypothesis_key,
+    _merge_hypothesis_fields,
+    _merge_string_lists,
+    _propose_confirm_when,
+    hypothesis_evidence_strength,
+)
+from forensia.investigation.hypotheses.hypothesis_store import (
+    _all_hypotheses,
+    _next_hypothesis_id,
+    _upsert_hypothesis,
+)
+from forensia.investigation.hypotheses.relations import propagate_verdict
+from forensia.investigation.work_state import resolve_linked_work
+from forensia.knowledge.catalog import (
+    event_context_eligible,
+    event_context_from_row,
+    load_event_id_hints,
+)
+from forensia.knowledge.rules.loader import load_rule_by_id
+from forensia.report.sections.section_taxonomy import (
+    guess_related_sections as _guess_related_sections,
+)
+from forensia.report.sections.section_taxonomy import (
+    sections_for_keypoint as _sections_for_keypoint,
+)
+
+logger = logging.getLogger(__name__)
+
+MAX_ACTIVE_HYPOTHESES = 8
+
+
+def merge_active_hypotheses(
+    db: CaseDB,
+    current: list[Hypothesis],
+    updates: list[Hypothesis],
+    resolved: list[Hypothesis],
+    session_id: str,
+    origin: str,
+    *,
+    alias_map_out: dict[str, str] | None = None,
+) -> list[Hypothesis]:
+    """Merge hypotheses atomically for callers without an open transaction."""
+    with db.transaction():
+        return _merge_active_hypotheses_in_transaction(
+            db,
+            current,
+            updates,
+            resolved,
+            session_id,
+            origin,
+            alias_map_out=alias_map_out,
+        )
+
+
+def _merge_active_hypotheses_in_transaction(
+    db: CaseDB,
+    current: list[Hypothesis],
+    updates: list[Hypothesis],
+    resolved: list[Hypothesis],
+    session_id: str,
+    origin: str,
+    *,
+    alias_map_out: dict[str, str] | None = None,
+) -> list[Hypothesis]:
+    """Merge incoming hypotheses into the active set with dedup, aliasing, and an active cap."""
+
+    def independent_report_requests(left: Hypothesis, right: Hypothesis) -> bool:
+        return (left.source_gap_id is not None or right.source_gap_id is not None) and (
+            left.source_gap_id != right.source_gap_id or left.id != right.id
+        )
+
+    resolved_ids = {item.id for item in resolved}
+    by_id = {item.id: item for item in current if item.id not in resolved_ids}
+    skipped_for_cap: list[str] = []
+    alias_map: dict[str, str] = {}
+    active_by_description = {
+        _hypothesis_key(item): item for item in current if item.id not in resolved_ids
+    }
+    resolved_by_description = {_hypothesis_key(item): item for item in resolved}
+    for item in updates:
+        if item.status in {"confirmed", "refuted"}:
+            continue
+        same_id_resolved = next(
+            (candidate for candidate in resolved if candidate.id == item.id), None
+        )
+        if item.id in resolved_ids:
+            if same_id_resolved is None or (
+                _merge_hypothesis_fields(same_id_resolved, item).verification_spec
+                == same_id_resolved.verification_spec
+            ):
+                if same_id_resolved is not None:
+                    alias_map[item.id] = same_id_resolved.id
+                continue
+        incoming_id = alias_map.get(item.id, item.id)
+        # FIRST: Check against resolved hypotheses — prevents the same claim
+        # from existing as both confirmed AND refuted.
+        resolved_existing = same_id_resolved
+        if resolved_existing is None and item.source_gap_id is None:
+            resolved_existing = resolved_by_description.get(_hypothesis_key(item))
+            if resolved_existing and independent_report_requests(
+                resolved_existing, item
+            ):
+                resolved_existing = None
+        resolved_score: float | None = None
+        if resolved_existing is None:
+            best_resolved, best_resolved_score = _best_hypothesis_match(
+                [
+                    candidate
+                    for candidate in resolved
+                    if not independent_report_requests(candidate, item)
+                ],
+                item,
+            )
+            if best_resolved is not None and best_resolved_score > 0.85:
+                resolved_existing = best_resolved
+                resolved_score = best_resolved_score
+        if resolved_existing is not None:
+            resolved_strength = hypothesis_evidence_strength(resolved_existing)
+
+            merged = _merge_hypothesis_fields(resolved_existing, item)
+            if merged.verification_spec != resolved_existing.verification_spec:
+                # Keep the claim identity and old EvidenceLinks, but reopen
+                # the hypothesis: its prior verdict did not assess this Spec.
+                _reopen_hypothesis_after_spec_change(
+                    db, merged, origin=origin, session_id=session_id
+                )
+                resolved[:] = [entry for entry in resolved if entry.id != merged.id]
+                resolved_ids.discard(merged.id)
+                by_id[merged.id] = merged
+                active_by_description[_hypothesis_key(merged)] = merged
+                resolved_by_description.pop(
+                    _hypothesis_key(resolved_existing),
+                    None,
+                )
+                alias_map[item.id] = merged.id
+                _log(
+                    "HYPOTHESIS",
+                    f"reopened {merged.id}: VerificationSpec changed after "
+                    f"{resolved_existing.verdict}; reassessment required",
+                )
+                continue
+
+            # Default: bind to resolved. The resolved hypothesis's verdict
+            # stands — do NOT create a duplicate active hypothesis.
+            alias_map[item.id] = merged.id
+            resolved_by_description[_hypothesis_key(merged)] = merged
+            _upsert_hypothesis(
+                db,
+                merged,
+                origin="resolved",
+                session_id=session_id,
+                resolved_session=session_id,
+            )
+            score_str = (
+                f"score={resolved_score:.2f}"
+                if resolved_score is not None
+                else "exact match"
+            )
+            _log(
+                "HYPOTHESIS",
+                f"bound to resolved {resolved_existing.id} "
+                f"(verdict={resolved_existing.verdict}, "
+                f"strength={resolved_strength}): "
+                f"incoming similar ({score_str}); "
+                f"not creating duplicate",
+            )
+            continue
+        # SECOND: Check against active hypotheses for dedup/merge within the
+        # active set. This runs AFTER the resolved check so that a near-duplicate
+        # of a resolved hypothesis is always caught regardless of coincidental
+        # similarity with an existing active hypothesis.
+        existing = by_id.get(incoming_id)
+        if existing is None and item.source_gap_id is None:
+            existing = active_by_description.get(_hypothesis_key(item))
+            if existing and independent_report_requests(existing, item):
+                existing = None
+        if existing is None:
+            best_active, best_active_score = _best_hypothesis_match(
+                [
+                    candidate
+                    for candidate in by_id.values()
+                    if not independent_report_requests(candidate, item)
+                ],
+                item,
+            )
+            if best_active is not None and best_active_score > 0.85:
+                existing = best_active
+        if existing is not None:
+            merged = _merge_hypothesis_fields(existing, item)
+            reopened = False
+            if merged.verification_spec != existing.verification_spec:
+                has_prior_assessment = (
+                    db.execute(
+                        "SELECT 1 FROM hypothesis_evidence WHERE hypothesis_id = ? "
+                        "AND COALESCE(assessment_id, '') <> '' LIMIT 1",
+                        [existing.id],
+                    ).fetchone()
+                    is not None
+                )
+                if has_prior_assessment:
+                    # The link currentness check compares its captured Spec
+                    # fingerprint with this new canonical Spec. Keep history;
+                    # force a fresh assessment under the updated contract.
+                    _reopen_hypothesis_after_spec_change(
+                        db, merged, origin=origin, session_id=session_id
+                    )
+                    reopened = True
+            alias_map[item.id] = merged.id
+            by_id[merged.id] = merged
+            if existing.id != merged.id:
+                by_id.pop(existing.id, None)
+            active_by_description[_hypothesis_key(merged)] = merged
+            if not reopened:
+                _upsert_hypothesis(db, merged, origin=origin, session_id=session_id)
+            continue
+        # Cap the active set. Updates to existing hypotheses already happened
+        # above (in the merge branches); only NEW additions are subject to the
+        # cap. Excess hypotheses are dropped (not persisted) so the planner
+        # prompt stays bounded across cycles.
+        if len(by_id) >= MAX_ACTIVE_HYPOTHESES:
+            skipped_for_cap.append(item.description or item.id)
+            continue
+        assigned_id = incoming_id
+        if not re.fullmatch(r"H-\d{3}", assigned_id):
+            assigned_id = _next_hypothesis_id(db)
+        while assigned_id in by_id or assigned_id in resolved_ids:
+            assigned_id = f"H-{int(assigned_id.split('-', 1)[1]) + 1:03d}"
+        alias_map[item.id] = assigned_id
+        hypothesis = Hypothesis(
+            id=assigned_id,
+            description=item.description,
+            status="active",
+            verdict=None,
+            summary=item.summary,
+            source_rule_ids=_merge_string_lists(item.source_rule_ids),
+            source_decl_id=item.source_decl_id,
+            source_gap_id=item.source_gap_id,
+            required_entities=_merge_string_lists(item.required_entities),
+            verification_spec=item.verification_spec.model_copy(deep=True),
+            target_keypoint_id=item.target_keypoint_id,
+        )
+        by_id[assigned_id] = hypothesis
+        active_by_description[_hypothesis_key(hypothesis)] = hypothesis
+        _upsert_hypothesis(db, hypothesis, origin=origin, session_id=session_id)
+    if skipped_for_cap:
+        _log(
+            "CAP",
+            f"active hypothesis cap reached ({MAX_ACTIVE_HYPOTHESES}); skipped {len(skipped_for_cap)} new: {skipped_for_cap[:3]}…",
+        )
+    if alias_map_out is not None:
+        alias_map_out.update(alias_map)
+    return list(by_id.values())
+
+
+def _interpolate_follow_up(
+    follow_up: str,
+    sample_rows: list[dict[str, Any]] | None,
+) -> str | None:
+    """Render {placeholder} keys in a follow-up question from query sample rows.
+
+    Returns the interpolated text, or None when any placeholder cannot be
+    resolved (such follow-ups must be skipped, never stored verbatim).
+    """
+    keys = re.findall(r"\{(\w+)\}", follow_up)
+    if not keys:
+        return follow_up
+    rendered = follow_up
+    for key in keys:
+        value = None
+        for row in sample_rows or []:
+            if not isinstance(row, dict):
+                continue
+            candidate = row.get(key)
+            if candidate is not None and str(candidate).strip():
+                value = str(candidate).strip()
+                break
+        if value is None:
+            return None
+        rendered = rendered.replace("{" + key + "}", value)
+    return rendered
+
+
+def _feed_verdict_to_timeline(
+    db: CaseDB,
+    hypothesis_id: str,
+    verdict: str,
+    description: str,
+    sample_rows: list[dict[str, Any]] | None,
+    verification_spec: Any,
+) -> None:
+    """Place a verdict at the verified evidence time, never an unrelated timestamp."""
+    from datetime import datetime
+
+    from forensia.db.evidence_lookup import (
+        canonical_record_table,
+        fetch_evidence_records,
+    )
+    from forensia.investigation.verification.assessment import (
+        _observation_value_matches,
+    )
+
+    if verdict not in {"confirmed", "refuted"}:
+        return
+    conditions = (
+        verification_spec.support_conditions
+        if verdict == "confirmed"
+        else verification_spec.refute_conditions
+    )
+    observation = conditions.get("observation")
+    if "observation" in verification_spec.support_conditions and not observation:
+        return
+    ids = [
+        str(row.get("evidence_id") or row.get("artifact_id"))
+        for row in sample_rows or []
+        if isinstance(row, dict) and (row.get("evidence_id") or row.get("artifact_id"))
+    ]
+    records = fetch_evidence_records(db, ids)
+    timestamp = None
+    host = ""
+    evidence_id = ""
+    for evidence_id in ids:
+        row = records.get(evidence_id, {})
+        if observation:
+            if row.get("_source") != canonical_record_table(observation["family"]):
+                continue
+            targets = observation.get("evidence_ids") or []
+            if targets and evidence_id not in targets:
+                continue
+            candidate = row.get(observation["field"])
+            if not _observation_value_matches(
+                candidate, observation["operator"], observation["value"]
+            ):
+                continue
+        else:
+            candidate = (
+                row.get("timestamp") if row.get("_source") == "evtx_events" else None
+            )
+        if isinstance(candidate, datetime):
+            timestamp = candidate
+            host = str(row.get("computer") or row.get("host") or "")
+            break
+    if timestamp is None:
+        return
+    try:
+        db.execute(
+            """
+            INSERT INTO case_timeline (entry_id, timestamp, source, ref_id, host, summary, evidence_id)
+            VALUES (?, ?, 'verdict', ?, ?, ?, ?)
+            ON CONFLICT (entry_id) DO NOTHING
+            """,
+            (
+                f"tl-verdict-{hypothesis_id}",
+                timestamp,
+                hypothesis_id,
+                host,
+                f"{verdict}: {description}"[:200],
+                evidence_id,
+            ),
+        )
+    except Exception:
+        logger.debug("Failed to insert verdict entry into case_timeline", exc_info=True)
+
+
+# _guess_related_sections: canonical implementation moved to report/section_taxonomy.py
+# Re-exported via the import at the top of this file.
+
+
+# _sections_for_keypoint: canonical implementation moved to report/section_taxonomy.py
+# Re-exported via the import at the top of this file.
+
+
+def mark_section_stale(db: CaseDB, section_key: str) -> None:
+    """Mark a report section stale when its supporting judgment changes."""
+    db.execute(
+        "UPDATE report_sections SET stale = TRUE WHERE section_key = ?",
+        [section_key],
+    )
+
+
+def _reopen_hypothesis_after_spec_change(
+    db: CaseDB, hypothesis: Hypothesis, *, origin: str, session_id: str
+) -> None:
+    """Invalidate projections owned by a Hypothesis whose contract changed."""
+    hypothesis.status = "active"
+    hypothesis.verdict = None
+    hypothesis.summary = "Verification requirements changed; reassessment required."
+    db.execute(
+        "UPDATE hypotheses SET selection_count = 0, last_selected_at = NULL, "
+        "next_eligible_at = NULL, blocked_reason = NULL, "
+        "sufficiency_status = 'needs_review', sufficiency_score = NULL, "
+        "sufficiency_reason = 'Verification requirements changed; reassessment required.', "
+        "human_review_required = TRUE WHERE hypothesis_id = ?",
+        [hypothesis.id],
+    )
+    claim_sections: set[str] = set()
+    for claim_id, raw_ids, section_key in db.execute(
+        "SELECT claim_id, hypothesis_ids, section_key FROM claims"
+    ).fetchall():
+        try:
+            hypothesis_ids = (
+                json.loads(raw_ids) if isinstance(raw_ids, str) else raw_ids
+            )
+        except TypeError, ValueError:
+            hypothesis_ids = []
+        if hypothesis.id in (
+            hypothesis_ids if isinstance(hypothesis_ids, list) else []
+        ):
+            if section_key:
+                claim_sections.add(str(section_key))
+            db.execute(
+                "UPDATE claims SET support_status = 'needs_review', updated_at = now() "
+                "WHERE claim_id = ?",
+                [claim_id],
+            )
+
+    stale_sections = claim_sections | set(
+        _sections_for_keypoint(hypothesis.target_keypoint_id)
+        if hypothesis.target_keypoint_id
+        else []
+    )
+    stale_sections.update(_guess_related_sections(hypothesis.description))
+    for rule_id in hypothesis.source_rule_ids:
+        rule = load_rule_by_id(rule_id)
+        if rule:
+            declaration_id = hypothesis.source_decl_id or hypothesis.id
+            declaration = next(
+                (item for item in rule.hypotheses if item.id == declaration_id), None
+            )
+            if declaration and declaration.report_sections:
+                stale_sections.update(declaration.report_sections)
+    for section_key in stale_sections:
+        # This is invalidation of an old judgment, not a generated refresh;
+        # the update-count cap must not leave that judgment looking current.
+        db.execute(
+            "UPDATE report_sections SET stale = TRUE WHERE section_key = ?",
+            [section_key],
+        )
+
+    db.execute(
+        "UPDATE investigation_tasks SET status = 'in_progress', blocked_reason = NULL, "
+        "updated_at = now() WHERE hypothesis_id = ? AND status = 'resolved'",
+        [hypothesis.id],
+    )
+    db.execute(
+        "UPDATE report_gaps SET status = 'in_progress', updated_at = now() "
+        "WHERE hypothesis_id = ? AND status = 'resolved'",
+        [hypothesis.id],
+    )
+    _upsert_hypothesis(db, hypothesis, origin=origin, session_id=session_id)
+
+
+def resolve_hypothesis(
+    db: CaseDB,
+    state: SessionState,
+    hypothesis_id: str,
+    verdict: str,
+    summary: str,
+    session_id: str,
+    sample_rows: list[dict[str, Any]] | None = None,
+) -> None:
+    """Resolve a hypothesis atomically for callers without an open transaction."""
+    with db.transaction():
+        _resolve_hypothesis_in_transaction(
+            db,
+            state,
+            hypothesis_id,
+            verdict,
+            summary,
+            session_id,
+            sample_rows=sample_rows,
+        )
+
+
+def _resolve_hypothesis_in_transaction(
+    db: CaseDB,
+    state: SessionState,
+    hypothesis_id: str,
+    verdict: str,
+    summary: str,
+    session_id: str,
+    sample_rows: list[dict[str, Any]] | None = None,
+) -> None:
+    """Mark a hypothesis as confirmed or refuted, generate follow-ups, and mark stale sections.
+
+    R8-01: Enforces DB invariants:
+    - confirmed requires sufficiency_status == 'sufficient'
+    - confirmed requires at least 1 supporting EvidenceLink
+    If invariants are violated, the hypothesis is set to needs_review instead.
+    """
+
+    # R8-01: DB invariant enforcement for confirmed verdicts
+    needs_review_blocked = False
+    if verdict == "confirmed":
+        from forensia.evidence.links import load_evidence_links
+
+        # Check sufficiency invariant
+        suff_row = db.execute(
+            "SELECT sufficiency_status FROM hypotheses WHERE hypothesis_id = ?",
+            (hypothesis_id,),
+        ).fetchone()
+        suff_status = str(suff_row[0]) if suff_row else "unknown"
+        if suff_status != "sufficient":
+            _log(
+                "INVARIANT",
+                f"{hypothesis_id} confirmed blocked: sufficiency_status={suff_status}",
+            )
+            needs_review_blocked = True
+            summary = (
+                f"[invariant] Confirmed blocked: sufficiency_status={suff_status}. "
+                f"Original: {summary}"
+            )
+
+        # Check EvidenceLink invariant
+        links = load_evidence_links(db, hypothesis_id, current_only=True)
+        supporting = [l for l in links if l.role == "supporting"]
+        if not supporting:
+            _log(
+                "INVARIANT",
+                f"{hypothesis_id} confirmed blocked: no supporting evidence links",
+            )
+            needs_review_blocked = True
+            summary = (
+                f"[invariant] Confirmed blocked: no supporting EvidenceLink. "
+                f"Original: {summary}"
+            )
+
+    # If invariant blocked, set to needs_review and keep in active set
+    if needs_review_blocked:
+        for item in state.active_hypotheses:
+            if item.id == hypothesis_id:
+                item.status = "needs_review"
+                item.verdict = None
+                item.summary = summary
+                _upsert_hypothesis(
+                    db=db,
+                    hypothesis=item,
+                    origin="invariant_blocked",
+                    session_id=session_id,
+                )
+                _log(
+                    "RESOLVE",
+                    f"{hypothesis_id} — needs_review (invariant blocked confirmed)",
+                )
+                break
+        return
+
+    remaining: list[Hypothesis] = []
+    stale_sections: list[str] = []
+    follow_up_hypotheses: list[Hypothesis] = []
+    known_by_description: set[str] = {
+        _normalize_text(item.description) for item in _all_hypotheses(state)
+    }
+    resolved_by_description: set[str] = {
+        _normalize_text(item.description) for item in state.resolved_hypotheses
+    }
+    for item in state.active_hypotheses:
+        if item.id == hypothesis_id:
+            resolved = Hypothesis(
+                id=item.id,
+                description=item.description,
+                status=verdict
+                if verdict in {"untestable"}
+                else ("confirmed" if verdict == "confirmed" else "refuted"),
+                verdict=verdict,
+                summary=summary,
+                source_rule_ids=item.source_rule_ids,
+                source_decl_id=item.source_decl_id,
+                source_gap_id=item.source_gap_id,
+                required_entities=item.required_entities,
+                verification_spec=item.verification_spec,
+                target_keypoint_id=item.target_keypoint_id,
+            )
+            state.resolved_hypotheses.append(resolved)
+            _upsert_hypothesis(
+                db=db,
+                hypothesis=resolved,
+                origin="check_new",
+                session_id=session_id,
+                resolved_session=session_id,
+            )
+            if verdict in {"confirmed", "refuted"}:
+                resolve_linked_work(db, hypothesis_id)
+            # Sufficiency is independently assessed and persisted before
+            # settlement.  Never rewrite it merely to agree with a verdict.
+            # Propagate verdict through relations
+            propagate_verdict(db, hypothesis_id=hypothesis_id, verdict=verdict)
+            _feed_verdict_to_timeline(
+                db,
+                item.id,
+                verdict,
+                item.description,
+                sample_rows,
+                item.verification_spec,
+            )
+            # R5-03: Mark stale based on target_keypoint_id (runs regardless of source_rule_ids)
+            if item.target_keypoint_id:
+                stale_sections.extend(_sections_for_keypoint(item.target_keypoint_id))
+            # R5-03: Mark stale based on description keyword matching
+            stale_sections.extend(_guess_related_sections(item.description))
+            # DESIGN-2: Mark related sections as stale based on report_sections declaration
+            # DESIGN-4: Generate follow-up gaps from confirmed hypothesis
+            for source_rule_id in item.source_rule_ids:
+                rule = load_rule_by_id(source_rule_id)
+                if rule:
+                    # T-07: Use source_decl_id to find the exact declaration (fall back to id match)
+                    decl_id_lookup = (
+                        item.source_decl_id if item.source_decl_id else item.id
+                    )
+                    decl = next(
+                        (h for h in rule.hypotheses if h.id == decl_id_lookup), None
+                    )
+                    # BUG-3 fallback: try matching by declaration id == item.id when source_decl_id match fails
+                    if decl is None and item.source_decl_id is not None:
+                        decl = next(
+                            (h for h in rule.hypotheses if h.id == item.id), None
+                        )
+                    if decl and decl.report_sections:
+                        stale_sections.extend(decl.report_sections)
+                    if verdict == "confirmed" and decl and decl.follow_up_questions:
+                        for follow_up in decl.follow_up_questions:
+                            # R2-03: interpolate {placeholders} from the confirming
+                            # query's sample rows; skip unresolvable follow-ups.
+                            rendered = _interpolate_follow_up(follow_up, sample_rows)
+                            if rendered is None:
+                                _log(
+                                    "RESOLVE",
+                                    f"[follow-up] skipped (unresolved placeholders): {follow_up[:80]}",
+                                )
+                                continue
+                            normalized = _normalize_text(rendered)
+                            if (
+                                normalized not in known_by_description
+                                and normalized not in resolved_by_description
+                            ):
+                                follow_up_hypotheses.append(
+                                    Hypothesis(
+                                        id=gap_hypothesis_id(rendered),
+                                        description=rendered,
+                                        status="active",
+                                        verdict=None,
+                                        summary="",
+                                        source_rule_ids=[source_rule_id],
+                                        required_entities=_extract_entities_from_text(
+                                            rendered
+                                        ),
+                                        confirm_when=_propose_confirm_when(
+                                            _extract_entities_from_text(rendered)
+                                        ),
+                                    )
+                                )
+        else:
+            remaining.append(item)
+    state.active_hypotheses = remaining
+
+    # Mark stale sections in report_sections table
+    seen_sections: set[str] = set()
+    for section_key in stale_sections:
+        if section_key in seen_sections:
+            continue
+        seen_sections.add(section_key)
+        mark_section_stale(db, section_key)
+
+    # DESIGN-4: Add follow-up hypotheses through the same admission gate.
+    for follow_up in follow_up_hypotheses:
+        ok, reason = admit_new_hypothesis(follow_up, state)
+        if not ok:
+            _log(
+                "HYPOTHESIS",
+                f"follow_up rejected: '{follow_up.description[:80]}' reason={reason}",
+            )
+            continue
+        state.active_hypotheses = _merge_active_hypotheses_in_transaction(
+            db=db,
+            current=state.active_hypotheses,
+            updates=[follow_up],
+            resolved=state.resolved_hypotheses,
+            session_id=session_id,
+            origin="follow_up",
+        )
+
+
+ADMISSION_THRESHOLD = 0.85
+
+
+def _claim_spec_conformance_error(candidate: Hypothesis) -> str | None:
+    """Validate the small claim vocabulary the deterministic checker supports."""
+
+    description = candidate.description or ""
+    support = candidate.verification_spec.support_conditions
+    if not support:
+        return "empty-verification-spec"
+    if "observation" in support:
+        from forensia.knowledge.coverage import observation_claim_scope_error
+
+        return observation_claim_scope_error(description, candidate.verification_spec)
+    event_ids = support.get("co_observed_event_ids")
+    if not isinstance(event_ids, list) or not event_ids:
+        return "non-testable-verification-spec"
+
+    # A bare event ID is not enough to establish semantics for providers that
+    # reuse IDs.  When the planner supplies event_contexts, validate each
+    # declaration against the catalog before checking claim wording.  This is
+    # especially important for 4104: Application/Winlogon 4104 is not a
+    # PowerShell script-block event.
+    event_contexts = support.get("event_contexts") or []
+    if event_contexts:
+        if not isinstance(event_contexts, list):
+            return "invalid-event-contexts"
+        context_by_id: dict[int, list[dict[str, Any]]] = {}
+        for context in event_contexts:
+            if not isinstance(context, dict):
+                return "invalid-event-context"
+            try:
+                context_event_id = int(context.get("event_id"))
+            except TypeError, ValueError:
+                return "invalid-event-context-event-id"
+            context_by_id.setdefault(context_event_id, []).append(context)
+        for raw_event_id in event_ids:
+            try:
+                event_id = int(raw_event_id)
+            except TypeError, ValueError:
+                continue
+            contexts = context_by_id.get(event_id)
+            hint = load_event_id_hints().get(event_id) or {}
+            if not contexts and (hint.get("channels") or hint.get("providers")):
+                return f"event-context-missing:{event_id}"
+            # Unconstrained catalog IDs retain their legacy numeric semantics;
+            # an event_contexts list need not enumerate every co-observed ID.
+            if not contexts:
+                continue
+            if not any(
+                _event_context_eligible(
+                    event_id,
+                    channel=context.get("channel"),
+                    provider=context.get("provider"),
+                )
+                for context in contexts
+            ):
+                return f"event-context-mismatch:{event_id}"
+    else:
+        for raw_event_id in event_ids:
+            try:
+                event_id = int(raw_event_id)
+            except TypeError, ValueError:
+                continue
+            hint = load_event_id_hints().get(event_id) or {}
+            if hint.get("channels") or hint.get("providers"):
+                return f"event-context-missing:{event_id}"
+
+    # Event meaning is declarative. Do not allow a candidate to reinterpret a
+    # known event (for example 4672 as process creation or 4624 as password
+    # reset) merely by putting that event ID in its VerificationSpec.
+    description_lower = description.casefold()
+    for raw_event_id in event_ids:
+        try:
+            event_id = int(raw_event_id)
+        except TypeError, ValueError:
+            continue
+        hint = load_event_id_hints().get(event_id) or {}
+        claim_terms = [
+            str(term).strip().casefold()
+            for term in hint.get("claim_terms") or []
+            if str(term).strip()
+        ]
+        # Rulepack event IDs are semantic authorities, not just a numeric
+        # vocabulary.  If a description explicitly names a lifecycle action,
+        # require the action terms declared for that event.  This rejects, for
+        # example, "user deleted" attached to 4722 and "user enabled" attached
+        # to 4727 while allowing deliberately non-specific investigation text.
+        if claim_terms:
+            all_claim_terms = {
+                str(term).strip().casefold()
+                for other_hint in load_event_id_hints().values()
+                for term in other_hint.get("claim_terms") or []
+                if str(term).strip()
+            }
+            explicit_actions = {
+                term for term in all_claim_terms if term in description_lower
+            }
+            if explicit_actions and not any(
+                term in description_lower for term in claim_terms
+            ):
+                return f"event-semantic-mismatch:{event_id}"
+        for disallowed in hint.get("disallowed_without_extra") or []:
+            phrase = str(disallowed or "").strip().casefold()
+            # Parenthesized rationale is metadata, not part of the claim
+            # vocabulary (e.g. "process creation (4672 is ...)").
+            claim_phrase = phrase.split(" (", 1)[0].strip()
+            if claim_phrase and claim_phrase in description_lower:
+                return f"event-semantic-mismatch:{event_id}"
+
+    minute_match = re.search(r"\bwithin\s+(\d+)\s+minutes?\b", description, re.I)
+    if minute_match and support.get("within_minutes") != int(minute_match.group(1)):
+        return "claim-spec-time-window-mismatch"
+
+    same_entities = {
+        str(value).strip().lower()
+        for value in (support.get("same_entities") or [])
+        if str(value).strip()
+    }
+    for entity in candidate.required_entities:
+        normalized = str(entity).strip().lower()
+        if (
+            re.search(
+                rf"\b(?:same|single)\s+{re.escape(normalized)}\b", description, re.I
+            )
+            and normalized not in same_entities
+        ):
+            return "claim-spec-entity-correlation-missing"
+
+    if re.search(
+        r"\b(?:repeated|multiple)\s+(?:\w+\s+){0,2}(?:events?|logons?|attempts?|connections?|executions?)\b",
+        description,
+        re.I,
+    ):
+        min_count = support.get("min_count")
+        if (
+            not isinstance(min_count, int)
+            or isinstance(min_count, bool)
+            or min_count < 2
+        ):
+            return "claim-spec-min-count-missing"
+    return None
+
+
+def _event_context_eligible(
+    event_id: int,
+    *,
+    channel: Any = None,
+    provider: Any = None,
+) -> bool:
+    """Small local seam so admission remains easy to test and catalog-owned."""
+
+    from forensia.knowledge.catalog import event_context_eligible
+
+    return event_context_eligible(event_id, channel=channel, provider=provider)
+
+
+def qualify_event_contexts(candidate: Hypothesis, db: CaseDB) -> Hypothesis:
+    """Bind constrained event IDs to eligible contexts observed in this case.
+
+    Rule-seeded and LLM-drafted hypotheses historically carried only numeric
+    IDs.  Derive their channel/provider signature from the authoritative EVTX
+    rows before admission so valid PowerShell 4104 evidence remains testable,
+    while an Application/Winlogon 4104 cannot inherit PowerShell semantics.
+    """
+
+    support = dict(candidate.verification_spec.support_conditions)
+    event_ids = support.get("co_observed_event_ids")
+    if not isinstance(event_ids, list):
+        return candidate
+    declared = support.get("event_contexts")
+    declared_by_id: dict[int, list[dict[str, Any]]] = {}
+    for item in declared or []:
+        if isinstance(item, dict):
+            try:
+                declared_by_id.setdefault(int(item.get("event_id")), []).append(item)
+            except TypeError, ValueError:
+                continue
+    contexts: list[dict[str, Any]] = [
+        item for values in declared_by_id.values() for item in values
+    ]
+    for raw_event_id in event_ids:
+        try:
+            event_id = int(raw_event_id)
+        except TypeError, ValueError:
+            continue
+        hint = load_event_id_hints().get(event_id) or {}
+        if not hint.get("channels") and not hint.get("providers"):
+            continue
+        if declared_by_id.get(event_id):
+            continue
+        try:
+            rows = db.execute(
+                "SELECT DISTINCT channel, "
+                "json_extract_string(raw_json, '$.winlog.provider.name') AS provider "
+                "FROM evtx_events WHERE event_id = ? "
+                "ORDER BY channel NULLS LAST, provider NULLS LAST",
+                (event_id,),
+            ).fetchall()
+        except Exception:
+            rows = []
+        seen: set[tuple[str | None, str | None]] = set()
+        for channel, db_provider in rows:
+            row_channel, provider = event_context_from_row(
+                {"channel": channel, "provider": db_provider}
+            )
+            signature = (row_channel, provider)
+            if signature in seen or not event_context_eligible(
+                event_id, channel=row_channel, provider=provider
+            ):
+                continue
+            seen.add(signature)
+            contexts.append(
+                {"event_id": event_id, "channel": row_channel, "provider": provider}
+            )
+    if contexts:
+        support["event_contexts"] = contexts
+        candidate.verification_spec.support_conditions = support
+    return candidate
+
+
+def admit_new_hypothesis(
+    candidate: Hypothesis,
+    state: SessionState,
+    *,
+    threshold: float = ADMISSION_THRESHOLD,
+) -> tuple[bool, str]:
+    """Unified admission gate for new hypotheses.
+
+    Checks the candidate against **active** AND **resolved** hypotheses for
+    similarity, against **refuted** hypothesis tokens, and validates entity
+    names.  Returns ``(accepted, reason)`` where *reason* is a short label
+    explaining the decision (logged via ``_log('HYPOTHESIS', …)``).
+
+    Replaces the fragmented checks that previously lived in:
+    - ``_dedup_new_hypotheses``  (active-only similarity)
+    - ``_inject_gap_hypotheses``  (inline refuted-token + description checks)
+    - ``check_new`` path          (no gate at all)
+    """
+    description = candidate.description or ""
+    if not description.strip():
+        return False, "empty-description"
+    if re.search(r"\{[A-Za-z_][A-Za-z0-9_]*\}", description):
+        return False, "unresolved-placeholder"
+    if re.search(
+        r"\b(?:account|user|host|computer|process|file|service)\s+(?:none|null)\b|\b(?:none|null)\s+(?:was|on|from|to|for|by)\b",
+        description,
+        re.I,
+    ):
+        return False, "unmaterialized-entity"
+    for entity in candidate.required_entities:
+        if re.search(rf"\bunknown\s+{re.escape(str(entity))}\b", description, re.I):
+            return False, "unmaterialized-entity"
+    # Fail-closed: a durable admitted hypothesis must not name an unknown
+    # src_ip/target_user/None/placeholder.  Such candidates are converted to
+    # bounded gaps (needs_review) by the caller, never stored as claims.
+    if _description_has_material_unknown(description):
+        return False, "material-unknown-entity"
+
+    conformance_error = _claim_spec_conformance_error(candidate)
+    if conformance_error:
+        return False, conformance_error
+
+    # --- 1. Check against RESOLVED hypotheses ----------------------------
+    def independent_request(other: Hypothesis) -> bool:
+        return (
+            candidate.source_gap_id is not None or other.source_gap_id is not None
+        ) and (
+            candidate.source_gap_id != other.source_gap_id or candidate.id != other.id
+        )
+
+    resolved_match, resolved_score = _best_hypothesis_match(
+        [item for item in state.resolved_hypotheses if not independent_request(item)],
+        candidate,
+    )
+    if resolved_match is not None and resolved_score >= threshold:
+        _log(
+            "HYPOTHESIS",
+            f"admission REJECTED (duplicate-of-resolved): "
+            f"'{description[:80]}' ~ {resolved_match.id} "
+            f"(score={resolved_score:.2f})",
+        )
+        return False, "duplicate-of-resolved"
+
+    # --- 2. Check against ACTIVE hypotheses ------------------------------
+    active_match, active_score = _best_hypothesis_match(
+        [item for item in state.active_hypotheses if not independent_request(item)],
+        candidate,
+    )
+    if active_match is not None and active_score >= threshold:
+        _log(
+            "HYPOTHESIS",
+            f"admission REJECTED (duplicate-of-active): "
+            f"'{description[:80]}' ~ {active_match.id} "
+            f"(score={active_score:.2f})",
+        )
+        return False, "duplicate-of-active"
+
+    # --- 3. Check against REFUTED hypothesis tokens ----------------------
+    refuted_descriptions = [
+        h.description
+        for h in state.resolved_hypotheses
+        if h.status == "refuted" and not independent_request(h)
+    ]
+    refuted_tokens = _extract_refuted_tokens(refuted_descriptions)
+    if (
+        "observation" not in candidate.verification_spec.support_conditions
+        and _gap_references_refuted(description, refuted_tokens)
+    ):
+        _log(
+            "HYPOTHESIS",
+            f"admission REJECTED (refuted-claim): "
+            f"'{description[:80]}' contains refuted tokens "
+            f"{sorted(refuted_tokens)[:5]}",
+        )
+        return False, "refuted-claim"
+
+    # --- 4. Entity validity check ----------------------------------------
+    if candidate.required_entities:
+        valid_entities = _filter_valid_entities(candidate.required_entities)
+        requested_entities = {
+            str(value).strip()
+            for value in candidate.required_entities
+            if str(value).strip()
+        }
+        if requested_entities - set(valid_entities):
+            _log(
+                "HYPOTHESIS",
+                f"admission REJECTED (invalid-entities): "
+                f"'{description[:80]}' — entities={candidate.required_entities}",
+            )
+            return False, "invalid-entities"
+
+    return True, "accepted"

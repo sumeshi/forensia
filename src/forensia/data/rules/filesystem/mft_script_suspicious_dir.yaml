@@ -1,0 +1,15 @@
+id: "filesystem-mft-script-user-path"
+title: "Script recorded in a user-writable path"
+severity: medium
+confidence: 0.5
+required_fields:
+- file_name
+- file_path
+tags:
+- filesystem
+- mft
+- script
+query: "SELECT\n    evidence_id,\n    file_name,\n    file_path,\n    extension,\n    size,\n    si_created,\n    si_modified,\n    fn_created,\n    is_deleted\nFROM mft_entries\nWHERE LOWER(extension) IN ('ps1', 'vbs', 'bat', 'cmd', 'js', 'jse', 'hta', 'vbe', 'wsf', 'psm1', 'py', 'jar')\n    AND (\n        LOWER(file_path) LIKE '%/temp/%'\n        OR LOWER(file_path) LIKE '%/appdata/%'\n        OR LOWER(file_path) LIKE '%/programdata/%'\n        OR LOWER(file_path) LIKE '%/$recycle.bin/%'\n        OR LOWER(file_path) LIKE '%/users/public/%'\n    )\n"
+finding:
+  title: "Script in user-writable path: {file_name}"
+  summary: "MFT records script file {file_name} at {file_path}. The path is commonly writable by users; this observation does not establish how the file arrived or whether it ran."

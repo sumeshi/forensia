@@ -66,6 +66,7 @@ class TestLogIntegrityKeypointSelection(unittest.TestCase):
                     channel="Security",
                     event_id=1100,
                     timestamp=datetime(2015, 3, 25, 10, 18, 29),
+                    provider="Microsoft-Windows-Eventlog",
                 )
                 # Benign maintenance event: 104 from a non-Eventlog provider
                 # (Microsoft-Windows-Diagnosis-Scripted/Operational). This
@@ -123,6 +124,7 @@ class TestLogIntegrityKeypointSelection(unittest.TestCase):
                     channel="Security",
                     event_id=1100,
                     timestamp=datetime(2015, 3, 25, 10, 0, 0),
+                    provider="Microsoft-Windows-Eventlog",
                 )
                 db.execute(
                     """
@@ -155,6 +157,7 @@ class TestLogIntegrityKeypointSelection(unittest.TestCase):
                     channel="Security",
                     event_id=1102,
                     timestamp=datetime(2015, 3, 25, 10, 0, 0),
+                    provider="Microsoft-Windows-Eventlog",
                 )
                 phases = _timeline_phase_rows(db)
 

@@ -28,7 +28,11 @@ from forensia.knowledge.catalog import (
 )
 from forensia.knowledge.questions import question_spec_for_answer_spec
 from forensia.knowledge.resources import schema_dir
-from forensia.report.evidence_refs import _report_keypoint_rows, _sql_like_any
+from forensia.report.evidence_refs import (
+    _extract_evidence_ids_from_value,
+    _report_keypoint_rows,
+    _sql_like_any,
+)
 from forensia.report.render.formats import load_report_formats
 from forensia.report.render.markdown import (
     _is_human_report_hidden_column,
@@ -74,19 +78,11 @@ def _coerce_answer_items(value: Any) -> list[Any]:
 def _answer_columns(items: list[Any], preferred: Any = None) -> list[str]:
     columns = _coerce_string_list(preferred)
     seen = set(columns)
-    hidden_reference_fields = {
-        "evidence_id",
-        "finding_id",
-        "evidence_ids",
-        "finding_ids",
-    }
     for item in items:
         if not isinstance(item, dict):
             continue
         for key in item.keys():
             key_text = str(key)
-            if columns and key_text in hidden_reference_fields:
-                continue
             if key_text not in seen:
                 seen.add(key_text)
                 columns.append(key_text)
@@ -127,6 +123,22 @@ def _normalize_structured_answer(
         "missing_reason": normalized_missing,
         "queries_run": normalized_queries,
     }
+    candidates = [
+        item
+        for item in _coerce_answer_items(answer.get("unassessed_candidates"))
+        if isinstance(item, dict) and item.get("candidate_state") == "unassessed"
+    ]
+    if candidates:
+        normalized["unassessed_candidates"] = candidates
+    candidate_search = answer.get("candidate_search")
+    if isinstance(candidate_search, dict) and candidate_search.get("discovery_step_id"):
+        normalized["candidate_search"] = {
+            "discovery_step_id": str(candidate_search["discovery_step_id"]),
+            "contract_id": str(candidate_search.get("contract_id") or ""),
+            "sql": str(candidate_search.get("sql") or ""),
+            "query_truncated": bool(candidate_search.get("query_truncated")),
+            "candidate_count": len(candidates),
+        }
     if normalized_columns:
         normalized["columns"] = normalized_columns
     for key in ("source", "csv_path", "json_path", "answer_spec"):
@@ -136,38 +148,14 @@ def _normalize_structured_answer(
     return normalized
 
 
-def _structured_answers_path(case: Case) -> Path:
-    return case.reports_dir / "structured" / "answers.json"
-
-
-def _load_structured_answers(case: Case) -> list[dict[str, Any]]:
-    path = _structured_answers_path(case)
-    if not path.exists():
-        return []
-    try:
-        parsed = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return []
-    if not isinstance(parsed, list):
-        return []
-    return [item for item in parsed if isinstance(item, dict)]
-
-
 def _safe_answer_filename(answer_id: str) -> str:
     safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(answer_id or "answer")).strip("._")
     return safe or "answer"
 
 
-def _write_structured_answer_csv(case: Case, answer: dict[str, Any]) -> str:
-    items = [item for item in answer.get("answer") or [] if isinstance(item, dict)]
-    columns = _answer_columns(items, answer.get("columns"))
-    if not columns:
-        return ""
-    path = (
-        case.reports_dir
-        / "structured"
-        / f"{_safe_answer_filename(str(answer.get('id') or 'answer'))}.csv"
-    )
+def _write_rows_csv(
+    path: Path, items: list[dict[str, Any]], columns: list[str]
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=columns, extrasaction="ignore")
@@ -187,40 +175,71 @@ def _write_structured_answer_csv(case: Case, answer: dict[str, Any]) -> str:
                 else:
                     row[key] = "" if value is None else str(value)
             writer.writerow(row)
+
+
+def _write_structured_answer_csv(case: Case, answer: dict[str, Any]) -> str:
+    items = [item for item in answer.get("answer") or [] if isinstance(item, dict)]
+    columns = _answer_columns(items, answer.get("columns"))
+    path = (
+        case.reports_dir
+        / "structured"
+        / f"{_safe_answer_filename(str(answer.get('id') or 'answer'))}.csv"
+    )
+    _write_rows_csv(path, items, columns)
     return f"structured/{path.name}"
 
 
-def _persist_structured_answer(case: Case, answer: dict[str, Any]) -> None:
-    path = _structured_answers_path(case)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    answer["json_path"] = "structured/answers.json"
+def _write_unassessed_candidates_csv(case: Case, answer: dict[str, Any]) -> str | None:
+    items = [
+        item
+        for item in answer.get("unassessed_candidates") or []
+        if isinstance(item, dict) and item.get("candidate_state") == "unassessed"
+    ]
+    path = (
+        case.reports_dir
+        / "structured"
+        / "candidates"
+        / f"{_safe_answer_filename(str(answer.get('id') or 'answer'))}.csv"
+    )
+    if not items:
+        path.unlink(missing_ok=True)
+        return None
+    columns = _answer_columns(items)
+    _write_rows_csv(path, items, columns)
+    return path.relative_to(case.reports_dir).as_posix()
+
+
+def _write_structured_answer_export(case: Case, answer: dict[str, Any]) -> None:
+    """Write reproducible exports from the current database-derived answer."""
+    answer_id = _safe_answer_filename(str(answer.get("id") or "answer"))
+    directory = case.reports_dir / "structured"
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{answer_id}.json"
+    answer["json_path"] = f"structured/{path.name}"
     csv_path = _write_structured_answer_csv(case, answer)
     if csv_path:
         answer["csv_path"] = csv_path
-    answers = _load_structured_answers(case)
-    answers = [
-        item
-        for item in answers
-        if str(item.get("id") or "") != str(answer.get("id") or "")
-    ]
-    answers.append(answer)
-    answers.sort(key=lambda item: str(item.get("id") or ""))
+    candidate_csv_path = _write_unassessed_candidates_csv(case, answer)
+    if candidate_csv_path:
+        answer["unassessed_candidates_csv_path"] = candidate_csv_path
+    else:
+        answer.pop("unassessed_candidates_csv_path", None)
     path.write_text(
-        json.dumps(answers, ensure_ascii=False, default=str, indent=2), encoding="utf-8"
+        json.dumps(answer, ensure_ascii=False, default=str, indent=2),
+        encoding="utf-8",
     )
 
 
 def _resolve_max_rows() -> int:
     """Return FORENSIA_REPORT_MARKDOWN_MAX_ROWS from config."""
-    from forensia.config import settings
+    from forensia.config import get_settings
 
-    return max(1, settings.structured_markdown_max_rows)
-
-
-FORENSIA_REPORT_MARKDOWN_MAX_ROWS = _resolve_max_rows()
+    return get_settings().structured_markdown_max_rows
 
 
-def _render_answer_cell(value: Any, format_spec: dict[str, Any]) -> str:
+def _render_answer_cell(
+    value: Any, format_spec: dict[str, Any], *, reference: bool = False
+) -> str:
     max_list_items = max(1, int(format_spec["max_list_items"]))
     max_cell_chars = max(30, int(format_spec["max_cell_chars"]))
     if isinstance(value, (list, tuple)):
@@ -237,7 +256,7 @@ def _render_answer_cell(value: Any, format_spec: dict[str, Any]) -> str:
         .replace("\n", " ")
         .strip()
     )
-    if len(text) > max_cell_chars:
+    if not reference and len(text) > max_cell_chars:
         suffix = str(format_spec["truncated_cell_suffix"])
         return text[: max_cell_chars - len(suffix)].rstrip() + suffix
     return text
@@ -270,7 +289,20 @@ def _render_answer_block(
         body_rows = [
             "| "
             + " | ".join(
-                _render_answer_cell(item.get(key), format_spec) for key in keys
+                _render_answer_cell(
+                    item.get(key),
+                    format_spec,
+                    reference=key
+                    in {
+                        "evidence_id",
+                        "evidence_ids",
+                        "finding_id",
+                        "finding_ids",
+                        "reference",
+                        "references",
+                    },
+                )
+                for key in keys
             )
             + " |"
             for item in preview
@@ -351,15 +383,20 @@ def _structured_answer_interpretation(
     elif tz_name == "UTC":
         tz_basis = " (UTC, timezone undetermined)"
     if not rows:
-        key = (
-            "not_found_interpretation"
-            if status == "not_found"
-            else "insufficient_interpretation"
-        )
+        if answer.get("source") == "investigation":
+            return str(format_spec["pending_investigation_interpretation"]) + tz_basis
+        key = {
+            "not_found": "not_found_interpretation",
+            "wrong_query": "wrong_query_interpretation",
+        }.get(status, "insufficient_interpretation")
         base = str(format_spec[key])
         return base + tz_basis
 
     row_count = len(rows)
+    if answer.get("source") == "investigation" and status == "partial":
+        return str(format_spec["partial_investigation_interpretation"]).format(
+            row_count=row_count, timezone_basis=tz_basis
+        )
     # R7-07: candidate_only status indicates candidates, not confirmed answers
     if status == "candidate_only":
         return (
@@ -369,7 +406,9 @@ def _structured_answer_interpretation(
         )
     answer_spec = answer.get("answer_spec") or answer.get("id", "")
     templates = _load_interpretation_templates()
-    template = templates.get(answer_spec)
+    template = (
+        templates.get(answer_spec) if answer.get("source") != "investigation" else None
+    )
     if template:
         rendered = _render_interpretation_template(template, answer)
     else:
@@ -378,9 +417,7 @@ def _structured_answer_interpretation(
         )
     spec = question_spec_for_answer_spec(str(answer_spec))
     if spec is not None and spec.version_aware:
-        has_version = any(
-            str(row.get("version") or "").strip() for row in rows
-        )
+        has_version = any(str(row.get("version") or "").strip() for row in rows)
         if not has_version:
             rendered += " Version availability was not observed in the evidence (no version implied)."
     return rendered + tz_basis
@@ -405,6 +442,10 @@ def _render_structured_answer_markdown(
     interpretation = _structured_answer_interpretation(
         answer, block_heading, tz_name=tz_name, format_spec=format_spec
     )
+    evidence_ids = _extract_evidence_ids_from_value(answer)
+    references = ", ".join(f"`{ref}`" for ref in evidence_ids[:3])
+    if references:
+        interpretation += f" ({references})"
     spec = question_spec_for_answer_spec(str(answer.get("answer_spec") or ""))
     lead_lines: list[str] = []
     if spec is not None and spec.lead_timestamp:
@@ -425,15 +466,30 @@ def _render_structured_answer_markdown(
     query_lines = [
         f"- {item}" for item in _coerce_string_list(answer.get("queries_run"))
     ]
+    if references:
+        if missing_lines:
+            missing_lines.append(f"- {references}")
+        if query_lines:
+            query_lines.append(f"- {references}")
     data_lines = (
         [f"- JSON: {answer.get('json_path')}"] if answer.get("json_path") else []
     )
     if answer.get("csv_path"):
         data_lines.append(f"- CSV: {answer.get('csv_path')}")
+    if answer.get("unassessed_candidates_csv_path"):
+        data_lines.append(
+            f"- Unassessed candidates CSV: {answer['unassessed_candidates_csv_path']}"
+        )
     if not data_lines:
         data_lines = [f"- {labels['none']}"]
     if not query_lines:
         query_lines = [f"- {labels['none']}"]
+    status = str(answer.get("status") or "").strip().lower()
+    answer_heading = (
+        headings["observed_evidence"]
+        if answer.get("source") == "investigation" and status == "partial"
+        else headings["answer"]
+    )
     lines = [
         f"## {block_heading}",
         "",
@@ -445,11 +501,45 @@ def _render_structured_answer_markdown(
         *([""] if lead_lines else []),
         interpretation,
         "",
-        f"### {headings['answer']}",
+        f"### {answer_heading}",
         *answer_block,
         "",
     ]
-    status = str(answer.get("status") or "").strip().lower()
+    candidates = [
+        item
+        for item in answer.get("unassessed_candidates") or []
+        if isinstance(item, dict) and item.get("candidate_state") == "unassessed"
+    ]
+    if candidates:
+        candidate_heading = headings["unassessed_candidates"]
+        candidate_search = answer.get("candidate_search") or {}
+        discovery_step_id = str(candidate_search.get("discovery_step_id") or "")
+        lines.extend(
+            [
+                f"### {candidate_heading}",
+                "",
+                "These results have not completed assessment for this question and do not establish its answer.",
+            ]
+        )
+        if candidate_search.get("query_truncated"):
+            lines.append(
+                "The search was incomplete because it reached the result limit."
+            )
+        if discovery_step_id:
+            lines.append(f"Discovery step: `{discovery_step_id}`")
+        if candidate_search.get("sql"):
+            lines.extend(["", "```sql", str(candidate_search["sql"]), "```"])
+        lines.extend(
+            [
+                "",
+                *_render_answer_block(
+                    candidates,
+                    max_rows=_resolve_max_rows(),
+                    format_spec=format_spec,
+                ),
+                "",
+            ]
+        )
     if status != "answered" or missing_lines:
         lines.append(f"### {headings['missing_reason']}")
         lines.extend(missing_lines if missing_lines else [f"- {labels['none']}"])
@@ -529,7 +619,16 @@ def _add_local_time_columns(
         for c in columns
         if any(c.endswith(s) or c == s for s in _TIMESTAMP_COLUMN_SUFFIXES)
         or c
-        in ("date", "logon_time", "shutdown_time", "last_exec_time", "artifact_time")
+        in (
+            "logon_time",
+            "shutdown_time",
+            "last_exec_time",
+            "artifact_time",
+            "first_startup",
+            "first_logon",
+            "last_logoff",
+            "last_shutdown",
+        )
     ]
     for col in ts_cols:
         local_col = f"{col}_local"
@@ -560,6 +659,8 @@ def _structured_answer(
     status: str | None = None,
     missing_reason: list[str] | None = None,
     source: str = "deterministic_sql",
+    unassessed_candidates: list[dict[str, Any]] | None = None,
+    candidate_search: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     rows, columns = _add_local_time_columns(rows, columns, case)
     resolved_status = status or ("answered" if rows else "not_found")
@@ -573,12 +674,14 @@ def _structured_answer(
             or ([] if rows else ["No matching structured database rows were found."]),
             "queries_run": queries_run,
             "source": source,
+            "unassessed_candidates": unassessed_candidates or [],
+            "candidate_search": candidate_search,
         },
         section_key=section_key,
         block_heading=block_heading,
         status=resolved_status,
     )
-    _persist_structured_answer(case, answer)
+    _write_structured_answer_export(case, answer)
     return answer
 
 

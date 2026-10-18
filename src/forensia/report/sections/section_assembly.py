@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
+from forensia.report.sections.report_input import SectionSource
 from forensia.report.sections.section_quality import _title_from_template_body
 from forensia.report.sections.template_parsing import (
-    parse_template,
     split_template_body,
 )
 
@@ -58,19 +57,54 @@ def section_family(section_key: str) -> str:
     return parts[1] if len(parts) == 2 else parts[0]
 
 
+def block_question_request(
+    section_key: str, block: dict[str, Any]
+) -> dict[str, str] | None:
+    mode = str(block.get("mode") or "").strip().casefold()
+    if block.get("builder") or not (
+        mode in {"question", "benchmark", "structured"}
+        or block.get("answer_spec")
+        or block.get("question")
+    ):
+        return None
+    heading = str(block.get("heading") or "")
+    return {
+        "section_key": section_key,
+        "block_heading": heading,
+        "question_text": "\n".join(
+            (
+                heading,
+                str(block.get("question") or "").strip(),
+                str(block.get("template_body") or ""),
+            )
+        ),
+    }
+
+
 def prepare_section_request(
     case: Case,
     db: CaseDB,
-    template_path: str | Path,
+    source: SectionSource,
     context_sections: dict[str, str],
     report_brief: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Read a section template and normalize block requests for section agents."""
+    """Normalize one section template source into report block requests.
+
+    ``source`` is a :class:`~forensia.report.sections.report_input.SectionSource`
+    — the single normalized section-contract input produced for both the
+    template-directory path and a user ``REPORT.md``.
+    """
     del db
-    template_body, template_meta = parse_template(str(template_path))
-    section_key = Path(template_path).stem
+    template_body = source.body
+    template_meta = source.meta
+    section_key = source.section_key
     title = _title_from_template_body(template_body, section_key)
     template_preamble, blocks = split_template_body(template_body)
+    section_instructions = "\n\n".join(
+        text
+        for text in (template_meta.instructions, template_preamble if blocks else "")
+        if text
+    )
     if not blocks:
         blocks = [
             {
@@ -87,14 +121,9 @@ def prepare_section_request(
         ]
 
     def with_section_instructions(block_body: str) -> str:
-        if not template_meta.instructions:
+        if not section_instructions:
             return block_body
-        return (
-            "<!-- section_instructions:\n"
-            f"{template_meta.instructions}\n"
-            "-->\n"
-            f"{block_body}"
-        )
+        return f"<!-- section_instructions:\n{section_instructions}\n-->\n{block_body}"
 
     block_requests = [
         {
@@ -114,7 +143,7 @@ def prepare_section_request(
         "case": case,
         "section_key": section_key,
         "title": title,
-        "template_path": str(template_path),
+        "template_path": source.template_path,
         "template_preamble": template_preamble,
         "block_requests": block_requests,
         "context_sections": dict(context_sections),

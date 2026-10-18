@@ -1,0 +1,16 @@
+id: "registry-autorun-run-key-reference"
+title: "Run-key entry references a listed path or interpreter"
+severity: "medium"
+confidence: 0.6
+required_fields:
+- key_path
+- value_name
+- hive
+tags:
+- registry
+- autorun
+- configuration
+query: "SELECT\n    artifact_id AS evidence_id,\n    key_path,\n    value_name,\n    hive,\n    plugin,\n    timestamp\nFROM registry_artifacts\nWHERE (\n        LOWER(key_path) LIKE '%currentversion\\run%'\n        OR LOWER(key_path) LIKE '%currentversion\\runonce%'\n        OR LOWER(key_path) LIKE '%currentversion\\policies\\explorer\\run%'\n        OR LOWER(key_path) LIKE '%windows nt\\currentversion\\windows%'\n    )\n    AND (\n        LOWER(CAST(raw_json AS VARCHAR)) LIKE '%\\temp\\%'\n        OR LOWER(CAST(raw_json AS VARCHAR)) LIKE '%\\appdata\\%'\n        OR LOWER(CAST(raw_json AS VARCHAR)) LIKE '%\\programdata\\%'\n        OR LOWER(CAST(raw_json AS VARCHAR)) LIKE '%.ps1%'\n        OR LOWER(CAST(raw_json AS VARCHAR)) LIKE '%.vbs%'\n        OR LOWER(CAST(raw_json AS VARCHAR)) LIKE '%.bat%'\n        OR LOWER(CAST(raw_json AS VARCHAR)) LIKE '%.js%'\n        OR LOWER(CAST(raw_json AS VARCHAR)) LIKE '%powershell%'\n        OR LOWER(CAST(raw_json AS VARCHAR)) LIKE '%wscript%'\n        OR LOWER(CAST(raw_json AS VARCHAR)) LIKE '%cscript%'\n        OR LOWER(CAST(raw_json AS VARCHAR)) LIKE '%mshta%'\n        OR LOWER(CAST(raw_json AS VARCHAR)) LIKE '%rundll32%'\n        OR LOWER(CAST(raw_json AS VARCHAR)) LIKE '%regsvr32%'\n        OR LOWER(CAST(raw_json AS VARCHAR)) LIKE '%certutil%'\n    )\n"
+finding:
+  title: "Run-key entry: {value_name}"
+  summary: "Run-key value {value_name} under {key_path} ({hive}) matched one of the queried path or interpreter strings in its raw record. Inspect the source artifact for the target; this does not establish execution or malicious intent."

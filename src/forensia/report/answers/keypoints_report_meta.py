@@ -8,11 +8,56 @@ from forensia.db.database import CaseDB
 from forensia.db.query import fetch_records
 from forensia.report.answers.event_semantics import LOG_CLEAR_EVENT_SQL
 from forensia.report.evidence_refs import (
-    EVIDENCE_ID_PATTERN,
     EvidenceResolver,
     _extract_needed_evidence,
     _report_keypoint_rows,
 )
+from forensia.report.sections.report_input import active_report_section_keys
+
+
+def _report_sections_with_gaps(db: CaseDB) -> list[dict[str, Any]]:
+    active = active_report_section_keys(db)
+    if active is not None and not active:
+        return []
+    clause = (
+        "AND section_key IN (" + ", ".join("?" for _ in active) + ")"
+        if active is not None
+        else ""
+    )
+    return fetch_records(
+        db,
+        f"""
+        SELECT section_key, title, confidence, gaps, status
+        FROM report_sections
+        WHERE (confidence < 0.7 OR gaps IS NOT NULL) {clause}
+        ORDER BY confidence
+        LIMIT 20
+        """,
+        tuple(active) if active is not None else (),
+    )
+
+
+def _appendix_claims_needing_review(db: CaseDB) -> list[dict[str, Any]]:
+    active = active_report_section_keys(db)
+    if active is not None and not active:
+        return []
+    clause = (
+        "AND section_key IN (" + ", ".join("?" for _ in active) + ")"
+        if active is not None
+        else ""
+    )
+    return fetch_records(
+        db,
+        f"""
+        SELECT section_key, claim_text, support_status
+        FROM claims
+        WHERE support_status IN ('unsupported', 'orphaned_reference', 'needs_review')
+        {clause}
+        ORDER BY section_key, updated_at DESC
+        LIMIT 40
+        """,
+        tuple(active) if active is not None else (),
+    )
 
 
 def hypothesis_latest_reasoning_cte(exclude_error_phase: bool = True) -> str:
@@ -26,7 +71,7 @@ def hypothesis_latest_reasoning_cte(exclude_error_phase: bool = True) -> str:
                 SELECT *, ROW_NUMBER() OVER (
                     PARTITION BY hypothesis_id ORDER BY created_at DESC, entry_id DESC
                 ) AS rn
-                FROM hypothesis_reasoning{filter_sql}
+                FROM trace.hypothesis_reasoning{filter_sql}
             )
 """
 
@@ -36,12 +81,12 @@ def _hypothesis_reasoning_rows(
     *,
     where: str,
     params: tuple[Any, ...] = (),
-    limit: int,
+    limit: int | None,
 ) -> list[dict[str, Any]]:
     """Shared resolver for hypothesis rows joined with their latest reasoning."""
     placeholders = ", ".join("?" for _ in params)
     rendered_where = where.format(placeholders=placeholders) if params else where
-    return fetch_records(
+    rows = fetch_records(
         db,
         f"""
         {hypothesis_latest_reasoning_cte()}
@@ -52,10 +97,31 @@ def _hypothesis_reasoning_rows(
         LEFT JOIN latest l ON l.hypothesis_id = h.hypothesis_id AND l.rn = 1
         {rendered_where}
         ORDER BY h.updated_at DESC NULLS LAST
-        LIMIT {int(limit)}
+        {f"LIMIT {int(limit)}" if limit is not None else ""}
         """,
         params,
     )
+
+    from forensia.evidence.links import load_evidence_links
+
+    for row in rows:
+        roles = (
+            {"supporting", "corroborating"}
+            if row["status"] == "confirmed"
+            else {"contradictory"}
+            if row["status"] == "refuted"
+            else {"supporting", "corroborating", "contextual", "contradictory"}
+        )
+        row["evidence_ids"] = sorted(
+            {
+                link.evidence_id
+                for link in load_evidence_links(
+                    db, row["hypothesis_id"], current_only=True
+                )
+                if link.assessment_id and link.role in roles
+            }
+        )
+    return rows
 
 
 def _needed_evidence_row(row: dict[str, Any]) -> dict[str, Any]:
@@ -67,7 +133,9 @@ def _needed_evidence_row(row: dict[str, Any]) -> dict[str, Any]:
         "summary": row["summary"],
         "updated_at": row["updated_at"],
         "needed_evidence": _extract_needed_evidence(row.get("latest_reasoning")),
+        "evidence_ids": row.get("evidence_ids") or [],
     }
+
 
 REPORT_META_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
     "gaps_event_coverage": (
@@ -88,7 +156,7 @@ REPORT_META_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
             SELECT channel, COUNT(*) AS count
             FROM evtx_events
             GROUP BY channel
-            ORDER BY count DESC
+            ORDER BY count DESC, channel ASC NULLS LAST
             """,
         ),
     ),
@@ -125,13 +193,19 @@ REPORT_META_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
         ),
     ),
     "recommendations_recent_reviews": (
-        "Recent AI review verdicts and report notes.",
+        "Historical AI review output (non-authoritative); current hypothesis settlement is shown separately.",
         lambda db: _report_keypoint_rows(
             db,
             """
-            SELECT verdict, report_text
-            FROM ai_reviews
-            ORDER BY created_at DESC
+            SELECT r.finding_id,
+                   r.verdict AS historical_ai_review_verdict,
+                   r.report_text AS historical_ai_review_text,
+                   h.status AS current_hypothesis_status,
+                   h.verdict AS current_settled_verdict
+            FROM trace.ai_reviews AS r
+            LEFT JOIN hypotheses AS h
+              ON h.hypothesis_id = REPLACE(r.finding_id, 'hypothesis:', '')
+            ORDER BY r.created_at DESC
             LIMIT 10
             """,
         ),
@@ -160,16 +234,7 @@ REPORT_META_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
     ),
     "appendix_claims_needing_review": (
         "Claims whose support status needs review.",
-        lambda db: _report_keypoint_rows(
-            db,
-            """
-            SELECT section_key, claim_text, support_status
-            FROM claims
-            WHERE support_status IN ('unsupported', 'orphaned_reference', 'needs_review')
-            ORDER BY section_key, updated_at DESC
-            LIMIT 40
-            """,
-        ),
+        _appendix_claims_needing_review,
     ),
     "unresolved_hypotheses_summary": (
         "Open or unresolved hypotheses from the investigation.",
@@ -186,23 +251,11 @@ REPORT_META_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
     ),
     "resolved_hypotheses_with_evidence": (
         "Confirmed and refuted hypotheses with verdict, description, and evidence references.",
-        lambda db: [
-            {
-                **row,
-                "evidence_ids": list(
-                    set(
-                        EVIDENCE_ID_PATTERN.findall(
-                            str(row.get("latest_reasoning") or "")
-                        )
-                    )
-                ),
-            }
-            for row in _hypothesis_reasoning_rows(
-                db,
-                where="WHERE h.status IN ('confirmed', 'refuted')",
-                limit=30,
-            )
-        ],
+        lambda db: _hypothesis_reasoning_rows(
+            db,
+            where="WHERE h.status IN ('confirmed', 'refuted')",
+            limit=30,
+        ),
     ),
     "untestable_hypotheses_summary": (
         "Hypotheses that could not be tested due to missing telemetry.",
@@ -217,15 +270,6 @@ REPORT_META_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
     ),
     "report_sections_with_gaps": (
         "Report sections that have outstanding gaps or low confidence.",
-        lambda db: _report_keypoint_rows(
-            db,
-            """
-            SELECT section_key, title, confidence, gaps, status
-            FROM report_sections
-            WHERE confidence < 0.7 OR gaps IS NOT NULL
-            ORDER BY confidence
-            LIMIT 20
-        """,
-        ),
+        _report_sections_with_gaps,
     ),
 }

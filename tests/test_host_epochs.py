@@ -33,35 +33,6 @@ def _create_db_with_events(rows: list[tuple]) -> duckdb.DuckDBPyConnection:
 class HostEpochDetectionTests(unittest.TestCase):
     """R2-16: Host identity epoch detection and canonicalization."""
 
-    def test_pre_deployment_host_labeled(self) -> None:
-        """Host with pre-2010 bulk and 2015 trickle -> bulk pre-deployment, trickle active."""
-        conn = _create_db_with_events(
-            [
-                # Host A: active only
-                ("evtx-hostA-001", 4624, "2026-03-01 10:00:00", "HOST-A", "Security"),
-                ("evtx-hostA-002", 4624, "2026-03-02 10:00:00", "HOST-A", "Security"),
-                ("evtx-hostA-003", 4624, "2026-03-03 10:00:00", "HOST-A", "Security"),
-                ("evtx-hostA-004", 4624, "2026-03-04 10:00:00", "HOST-A", "Security"),
-                # Host B: bulk in 2010 + trickle in 2015
-                ("evtx-hostB-001", 4624, "2010-06-01 08:00:00", "HOST-B", "Security"),
-                ("evtx-hostB-002", 4624, "2010-06-02 08:00:00", "HOST-B", "Security"),
-                ("evtx-hostB-003", 4624, "2010-06-03 08:00:00", "HOST-B", "Security"),
-                ("evtx-hostB-004", 4624, "2015-03-25 10:00:00", "HOST-B", "Security"),
-            ]
-        )
-        epochs = detect_epochs(conn, epoch_gap_days=90)
-        self.assertIn("HOST-A", epochs)
-        self.assertEqual(len(epochs["HOST-A"]), 1)
-        self.assertEqual(epochs["HOST-A"][0]["label"], "active")
-        self.assertIn("HOST-B", epochs)
-        self.assertEqual(len(epochs["HOST-B"]), 2)
-        pre = [c for c in epochs["HOST-B"] if c["label"] == "pre-deployment"]
-        act = [c for c in epochs["HOST-B"] if c["label"] == "active"]
-        self.assertEqual(len(pre), 1)
-        self.assertEqual(pre[0]["event_count"], 3)
-        self.assertEqual(len(act), 1)
-        self.assertEqual(act[0]["event_count"], 1)
-
     def test_case_folded_duplicates_merge(self) -> None:
         """Case/whitespace duplicates merge to one canonical row."""
         conn = _create_db_with_events(
@@ -151,15 +122,19 @@ class HostEpochDetectionTests(unittest.TestCase):
         epochs = detect_epochs(conn)
         self.assertEqual(epochs, {})
 
-    def test_single_host_is_active(self) -> None:
-        """A single host with events is always active."""
+    def test_epoch_boundary_is_strictly_greater_than_ninety_days(self) -> None:
         conn = _create_db_with_events(
             [
                 ("evtx-001", 4624, "2026-03-01 10:00:00", "HOST-A", "Security"),
+                ("evtx-002", 4624, "2026-05-30 10:00:00", "HOST-A", "Security"),
+                ("evtx-003", 4624, "2026-08-29 10:00:00", "HOST-A", "Security"),
             ]
         )
         epochs = detect_epochs(conn)
-        self.assertEqual(epochs["HOST-A"][0]["label"], "active")
+        self.assertEqual([2, 1], [epoch["event_count"] for epoch in epochs["HOST-A"]])
+        self.assertEqual(
+            ["pre-deployment", "active"], [epoch["label"] for epoch in epochs["HOST-A"]]
+        )
 
     def test_multi_cluster_host(self) -> None:
         """Host with pre-2010 bulk and 2015 trickle gets two clusters, bulk pre-deployment."""

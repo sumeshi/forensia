@@ -10,23 +10,24 @@ These tests verify that:
 
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 
-from forensia.ai.checking.settlement import (
+from forensia.core.session import Hypothesis
+from forensia.core.verification import VerificationSpec
+from forensia.db.database import CaseDB
+from forensia.investigation.verification.settlement import (
     SettlementInput,
     _is_concrete_entity,
     _is_loopback_ip,
-    build_settlement_input,
-    decide_settlement,
+    judge_absence_scope,
     settle_hypothesis,
 )
-from forensia.ai.checking.sufficiency import (
+from forensia.investigation.verification.sufficiency import (
     SufficiencyResult,
     create_hypothesis_evidence_link,
 )
-from forensia.core.session import Hypothesis
-from forensia.db.database import CaseDB
 
 
 def _make_hypothesis(
@@ -36,6 +37,7 @@ def _make_hypothesis(
     source_rule_ids: list[str] | None = None,
     required_entities: list[str] | None = None,
     confirm_when: dict | None = None,
+    verification_spec: VerificationSpec | None = None,
 ) -> Hypothesis:
     return Hypothesis(
         id=hid,
@@ -44,18 +46,32 @@ def _make_hypothesis(
         source_rule_ids=source_rule_ids or [],
         required_entities=required_entities or [],
         confirm_when=confirm_when,
+        verification_spec=verification_spec,
     )
 
 
 def _make_evidence_link(
     db: CaseDB,
     *,
+    hypothesis: Hypothesis,
     hypothesis_id: str = "H-001",
     evidence_id: str = "evtx-001",
     role: str = "supporting",
     source_family: str = "evtx",
     strength: str = "moderate",
+    canonical_event: dict | None = None,
 ) -> str:
+    db.execute(
+        "INSERT INTO hypotheses (hypothesis_id, description, status, verification_spec, "
+        "created_at, updated_at) VALUES (?, ?, 'active', ?, now(), now()) "
+        "ON CONFLICT (hypothesis_id) DO UPDATE SET verification_spec = excluded.verification_spec",
+        [
+            hypothesis_id,
+            hypothesis.description,
+            json.dumps(hypothesis.verification_spec.model_dump(mode="json")),
+        ],
+    )
+    _backing_evidence_row(db, evidence_id, source_family, canonical_event)
     return create_hypothesis_evidence_link(
         db,
         hypothesis_id=hypothesis_id,
@@ -66,6 +82,67 @@ def _make_evidence_link(
         query_id="Q-test",
         assessment_id="EA-test",
     )
+
+
+def _backing_evidence_row(
+    db: CaseDB,
+    evidence_id: str,
+    source_family: str,
+    canonical_event: dict | None = None,
+) -> None:
+    """Insert a source-bound normalized row for the link admission path."""
+    table = "prefetch_executions" if source_family == "prefetch" else "evtx_events"
+    if table == "evtx_events" and canonical_event:
+        db.execute(
+            "INSERT INTO evtx_events (evidence_id, source_file, event_id, channel, raw_json) "
+            "VALUES (?, 'test-source', ?, ?, ?)",
+            [
+                evidence_id,
+                canonical_event["event_id"],
+                canonical_event["channel"],
+                json.dumps(
+                    {
+                        "winlog": {
+                            "channel": canonical_event["channel"],
+                            "provider": {"name": canonical_event["provider"]},
+                        }
+                    }
+                ),
+            ],
+        )
+    else:
+        db.execute(
+            f"INSERT INTO {table} (evidence_id, source_file) VALUES (?, 'test-source')",
+            [evidence_id],
+        )
+
+
+def _event_context(event_id: int) -> dict[str, str | int]:
+    if event_id == 21:
+        return {
+            "event_id": event_id,
+            "channel": "Microsoft-Windows-TerminalServices-LocalSessionManager/Operational",
+            "provider": "Microsoft-Windows-TerminalServices-LocalSessionManager",
+        }
+    return {
+        "event_id": event_id,
+        "channel": "Security",
+        "provider": "Microsoft-Windows-Security-Auditing",
+    }
+
+
+def _sample_event(event_id: int, **fields: object) -> dict[str, object]:
+    context = _event_context(event_id)
+    return {
+        **context,
+        "raw_json": {
+            "winlog": {
+                "channel": context["channel"],
+                "provider": {"name": context["provider"]},
+            }
+        },
+        **fields,
+    }
 
 
 class EntityValidationTests(unittest.TestCase):
@@ -137,7 +214,9 @@ class SettlementGateTests(unittest.TestCase):
                     confirm_when={"co_observed_event_ids": [21, 4624]},
                 )
                 # Create a single weak evidence link
-                _make_evidence_link(db, strength="weak", source_family="mft")
+                _make_evidence_link(
+                    db, hypothesis=hyp, strength="weak", source_family="mft"
+                )
                 si = SettlementInput(
                     hypothesis=hyp,
                     checker_verdict="confirmed",
@@ -162,8 +241,10 @@ class SettlementGateTests(unittest.TestCase):
                     required_entities=["target_user", "src_ip"],
                     confirm_when={"co_observed_event_ids": [21, 4624]},
                 )
-                _make_evidence_link(db)
-                _make_evidence_link(db, evidence_id="evtx-002", source_family="evtx")
+                _make_evidence_link(db, hypothesis=hyp)
+                _make_evidence_link(
+                    db, hypothesis=hyp, evidence_id="evtx-002", source_family="evtx"
+                )
                 si = SettlementInput(
                     hypothesis=hyp,
                     checker_verdict="confirmed",
@@ -171,6 +252,14 @@ class SettlementGateTests(unittest.TestCase):
                     sample_rows=[
                         {
                             "event_id": 21,
+                            "channel": "Microsoft-Windows-TerminalServices-LocalSessionManager/Operational",
+                            "raw_json": {
+                                "winlog": {
+                                    "provider": {
+                                        "name": "Microsoft-Windows-TerminalServices-LocalSessionManager"
+                                    }
+                                }
+                            },
                             "target_user": "admin",
                             "src_ip": "127.0.0.1",
                         }
@@ -198,8 +287,8 @@ class SettlementGateTests(unittest.TestCase):
                     required_entities=["target_user", "src_ip"],
                     confirm_when={"co_observed_event_ids": [21, 4624]},
                 )
-                _make_evidence_link(db)
-                _make_evidence_link(db, evidence_id="evtx-002")
+                _make_evidence_link(db, hypothesis=hyp)
+                _make_evidence_link(db, hypothesis=hyp, evidence_id="evtx-002")
                 si = SettlementInput(
                     hypothesis=hyp,
                     checker_verdict="confirmed",
@@ -213,6 +302,14 @@ class SettlementGateTests(unittest.TestCase):
                         },
                         {
                             "event_id": 4624,
+                            "channel": "Security",
+                            "raw_json": {
+                                "winlog": {
+                                    "provider": {
+                                        "name": "Microsoft-Windows-Security-Auditing"
+                                    }
+                                }
+                            },
                             "target_user": "admin",
                             "src_ip": "-",
                             "logon_type": 5,
@@ -237,17 +334,29 @@ class SettlementGateTests(unittest.TestCase):
                     description="RDP lateral movement",
                     source_rule_ids=["rule-rdp"],
                     required_entities=["target_user"],
-                    confirm_when={"co_observed_event_ids": [21, 4624]},
+                    confirm_when={
+                        "co_observed_event_ids": [21, 4624],
+                        "event_contexts": [_event_context(21), _event_context(4624)],
+                    },
                 )
-                _make_evidence_link(db)
-                _make_evidence_link(db, evidence_id="evtx-002")
+                _make_evidence_link(
+                    db,
+                    hypothesis=hyp,
+                    canonical_event=_event_context(21),
+                )
+                _make_evidence_link(
+                    db,
+                    hypothesis=hyp,
+                    evidence_id="evtx-002",
+                    canonical_event=_event_context(4624),
+                )
                 si = SettlementInput(
                     hypothesis=hyp,
                     checker_verdict="inconclusive",
                     check_summary="different users",
                     sample_rows=[
-                        {"event_id": 21, "target_user": "user_A"},
-                        {"event_id": 4624, "target_user": "user_B"},
+                        _sample_event(21, target_user="user_A"),
+                        _sample_event(4624, target_user="user_B"),
                     ],
                     co_observation_satisfied=True,
                 )
@@ -276,34 +385,47 @@ class SettlementGateTests(unittest.TestCase):
                     confirm_when={
                         "co_observed_event_ids": [4720, 4732, 4624],
                         "same_host": True,
+                        "event_contexts": [_event_context(4624)],
                     },
                 )
-                _make_evidence_link(db)
-                _make_evidence_link(db, evidence_id="evtx-002")
-                _make_evidence_link(db, evidence_id="evtx-003")
+                _make_evidence_link(
+                    db, hypothesis=hyp, canonical_event=_event_context(4720)
+                )
+                _make_evidence_link(
+                    db,
+                    hypothesis=hyp,
+                    evidence_id="evtx-002",
+                    canonical_event=_event_context(4732),
+                )
+                _make_evidence_link(
+                    db,
+                    hypothesis=hyp,
+                    evidence_id="evtx-003",
+                    canonical_event=_event_context(4624),
+                )
                 # 4720 target is "newuser", 4732/4624 are for unrelated "admin"
                 si = SettlementInput(
                     hypothesis=hyp,
                     checker_verdict="inconclusive",
                     check_summary="unrelated events on same host",
                     sample_rows=[
-                        {
-                            "event_id": 4720,
-                            "target_user": "newuser",
-                            "target_group": "Users",
-                            "computer": "HOST-PC",
-                        },
-                        {
-                            "event_id": 4732,
-                            "target_user": "admin",
-                            "target_group": "Administrators",
-                            "computer": "HOST-PC",
-                        },
-                        {
-                            "event_id": 4624,
-                            "target_user": "admin",
-                            "computer": "HOST-PC",
-                        },
+                        _sample_event(
+                            4720,
+                            target_user="newuser",
+                            target_group="Users",
+                            computer="HOST-PC",
+                        ),
+                        _sample_event(
+                            4732,
+                            target_user="admin",
+                            target_group="Administrators",
+                            computer="HOST-PC",
+                        ),
+                        _sample_event(
+                            4624,
+                            target_user="admin",
+                            computer="HOST-PC",
+                        ),
                     ],
                     co_observation_satisfied=True,
                     same_host=True,
@@ -341,10 +463,17 @@ class PositiveSettlementTests(unittest.TestCase):
                     },
                 )
                 # Create multiple supporting evidence links from different families
-                _make_evidence_link(db, evidence_id="evtx-001", source_family="evtx")
-                _make_evidence_link(db, evidence_id="evtx-002", source_family="evtx")
                 _make_evidence_link(
-                    db, evidence_id="prefetch-001", source_family="prefetch"
+                    db, hypothesis=hyp, evidence_id="evtx-001", source_family="evtx"
+                )
+                _make_evidence_link(
+                    db, hypothesis=hyp, evidence_id="evtx-002", source_family="evtx"
+                )
+                _make_evidence_link(
+                    db,
+                    hypothesis=hyp,
+                    evidence_id="prefetch-001",
+                    source_family="prefetch",
                 )
 
                 # Insert sufficiency metadata
@@ -360,6 +489,14 @@ class PositiveSettlementTests(unittest.TestCase):
                     sample_rows=[
                         {
                             "event_id": 21,
+                            "channel": "Microsoft-Windows-TerminalServices-LocalSessionManager/Operational",
+                            "raw_json": {
+                                "winlog": {
+                                    "provider": {
+                                        "name": "Microsoft-Windows-TerminalServices-LocalSessionManager"
+                                    }
+                                }
+                            },
                             "target_user": "admin",
                             "src_ip": "192.168.1.100",
                             "computer": "HOST-PC",
@@ -367,6 +504,14 @@ class PositiveSettlementTests(unittest.TestCase):
                         },
                         {
                             "event_id": 4624,
+                            "channel": "Security",
+                            "raw_json": {
+                                "winlog": {
+                                    "provider": {
+                                        "name": "Microsoft-Windows-Security-Auditing"
+                                    }
+                                }
+                            },
                             "target_user": "admin",
                             "src_ip": "192.168.1.100",
                             "computer": "HOST-PC",
@@ -396,7 +541,7 @@ class PositiveSettlementTests(unittest.TestCase):
                     required_entities=["target_user"],
                     confirm_when={"co_observed_event_ids": [4738]},
                 )
-                _make_evidence_link(db, evidence_id="evtx-4738")
+                _make_evidence_link(db, hypothesis=hyp, evidence_id="evtx-4738")
                 si = SettlementInput(
                     hypothesis=hyp,
                     checker_verdict="inconclusive",
@@ -434,8 +579,8 @@ class PositiveSettlementTests(unittest.TestCase):
                     source_rule_ids=["rule-1"],
                     required_entities=["target_user"],
                 )
-                _make_evidence_link(db)
-                _make_evidence_link(db, evidence_id="evtx-002")
+                _make_evidence_link(db, hypothesis=hyp)
+                _make_evidence_link(db, hypothesis=hyp, evidence_id="evtx-002")
                 db.execute(
                     "UPDATE hypotheses SET sufficiency_status = 'sufficient', "
                     "sufficiency_score = 0.8 WHERE hypothesis_id = 'H-001'"
@@ -458,8 +603,8 @@ class PositiveSettlementTests(unittest.TestCase):
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
                 hyp = _make_hypothesis(source_rule_ids=["rule-1"])
-                _make_evidence_link(db)
-                _make_evidence_link(db, evidence_id="evtx-002")
+                _make_evidence_link(db, hypothesis=hyp)
+                _make_evidence_link(db, hypothesis=hyp, evidence_id="evtx-002")
                 si = SettlementInput(
                     hypothesis=hyp,
                     checker_verdict="confirmed",
@@ -480,9 +625,7 @@ class PositiveSettlementTests(unittest.TestCase):
 
                 self.assertFalse(decision.allowed)
                 self.assertEqual(decision.sufficiency_status, "insufficient")
-                self.assertIn(
-                    "machine_sufficiency=insufficient", decision.gates_failed
-                )
+                self.assertIn("machine_sufficiency=insufficient", decision.gates_failed)
 
     def test_rdp_event_constraint_requires_logon_type_10(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -498,10 +641,23 @@ class PositiveSettlementTests(unittest.TestCase):
                     confirm_when={
                         "co_observed_event_ids": [21, 4624],
                         "event_constraints": {4624: {"logon_type": ["10"]}},
+                        "event_contexts": [_event_context(21), _event_context(4624)],
                     },
                 )
-                _make_evidence_link(db, hypothesis_id="H-rdp", evidence_id="evtx-21")
-                _make_evidence_link(db, hypothesis_id="H-rdp", evidence_id="evtx-4624")
+                _make_evidence_link(
+                    db,
+                    hypothesis=hyp,
+                    hypothesis_id="H-rdp",
+                    evidence_id="evtx-21",
+                    canonical_event=_event_context(21),
+                )
+                _make_evidence_link(
+                    db,
+                    hypothesis=hyp,
+                    hypothesis_id="H-rdp",
+                    evidence_id="evtx-4624",
+                    canonical_event=_event_context(4624),
+                )
                 decision = settle_hypothesis(
                     db,
                     SettlementInput(
@@ -509,17 +665,17 @@ class PositiveSettlementTests(unittest.TestCase):
                         checker_verdict="inconclusive",
                         check_summary="service logon only",
                         sample_rows=[
-                            {
-                                "event_id": 21,
-                                "target_user": "admin",
-                                "src_ip": "192.0.2.10",
-                            },
-                            {
-                                "event_id": 4624,
-                                "target_user": "admin",
-                                "src_ip": "192.0.2.10",
-                                "logon_type": 5,
-                            },
+                            _sample_event(
+                                21,
+                                target_user="admin",
+                                src_ip="192.0.2.10",
+                            ),
+                            _sample_event(
+                                4624,
+                                target_user="admin",
+                                src_ip="192.0.2.10",
+                                logon_type=5,
+                            ),
                         ],
                         co_observation_satisfied=True,
                     ),
@@ -528,15 +684,6 @@ class PositiveSettlementTests(unittest.TestCase):
                 self.assertTrue(
                     any("logon_type" in item for item in decision.gates_failed)
                 )
-
-    def test_build_settlement_input_preserves_zero_row_counter(self) -> None:
-        settlement_input = build_settlement_input(
-            hypothesis=_make_hypothesis(hid="H-input"),
-            checker_verdict="inconclusive",
-            check_summary="none",
-            consecutive_zero_row_inconclusive=3,
-        )
-        self.assertEqual(settlement_input.consecutive_zero_row_inconclusive, 3)
 
 
 class AutoConfirmOverrideTests(unittest.TestCase):
@@ -555,8 +702,8 @@ class AutoConfirmOverrideTests(unittest.TestCase):
                     source_rule_ids=["rule-1"],
                     confirm_when={"co_observed_event_ids": [21, 4624]},
                 )
-                _make_evidence_link(db)
-                _make_evidence_link(db, evidence_id="evtx-002")
+                _make_evidence_link(db, hypothesis=hyp)
+                _make_evidence_link(db, hypothesis=hyp, evidence_id="evtx-002")
                 db.execute(
                     "UPDATE hypotheses SET sufficiency_status = 'sufficient', "
                     "sufficiency_score = 0.8 WHERE hypothesis_id = 'H-001'"
@@ -602,7 +749,8 @@ class AutoRefuteTests(unittest.TestCase):
     """Test auto-refute and auto-untestable paths."""
 
     def test_zero_row_consecutive_refute(self) -> None:
-        """3+ consecutive zero-row inconclusive with rule refute_when = refuted."""
+        """3+ consecutive zero-row inconclusive with rule refute_when and an
+        observable absence scope = refuted."""
         with tempfile.TemporaryDirectory() as tmpdir:
             from forensia.core.case import Case
 
@@ -619,12 +767,14 @@ class AutoRefuteTests(unittest.TestCase):
                     check_summary="no results",
                     consecutive_zero_row_inconclusive=3,
                     has_rule_refute_when_zero_rows=True,
+                    absence_scope="observable",
                 )
                 decision = settle_hypothesis(db, si)
                 self.assertEqual(decision.verdict, "refuted")
+                self.assertIn("auto_refute_zero_rows", decision.gates_passed)
 
-    def test_zero_row_consecutive_untestable(self) -> None:
-        """3+ consecutive zero-row inconclusive without rule refute = untestable."""
+    def test_repeated_zero_rows_without_rule_stay_inconclusive(self) -> None:
+        """Repeated zero rows alone do not prove telemetry is unavailable."""
         with tempfile.TemporaryDirectory() as tmpdir:
             from forensia.core.case import Case
 
@@ -643,10 +793,39 @@ class AutoRefuteTests(unittest.TestCase):
                     has_rule_refute_when_zero_rows=False,
                 )
                 decision = settle_hypothesis(db, si)
-                self.assertEqual(decision.verdict, "untestable")
+                self.assertEqual(decision.verdict, "inconclusive")
+                self.assertNotIn("auto_untestable_zero_rows", decision.gates_passed)
 
-    def test_same_missing_consecutive_refute(self) -> None:
-        """3+ consecutive same-missing checks = refuted or untestable."""
+    def test_zero_row_refute_requires_observable_absence(self) -> None:
+        """Rule refute_when.zero_rows alone cannot refute: a non-observable
+        absence scope (partial/unknown coverage, rejected scope, incomplete
+        retrieval) remains inconclusive with the explicit reason."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            from forensia.core.case import Case
+
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                hyp = _make_hypothesis(
+                    hid="H-001",
+                    description="test",
+                    source_rule_ids=["rule-1"],
+                )
+                si = SettlementInput(
+                    hypothesis=hyp,
+                    checker_verdict="inconclusive",
+                    check_summary="no results",
+                    consecutive_zero_row_inconclusive=3,
+                    has_rule_refute_when_zero_rows=True,
+                    absence_scope="unknown",
+                )
+                decision = settle_hypothesis(db, si)
+                self.assertEqual(decision.verdict, "inconclusive")
+                self.assertNotIn("auto_untestable_zero_rows", decision.gates_passed)
+                self.assertNotIn("auto_refute_zero_rows", decision.gates_passed)
+                self.assertNotIn("telemetry", decision.reason.lower())
+
+    def test_same_missing_does_not_settle_even_with_observable_scope(self) -> None:
+        """Missing-question repetition is not evidence of actual zero rows."""
         with tempfile.TemporaryDirectory() as tmpdir:
             from forensia.core.case import Case
 
@@ -661,14 +840,15 @@ class AutoRefuteTests(unittest.TestCase):
                     hypothesis=hyp,
                     checker_verdict="inconclusive",
                     check_summary="same missing",
-                    consecutive_same_missing=3,
                     has_rule_refute_when_zero_rows=True,
+                    absence_scope="observable",
                 )
                 decision = settle_hypothesis(db, si)
-                self.assertEqual(decision.verdict, "refuted")
+                self.assertEqual(decision.verdict, "inconclusive")
+                self.assertNotIn("auto_refute_same_missing", decision.gates_passed)
 
-    def test_unavailable_event_ids_untestable(self) -> None:
-        """Missing event IDs that are unavailable in telemetry = untestable."""
+    def test_checker_missing_event_ids_do_not_prove_telemetry_unavailable(self) -> None:
+        """Checker wording alone cannot establish missing telemetry."""
         with tempfile.TemporaryDirectory() as tmpdir:
             from forensia.core.case import Case
 
@@ -681,13 +861,106 @@ class AutoRefuteTests(unittest.TestCase):
                 )
                 si = SettlementInput(
                     hypothesis=hyp,
-                    checker_verdict="inconclusive",
+                    checker_verdict="untestable",
                     check_summary="missing events",
-                    unavailable_missing_event_ids=[4688, 4689],
                 )
                 decision = settle_hypothesis(db, si)
-                self.assertEqual(decision.verdict, "untestable")
-                self.assertIn("4688", decision.reason)
+                self.assertEqual(decision.verdict, "inconclusive")
+                self.assertIn("no_auto_untestable_condition", decision.gates_failed)
+
+
+class AbsenceJudgmentTests(unittest.TestCase):
+    """The settlement-side absence judgment (T03) feeding SettlementInput.
+
+    Verifies ``judge_absence_scope``'s mapping from the latest
+    RetrievalEvaluation plus Coverage states of required capabilities to the
+    observable/unknown/unavailable scope classification.
+    """
+
+    @staticmethod
+    def _hyp_with_capabilities(capabilities: list[str]):
+        from forensia.core.verification import VerificationSpec
+
+        return _make_hypothesis(
+            hid="H-001",
+            description="test",
+            verification_spec=VerificationSpec(required_capabilities=capabilities),
+        )
+
+    @staticmethod
+    def _insert_coverage_state(
+        db: CaseDB, capability: str, state: str, family: str = "evtx"
+    ) -> None:
+        db.execute(
+            "INSERT INTO evidence_coverage (capability, host, channel, "
+            "source_family, state, reason_code, source_ids) "
+            "VALUES (?, NULL, '', ?, ?, '', '[]')",
+            [capability, family, state],
+        )
+
+    @staticmethod
+    def _evaluation(**kwargs):
+        from forensia.context.retrieval import RetrievalEvaluation
+
+        defaults = {
+            "receipt_id": "R-1",
+            "outcome": "adequate",
+            "scope_status": "valid",
+            "coverage_status": "available",
+            "empty_semantics": "observable",
+        }
+        defaults.update(kwargs)
+        return RetrievalEvaluation(**defaults)
+
+    def test_rejected_scope_is_not_observable(self) -> None:
+        """A rejected retrieval scope cannot support absence."""
+        from forensia.core.case import Case
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                self._insert_coverage_state(db, "process_exec", "available")
+                hyp = self._hyp_with_capabilities(["process_exec"])
+                scope, note = judge_absence_scope(
+                    db, hyp, self._evaluation(scope_status="rejected")
+                )
+                self.assertEqual(scope, "unknown")
+                self.assertIn("scope_status=rejected", note)
+
+    def test_unknown_empty_semantics_is_not_observable(self) -> None:
+        """An empty result with unknown coverage semantics is not absence."""
+        from forensia.core.case import Case
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                self._insert_coverage_state(db, "process_exec", "available")
+                hyp = self._hyp_with_capabilities(["process_exec"])
+                scope, note = judge_absence_scope(
+                    db,
+                    hyp,
+                    self._evaluation(
+                        outcome="partial",
+                        coverage_status="unknown",
+                        empty_semantics="unknown",
+                    ),
+                )
+                self.assertEqual(scope, "unknown")
+                self.assertIn("empty result not observable", note)
+
+    def test_uncovered_scope_is_not_observable(self) -> None:
+        """When no required capability is declared, Coverage cannot represent
+        the scope; the deficit is kept instead of guessing."""
+        from forensia.core.case import Case
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                self._insert_coverage_state(db, "process_exec", "available")
+                hyp = self._hyp_with_capabilities([])
+                scope, note = judge_absence_scope(db, hyp, self._evaluation())
+                self.assertEqual(scope, "unknown")
+                self.assertIn("uncovered-scope", note)
 
 
 class BenignAuthTests(unittest.TestCase):
@@ -707,8 +980,8 @@ class BenignAuthTests(unittest.TestCase):
                     required_entities=["target_user"],
                     confirm_when={"co_observed_event_ids": [4624]},
                 )
-                _make_evidence_link(db)
-                _make_evidence_link(db, evidence_id="evtx-002")
+                _make_evidence_link(db, hypothesis=hyp)
+                _make_evidence_link(db, hypothesis=hyp, evidence_id="evtx-002")
                 db.execute(
                     "UPDATE hypotheses SET sufficiency_status = 'sufficient', "
                     "sufficiency_score = 0.8 WHERE hypothesis_id = 'H-001'"
@@ -738,9 +1011,11 @@ class DBInvariantTests(unittest.TestCase):
     def test_confirmed_without_sufficient_becomes_needs_review(self) -> None:
         """confirmed + insufficient sufficiency → needs_review."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            from forensia.ai.hypotheses.hypothesis_manager import resolve_hypothesis
             from forensia.core.case import Case
             from forensia.core.session import SessionState
+            from forensia.investigation.hypotheses.hypothesis_manager import (
+                resolve_hypothesis,
+            )
 
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
@@ -775,9 +1050,11 @@ class DBInvariantTests(unittest.TestCase):
     def test_confirmed_without_evidence_links_becomes_needs_review(self) -> None:
         """confirmed + no supporting EvidenceLink → needs_review."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            from forensia.ai.hypotheses.hypothesis_manager import resolve_hypothesis
             from forensia.core.case import Case
             from forensia.core.session import SessionState
+            from forensia.investigation.hypotheses.hypothesis_manager import (
+                resolve_hypothesis,
+            )
 
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
@@ -805,95 +1082,6 @@ class DBInvariantTests(unittest.TestCase):
                     "SELECT status FROM hypotheses WHERE hypothesis_id = 'H-001'"
                 ).fetchone()
                 self.assertEqual(row[0], "needs_review")
-
-
-class MigrationTests(unittest.TestCase):
-    """Test R8-01 migration re-queues legacy confirmed + insufficient."""
-
-    def test_migration_requeues_confirmed_insufficient(self) -> None:
-        """Legacy confirmed + insufficient → needs_review after migration."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            from forensia.core.case import Case
-
-            case = Case.init(tmpdir)
-            with CaseDB(case) as db:
-                # Simulate legacy data: confirmed + insufficient
-                db.execute(
-                    "INSERT INTO hypotheses (hypothesis_id, description, status, "
-                    "sufficiency_status) VALUES "
-                    "('H-001', 'legacy bad', 'confirmed', 'insufficient'), "
-                    "('H-002', 'legacy sufficient', 'confirmed', 'sufficient'), "
-                    "('H-003', 'legacy partial', 'confirmed', 'partial')"
-                )
-                # Add an evidence link for H-002 so it passes the evidence check
-                create_hypothesis_evidence_link(
-                    db,
-                    hypothesis_id="H-002",
-                    evidence_id="evtx-001",
-                    role="supporting",
-                    query_id="Q-test",
-                )
-                # Manually trigger the migration
-                db._apply_r8_01_settlement_invariant()
-
-                # H-001 and H-003 should be needs_review (insufficient/partial)
-                row1 = db.execute(
-                    "SELECT status FROM hypotheses WHERE hypothesis_id = 'H-001'"
-                ).fetchone()
-                self.assertEqual(row1[0], "needs_review")
-
-                row3 = db.execute(
-                    "SELECT status FROM hypotheses WHERE hypothesis_id = 'H-003'"
-                ).fetchone()
-                self.assertEqual(row3[0], "needs_review")
-
-                # H-002 should remain confirmed (sufficient + has evidence)
-                row2 = db.execute(
-                    "SELECT status FROM hypotheses WHERE hypothesis_id = 'H-002'"
-                ).fetchone()
-                self.assertEqual(row2[0], "confirmed")
-
-    def test_migration_requeues_confirmed_no_evidence(self) -> None:
-        """Legacy confirmed + no evidence links → needs_review after migration."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            from forensia.core.case import Case
-
-            case = Case.init(tmpdir)
-            with CaseDB(case) as db:
-                # Simulate legacy data: confirmed + sufficient but no evidence links
-                db.execute(
-                    "INSERT INTO hypotheses (hypothesis_id, description, status, "
-                    "sufficiency_status) VALUES "
-                    "('H-001', 'no evidence', 'confirmed', 'sufficient')"
-                )
-                # Manually trigger the migration
-                db._apply_r8_01_settlement_invariant()
-
-                # H-001 should be needs_review because no evidence links
-                row = db.execute(
-                    "SELECT status FROM hypotheses WHERE hypothesis_id = 'H-001'"
-                ).fetchone()
-                self.assertEqual(row[0], "needs_review")
-
-
-class PartialStateTests(unittest.TestCase):
-    """Test that no partial state leaks on settlement exceptions."""
-
-    def test_settlement_decision_is_pure(self) -> None:
-        """The decision core has no CaseDB dependency or side effects."""
-        si = SettlementInput(
-            hypothesis=_make_hypothesis(
-                hid="H-001",
-                source_rule_ids=["rule-1"],
-                required_entities=["target_user"],
-            ),
-            checker_verdict="confirmed",
-            check_summary="test",
-            sample_rows=[{"event_id": 4624, "target_user": "admin"}],
-        )
-        decision1 = decide_settlement(si, links=[], coverage={})
-        decision2 = decide_settlement(si, links=[], coverage={})
-        self.assertEqual(decision1, decision2)
 
 
 if __name__ == "__main__":

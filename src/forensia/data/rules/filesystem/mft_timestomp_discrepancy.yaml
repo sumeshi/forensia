@@ -1,0 +1,15 @@
+id: "filesystem-mft-timestamp-discrepancy"
+title: "MFT timestamp discrepancy observed"
+severity: low
+confidence: 0.55
+required_fields:
+- file_name
+- file_path
+tags:
+- filesystem
+- mft
+- timestamp
+query: "SELECT\n    evidence_id,\n    file_name,\n    file_path,\n    si_created,\n    si_modified,\n    fn_created,\n    fn_modified,\n    is_deleted\nFROM mft_entries\nWHERE (\n        fn_created IS NOT NULL\n        AND si_modified IS NOT NULL\n        AND si_modified < fn_created\n    )\n    OR (\n        fn_created IS NOT NULL\n        AND si_created IS NOT NULL\n        AND si_created > fn_created + INTERVAL 30 DAY\n    )\n"
+finding:
+  title: "MFT timestamp discrepancy: {file_name}"
+  summary: "The $STANDARD_INFORMATION and $FILE_NAME timestamps for {file_name} at {file_path} differ. This records a metadata discrepancy; it does not establish timestomping."

@@ -1,0 +1,31 @@
+table: prefetch_executions
+core_columns:
+  - executable_name
+  - exec_count
+  - last_exec_time
+  - exec_times
+  - filenames
+column_descriptions:
+  executable_name: "Uppercase .exe filename, e.g. 'POWERSHELL.EXE'."
+  exec_count: "Total run count (int)."
+  last_exec_time: "Most recent execution time (TIMESTAMP)."
+  exec_times: "JSON array of up to 8 last run timestamps."
+  filenames: "JSON array of files loaded by the process; useful for DLL side-loading."
+columns:
+  - evidence_id
+  - source_file
+  - executable_name
+  - exec_count
+  - last_exec_time
+  - exec_times
+  - prefetch_hash
+  - filenames
+  - volumes
+  - raw_json
+  - tags
+  - severity
+timestamp_array_fields:
+  - exec_times
+notes:
+  no_host_column: "prefetch_executions is a single-host artifact and does NOT have a computer/host column. When joining with evtx_events or mft_entries, do NOT use prefetch_executions.computer."
+  join_pattern: "If you need to correlate prefetch with evtx_events by host, filter evtx_events to the host first (WHERE computer = '...') and then JOIN prefetch by time only (e.g. p.last_exec_time BETWEEN e.timestamp - INTERVAL 15 MINUTE AND e.timestamp + INTERVAL 15 MINUTE)."

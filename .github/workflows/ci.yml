@@ -23,9 +23,17 @@ jobs:
       - name: Ruff format check
         run: uv run ruff format --check
 
-      # `forensia doctor` runs the declarative-layer audits and the full pytest
-      # suite in one gate: schema coverage, playbook MD/YAML drift, import-layer
-      # contract, verdict-taxonomy enforcement, then the test suite. It performs
-      # no real LLM calls, so it is safe and deterministic in CI.
-      - name: Doctor (schema / playbook / verdict / tests)
-        run: uv run forensia doctor
+      - name: Full offline test suite
+        run: uv run pytest tests/ -q
+
+      - name: Import boundaries
+        run: uv run python scripts/check_imports.py
+
+      - name: Declarative schema coverage
+        run: uv run python scripts/audit_schema_coverage.py --strict
+
+      - name: Generated playbook drift
+        run: uv run python scripts/regenerate_playbook.py --check
+
+      - name: Installed package health
+        run: uv run python -m forensia.cli.doctor

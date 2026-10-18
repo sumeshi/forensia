@@ -102,11 +102,14 @@ def _hypothesis_rows(
         {hypothesis_latest_reasoning_cte()}
         SELECT h.hypothesis_id, h.status, h.verdict, h.description, h.summary,
                COUNT(r.entry_id) AS reasoning_count,
+               (SELECT COUNT(DISTINCT he.evidence_id)
+                FROM hypothesis_evidence he
+                WHERE he.hypothesis_id = h.hypothesis_id) AS linked_evidence_count,
                MAX(r.iteration) AS latest_iteration,
                l.verdict AS latest_verdict,
                l.body AS latest_reasoning
         FROM hypotheses h
-        LEFT JOIN hypothesis_reasoning r ON r.hypothesis_id = h.hypothesis_id
+        LEFT JOIN trace.hypothesis_reasoning r ON r.hypothesis_id = h.hypothesis_id
         LEFT JOIN latest l ON l.hypothesis_id = h.hypothesis_id AND l.rn = 1
         {where}
         GROUP BY h.hypothesis_id, h.status, h.verdict, h.description, h.summary, l.verdict, l.body
@@ -121,6 +124,12 @@ def _hypothesis_rows(
 
 
 def _build_gaps_unresolved_table(db: CaseDB) -> list[dict[str, Any]]:
+    from forensia.config import get_llm_settings
+
+    language = str(get_llm_settings().get("output_language", "ja")).casefold()
+    labels = load_report_formats(db.case.report_template_dir)["report_labels"]
+    not_admitted = (labels.get(language) or labels["en"])["work_not_admitted"]
+    unlinked_detail = (labels.get(language) or labels["en"])["work_unlinked_detail"]
     all_rows = _hypothesis_rows(
         db, ("active", "deferred", "blocked", "needs_review"), 20
     )
@@ -148,19 +157,23 @@ def _build_gaps_unresolved_table(db: CaseDB) -> list[dict[str, Any]]:
         if latest and latest[:80] == description[:80]:
             latest = ""
         work = work_by_hypothesis.get(hyp_id, {})
-        status = str(work.get("kind") or row.get("status") or "") or str(
-            row.get("latest_verdict") or row.get("verdict") or "inconclusive"
-        )
+        admitted = bool(work.get("task_id") and work.get("gap_id"))
         result.append(
             {
                 "hypothesis_id": hyp_id,
                 "hypothesis": description,
-                "status": status,
-                "evidence_rows": row.get("reasoning_count"),
+                "status": str(row.get("status") or ""),
+                "evidence_rows": row.get("linked_evidence_count"),
                 "missing_rationale": latest,
-                "next_step": needed if needed else str(work.get("reason") or ""),
-                "task_id": str(work.get("task_id") or ""),
-                "gap_id": str(work.get("gap_id") or ""),
+                "next_step": (
+                    needed
+                    or str(work.get("reason") or "")
+                    or f"Continue admitted task {work['task_id']}"
+                )
+                if admitted
+                else unlinked_detail,
+                "task_id": str(work.get("task_id") or not_admitted),
+                "gap_id": str(work.get("gap_id") or not_admitted),
             }
         )
 
@@ -169,6 +182,12 @@ def _build_gaps_unresolved_table(db: CaseDB) -> list[dict[str, Any]]:
 
 def _build_gaps_untestable_table(db: CaseDB) -> list[dict[str, Any]]:
     """Untestable hypotheses: transform raw rows into schema-matched columns."""
+    from forensia.config import get_llm_settings
+
+    language = str(get_llm_settings().get("output_language", "ja")).casefold()
+    labels = load_report_formats(db.case.report_template_dir)["report_labels"]
+    not_admitted = (labels.get(language) or labels["en"])["work_not_admitted"]
+    unlinked_detail = (labels.get(language) or labels["en"])["work_unlinked_detail"]
     rows = _hypothesis_rows(db, "untestable", 8)
     work_by_hypothesis = {
         str(item[0]): (str(item[1] or ""), str(item[2] or ""))
@@ -182,18 +201,19 @@ def _build_gaps_untestable_table(db: CaseDB) -> list[dict[str, Any]]:
     for row in rows:
         hypothesis_id = str(row.get("hypothesis_id") or "")
         task_id, gap_id = work_by_hypothesis.get(hypothesis_id, ("", ""))
+        admitted = bool(task_id and gap_id)
         needed = _extract_needed_evidence(row.get("latest_reasoning"))
         result.append(
             {
                 "hypothesis_id": hypothesis_id,
                 "hypothesis": str(row.get("description") or hypothesis_id)[:120],
-                "missing_telemetry": needed if needed else "",
+                "missing_telemetry": needed or str(row.get("latest_reasoning") or ""),
                 "rationale": str(row.get("latest_reasoning") or "")[:200],
-                "next_step": "acquire missing telemetry"
-                if needed
-                else "re-evaluate with available data",
-                "task_id": task_id,
-                "gap_id": gap_id,
+                "next_step": (
+                    f"Continue admitted task {task_id}" if admitted else unlinked_detail
+                ),
+                "task_id": task_id or not_admitted,
+                "gap_id": gap_id or not_admitted,
             }
         )
     return result

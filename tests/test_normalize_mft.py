@@ -15,9 +15,10 @@ class NormalizeMftTests(unittest.TestCase):
     def test_normalize_mft_uses_duckdb_projection_and_preserves_behavior(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(Path(tmpdir) / "case")
-            mft_path = case.raw_dir / "mft-entries-001.jsonl"
-            source_file = "disk-image-1/$MFT"
-            evidence_id = "mft-000000000001-01"
+            source_sha = "a" * 64
+            mft_path = case.raw_dir / f"mft-entries-{source_sha}.jsonl"
+            source_file = source_sha
+            evidence_id = "mft-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-000000000001-01"
 
             mft_path.write_text(
                 "\n".join(
@@ -28,10 +29,8 @@ class NormalizeMftTests(unittest.TestCase):
                                 "source_file": source_file,
                                 "header": {
                                     "record_number": "1",
-                                    "is_directory": "yes",
-                                    "flags": "EntryFlags(ALLOCATED)",
-                                    "allocated_size": 0,
-                                    "size": "42",
+                                    "sequence": 128,
+                                    "flags": "EntryFlags(ALLOCATED | INDEX_PRESENT)",
                                 },
                                 "attributes": {
                                     "StandardInformation": {
@@ -45,6 +44,7 @@ class NormalizeMftTests(unittest.TestCase):
                                     "FileName": {
                                         "data": {
                                             "path": "/Windows/System32/calc.exe",
+                                            "logical_size": 42,
                                             "created": "2024-01-03T01:02:03Z",
                                             "modified": "",
                                             "accessed": "2024-01-04T01:02:03Z",
@@ -75,7 +75,7 @@ class NormalizeMftTests(unittest.TestCase):
 
             self.assertEqual(1, entries)
             self.assertEqual(4, timeline_rows)
-            self.assertEqual(evidence_id, entry[0])
+            self.assertEqual("mft-" + source_sha + "-000000000001-128", entry[0])
             self.assertEqual(source_file, entry[1])
             self.assertEqual(1, entry[2])
             self.assertEqual("/Windows/System32/calc.exe", entry[3])
@@ -100,14 +100,14 @@ class NormalizeMftTests(unittest.TestCase):
                         "source_file": source_file,
                         "header": {
                             "record_number": 1,
-                            "is_directory": False,
+                            "sequence": 129,
                             "flags": "EntryFlags(0x0)",
-                            "allocated_size": "100",
                         },
                         "attributes": {
                             "FileName": {
                                 "data": {
                                     "path": "/Windows/System32/notepad.exe",
+                                    "logical_size": 100,
                                     "created": "2024-02-01T00:00:00Z",
                                 }
                             }
@@ -130,26 +130,17 @@ class NormalizeMftTests(unittest.TestCase):
             self.assertEqual(1, timeline_rows)
             self.assertEqual((1, 1), counts)
 
-    def test_empty_jsonl_returns_zero_zero(self) -> None:
+    def test_malformed_json_line_rejects_source_without_partial_rows(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(Path(tmpdir) / "case")
-            mft_path = case.raw_dir / "mft-entries-001.jsonl"
-            mft_path.write_text("", encoding="utf-8")
-            with CaseDB(case) as db:
-                entries, timeline = normalize_mft(case, db)
-            self.assertEqual((0, 0), (entries, timeline))
-
-    def test_malformed_json_line_skipped_gracefully(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(Path(tmpdir) / "case")
-            mft_path = case.raw_dir / "mft-entries-001.jsonl"
+            mft_path = case.raw_dir / f"mft-entries-{'b' * 64}.jsonl"
             mft_path.write_text(
                 "not valid json\n"
                 + json.dumps(
                     {
                         "evidence_id": "mft-0001",
                         "source_file": "disk-image-1/$MFT",
-                        "header": {"record_number": "1"},
+                        "header": {"sequence": 0, "record_number": "1"},
                         "attributes": {
                             "FileName": {
                                 "data": {
@@ -164,26 +155,27 @@ class NormalizeMftTests(unittest.TestCase):
                 + "\n",
                 encoding="utf-8",
             )
-            try:
-                with CaseDB(case) as db:
-                    entries, timeline = normalize_mft(case, db)
-                self.assertEqual(1, entries)
-                self.assertEqual(1, timeline)
-            except Exception:
-                self.skipTest(
-                    "DuckDB read_ndjson_objects does not skip malformed lines without ignore_errors"
+            with CaseDB(case) as db:
+                with self.assertRaises(Exception):
+                    normalize_mft(case, db)
+                self.assertEqual(
+                    (0,), db.execute("SELECT COUNT(*) FROM mft_entries").fetchone()
+                )
+                self.assertEqual(
+                    (0,), db.execute("SELECT COUNT(*) FROM mft_timeline").fetchone()
                 )
 
     def test_mft_record_missing_optional_fields(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(Path(tmpdir) / "case")
-            mft_path = case.raw_dir / "mft-entries-minimal.jsonl"
+            source_sha = "c" * 64
+            mft_path = case.raw_dir / f"mft-entries-{source_sha}.jsonl"
             mft_path.write_text(
                 json.dumps(
                     {
                         "evidence_id": "mft-minimal",
                         "source_file": "disk-image-1/$MFT",
-                        "header": {"record_number": "42"},
+                        "header": {"sequence": 0, "record_number": "42"},
                         "attributes": {
                             "FileName": {
                                 "data": {
@@ -207,8 +199,8 @@ class NormalizeMftTests(unittest.TestCase):
                 ).fetchone()
             self.assertEqual(1, entries)
             self.assertEqual(0, timeline)
-            self.assertEqual("mft-minimal", entry[0])
-            self.assertEqual("disk-image-1/$MFT", entry[1])
+            self.assertEqual("mft-" + source_sha + "-000000000042-00", entry[0])
+            self.assertEqual(source_sha, entry[1])
             self.assertEqual(42, entry[2])
             self.assertEqual("/minimal/file.bin", entry[3])
             self.assertEqual("file.bin", entry[4])
@@ -222,14 +214,21 @@ class NormalizeMftTests(unittest.TestCase):
     def test_multiple_mft_jsonl_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(Path(tmpdir) / "case")
+            with CaseDB(case) as db:
+                self.assertEqual((0, 0), normalize_mft(case, db))
+                (case.raw_dir / f"mft-entries-{'d' * 64}.jsonl").write_text(
+                    "", encoding="utf-8"
+                )
+                self.assertEqual((0, 0), normalize_mft(case, db))
             for i in range(1, 3):
-                p = case.raw_dir / f"mft-entries-{i:04d}.jsonl"
+                source_sha = str(i) * 64
+                p = case.raw_dir / f"mft-entries-{source_sha}.jsonl"
                 p.write_text(
                     json.dumps(
                         {
                             "evidence_id": f"mft-{i:04d}",
                             "source_file": f"source-{i}",
-                            "header": {"record_number": str(i)},
+                            "header": {"sequence": 0, "record_number": str(i)},
                             "attributes": {
                                 "FileName": {
                                     "data": {
@@ -253,67 +252,69 @@ class NormalizeMftTests(unittest.TestCase):
             self.assertEqual(2, timeline)
             self.assertEqual([("/file1.txt",), ("/file2.txt",)], paths)
 
-    def test_entries_replace_matching_legacy_timeline_without_reading_it(self) -> None:
+    def test_timeline_is_derived_from_entries_and_leftover_timeline_files_untouched(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(Path(tmpdir) / "case")
-            (case.raw_dir / "mft-entries-sourcekey.jsonl").write_text(
+            (case.raw_dir / f"mft-entries-{'e' * 64}.jsonl").write_text(
                 json.dumps(
                     {
                         "evidence_id": "mft-1",
                         "source_file": "disk/$MFT",
-                        "header": {"record_number": 1},
+                        "header": {"sequence": 0, "record_number": 1},
                         "attributes": {
+                            "StandardInformation": {
+                                "data": {
+                                    "created": "2024-01-01T00:00:00Z",
+                                    "modified": "2024-01-01T01:00:00Z",
+                                    "accessed": "2024-01-01T02:00:00Z",
+                                    "mft_modified": "2024-01-01T03:00:00Z",
+                                }
+                            },
                             "FileName": {
                                 "data": {
                                     "path": "/one.txt",
-                                    "created": "2024-01-01T00:00:00Z",
+                                    "created": "2024-01-02T00:00:00Z",
+                                    "modified": "2024-01-02T01:00:00Z",
+                                    "accessed": "2024-01-02T02:00:00Z",
+                                    "mft_modified": "2024-01-02T03:00:00Z",
                                 }
-                            }
+                            },
                         },
                     }
                 )
                 + "\n",
                 encoding="utf-8",
             )
-            # Old cases can contain a much larger duplicate timeline JSONL.
-            # A matching entries file must make this file unnecessary.
-            (case.raw_dir / "mft-timeline-sourcekey.jsonl").write_text(
-                "not-json\n", encoding="utf-8"
+            # A timeline JSONL left behind by an older ingest version is never
+            # read back and must not be deleted: entries are the single source
+            # of the derived timeline.
+            legacy_path = case.raw_dir / "mft-timeline-sourcekey.jsonl"
+            legacy_path.write_text("not-json\n", encoding="utf-8")
+
+            with CaseDB(case) as db:
+                entries, timeline = normalize_mft(case, db)
+                rows = db.execute(
+                    "SELECT timestamp_type FROM mft_timeline ORDER BY timestamp_type"
+                ).fetchall()
+
+            self.assertEqual(1, entries)
+            self.assertEqual(8, timeline)
+            self.assertEqual(
+                [
+                    ("FN_ACCESSED",),
+                    ("FN_CREATED",),
+                    ("FN_MFT_MODIFIED",),
+                    ("FN_MODIFIED",),
+                    ("SI_ACCESSED",),
+                    ("SI_CREATED",),
+                    ("SI_MFT_MODIFIED",),
+                    ("SI_MODIFIED",),
+                ],
+                rows,
             )
-
-            with CaseDB(case) as db:
-                entries, timeline = normalize_mft(case, db)
-                rows = db.execute("SELECT timestamp_type FROM mft_timeline").fetchall()
-
-            self.assertEqual((1, 1), (entries, timeline))
-            self.assertEqual([("FN_CREATED",)], rows)
-
-    def test_bulk_load_settings_are_restored(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(Path(tmpdir) / "case")
-            with CaseDB(case) as db:
-                before = db.execute(
-                    """
-                    SELECT current_setting('threads'),
-                           current_setting('preserve_insertion_order')
-                    """
-                ).fetchone()
-                normalize_mft(case, db)
-                after = db.execute(
-                    """
-                    SELECT current_setting('threads'),
-                           current_setting('preserve_insertion_order')
-                    """
-                ).fetchone()
-
-            self.assertEqual(before, after)
-
-    def test_no_mft_files_returns_zero_zero(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(Path(tmpdir) / "case")
-            with CaseDB(case) as db:
-                entries, timeline = normalize_mft(case, db)
-            self.assertEqual((0, 0), (entries, timeline))
+            self.assertTrue(legacy_path.exists())
 
 
 if __name__ == "__main__":

@@ -2,74 +2,90 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
+from unittest.mock import patch
 
-from forensia.ai.investigation.selection import (
+from forensia.core.case import Case
+from forensia.db.database import CaseDB
+from forensia.investigation.selection import (
     SelectionContext,
     check_eligibility,
     compute_priority_score,
     select_focus_hypotheses,
 )
-from forensia.core.case import Case
-from forensia.db.database import CaseDB
+from forensia.investigation.work_judgment import (
+    judge_work,
+    work_progress_fingerprint,
+    work_progress_snapshot,
+)
+
+
+def _spec(spec_dict: dict) -> dict:
+    return {"verification_spec": spec_dict}
 
 
 class EligibilityTests(unittest.TestCase):
     """Test eligibility filtering."""
 
-    def test_active_hypothesis_eligible(self) -> None:
-        hyp = {"status": "active", "blocked_reason": "", "next_eligible_at": None}
-        eligible, reason = check_eligibility(hyp)
-        self.assertTrue(eligible)
-        self.assertEqual(reason, "")
-
     def test_resolved_hypothesis_not_eligible(self) -> None:
-        hyp = {"status": "resolved", "blocked_reason": "", "next_eligible_at": None}
-        eligible, reason = check_eligibility(hyp)
-        self.assertFalse(eligible)
-        self.assertIn("resolved", reason)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with CaseDB(Case.init(tmpdir)) as db:
+                db.execute(
+                    "INSERT INTO hypotheses (hypothesis_id, description, status, "
+                    "verification_spec) VALUES "
+                    "('H-001', 'resolved hypothesis', 'resolved', "
+                    '\'{"spec_version": "1"}\')'
+                )
+                hyp = {
+                    "hypothesis_id": "H-001",
+                    "status": "resolved",
+                    "blocked_reason": "",
+                    "next_eligible_at": None,
+                }
+                eligible, reason = check_eligibility(hyp, db=db)
+                self.assertFalse(eligible)
+                self.assertIn("resolved", reason)
 
-    def test_blocked_hypothesis_not_eligible(self) -> None:
-        hyp = {
-            "status": "active",
-            "blocked_reason": "waiting for prerequisite",
-            "next_eligible_at": None,
-        }
-        eligible, reason = check_eligibility(hyp)
-        self.assertFalse(eligible)
-        self.assertIn("blocked", reason)
+    def test_partial_coverage_is_runnable(self) -> None:
+        """Selection, stop, and reopen share the ready rule: any
+        available/partial Coverage row makes the capability retrievable."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with CaseDB(Case.init(tmpdir)) as db:
+                db.execute(
+                    "INSERT INTO evidence_coverage "
+                    "(capability, source_family, state) "
+                    "VALUES ('logon', 'evtx', 'partial')"
+                )
+                db.execute(
+                    "INSERT INTO hypotheses (hypothesis_id, description, "
+                    "status, verification_spec) VALUES "
+                    "('H-PARTIAL', 'partial telemetry', 'active', "
+                    '\'{"spec_version": "1", '
+                    '"required_capabilities": ["logon"]}\')'
+                )
+                hyp = {
+                    "hypothesis_id": "H-PARTIAL",
+                    "status": "active",
+                    "blocked_reason": "",
+                    "next_eligible_at": None,
+                }
+                eligible, reason = check_eligibility(hyp, db=db)
+                self.assertTrue(eligible, reason)
+                self.assertEqual(reason, "")
 
 
 class PriorityScoreTests(unittest.TestCase):
     """Test priority score computation."""
 
-    def test_score_has_all_components(self) -> None:
-        hyp = {
-            "hypothesis_id": "H-001",
-            "description": "test",
-            "status": "active",
-            "source_rule_ids": ["rule-1"],
-            "selection_count": 0,
-            "last_selected_at": None,
-            "origin": "rule",
-        }
-        ctx = SelectionContext(
-            active_hypotheses=[hyp],
-            relations={},
-            coverage={},
-            report_sections={},
-            open_gaps=[],
-            objective="",
-        )
-        total, components = compute_priority_score(hyp, ctx)
-        component_names = {c.name for c in components}
-        self.assertIn("severity", component_names)
-        self.assertIn("report_relevance", component_names)
-        self.assertIn("aging", component_names)
-        self.assertIn("retry_penalty", component_names)
+    def test_report_prose_cannot_influence_order(self) -> None:
+        """R05: no scoring input may carry report prose.
 
-    def test_never_selected_has_high_aging(self) -> None:
+        The SelectionContext has no section body/title/stale/confidence
+        fields, so a report reword cannot change the investigation order.
+        Admitted Gap references stay scoreable.
+        """
         hyp = {
             "hypothesis_id": "H-001",
             "description": "test",
@@ -78,18 +94,34 @@ class PriorityScoreTests(unittest.TestCase):
             "selection_count": 0,
             "last_selected_at": None,
             "origin": "rule",
+            "verification_spec": {"spec_version": "1"},
         }
         ctx = SelectionContext(
             active_hypotheses=[hyp],
             relations={},
             coverage={},
-            report_sections={},
             open_gaps=[],
             objective="",
         )
-        _, components = compute_priority_score(hyp, ctx)
-        aging = next(c for c in components if c.name == "aging")
-        self.assertEqual(aging.raw_value, 8.0)
+        with self.assertRaises(TypeError):
+            SelectionContext(
+                active_hypotheses=[hyp],
+                relations={},
+                coverage={},
+                open_gaps=[],
+                objective="",
+                report_sections={"summary": {"title": "summary", "stale": True}},
+            )
+        base, _ = compute_priority_score(hyp, ctx)
+        linked_ctx = SelectionContext(
+            active_hypotheses=[hyp],
+            relations={},
+            coverage={},
+            open_gaps=[{"gap_id": "GAP-1", "hypothesis_id": "H-001"}],
+            objective="",
+        )
+        linked, _ = compute_priority_score(hyp, linked_ctx)
+        self.assertGreater(linked, base)
 
     def test_higher_selection_count_increases_penalty(self) -> None:
         hyp_new = {
@@ -100,6 +132,7 @@ class PriorityScoreTests(unittest.TestCase):
             "selection_count": 0,
             "last_selected_at": None,
             "origin": "rule",
+            "verification_spec": {"spec_version": "1"},
         }
         hyp_old = {
             "hypothesis_id": "H-002",
@@ -109,12 +142,12 @@ class PriorityScoreTests(unittest.TestCase):
             "selection_count": 5,
             "last_selected_at": None,
             "origin": "rule",
+            "verification_spec": {"spec_version": "1"},
         }
         ctx = SelectionContext(
             active_hypotheses=[hyp_new, hyp_old],
             relations={},
             coverage={},
-            report_sections={},
             open_gaps=[],
             objective="",
         )
@@ -125,53 +158,269 @@ class PriorityScoreTests(unittest.TestCase):
         self.assertLess(penalty_old, penalty_new)
 
 
+class RequiredCapabilityTests(unittest.TestCase):
+    """Test selection behavior when required capabilities are unavailable."""
+
+    @staticmethod
+    def _db_hypothesis(spec: dict) -> dict:
+        return {
+            "hypothesis_id": "H-SPEC",
+            "status": "active",
+            "blocked_reason": "",
+            "next_eligible_at": None,
+            "verification_spec": spec,
+        }
+
+    def test_unavailable_inferred_capability_blocks_until_spec_declares(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with CaseDB(Case.init(tmpdir)) as db:
+                db.execute(
+                    "INSERT INTO hypotheses (hypothesis_id, description, "
+                    "status, verification_spec) "
+                    "VALUES ('H-SPEC', 'spec hypothesis', 'active', "
+                    '\'{"spec_version": "1", '
+                    '"support_conditions": {"keywords": ["evtx_events 4624"]}}\')'
+                )
+                db.execute(
+                    "INSERT INTO evidence_coverage "
+                    "(capability, source_family, state) "
+                    "VALUES ('logon', 'evtx', 'unavailable')"
+                )
+                hyp = self._db_hypothesis(
+                    {
+                        "spec_version": "1",
+                        "support_conditions": {"keywords": ["evtx_events 4624"]},
+                    }
+                )
+                eligible, reason = check_eligibility(hyp, db=db)
+                self.assertFalse(eligible)
+                self.assertIn("capability unavailable", reason)
+                db.execute(
+                    "INSERT INTO evidence_coverage "
+                    "(capability, source_family, state) "
+                    "VALUES ('process_execution', 'evtx', 'available')"
+                )
+                db.execute(
+                    "UPDATE hypotheses SET verification_spec = "
+                    '\'{"spec_version": "1", '
+                    '"required_capabilities": ["process_execution"], '
+                    "\"support_conditions\": {}}' WHERE hypothesis_id = 'H-SPEC'"
+                )
+                declared = self._db_hypothesis(
+                    {
+                        "spec_version": "1",
+                        "required_capabilities": ["process_execution"],
+                        "support_conditions": {},
+                    }
+                )
+                eligible, reason = check_eligibility(declared, db=db)
+                self.assertTrue(eligible)
+                self.assertEqual(reason, "")
+
+    def test_required_capability_without_coverage_row_blocks(self) -> None:
+        """A declared capability the Coverage projection cannot represent is
+        not runnable: selection and stop classification must agree on the
+        same Case State instead of flipping eligibility/terminal status."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with CaseDB(Case.init(tmpdir)) as db:
+                db.execute(
+                    "INSERT INTO hypotheses (hypothesis_id, description, "
+                    "status, verification_spec) "
+                    "VALUES ('H-SPEC', 'spec hypothesis', 'active', "
+                    '\'{"spec_version": "1", '
+                    '"required_capabilities": ["process_execution"], '
+                    '"support_conditions": {}}\')'
+                )
+                declared = self._db_hypothesis(
+                    {
+                        "spec_version": "1",
+                        "required_capabilities": ["process_execution"],
+                        "support_conditions": {},
+                    }
+                )
+                eligible, reason = check_eligibility(declared, db=db)
+                self.assertFalse(eligible)
+                self.assertIn("capability unavailable", reason)
+
+
 class SelectionIntegrationTests(unittest.TestCase):
     """Test end-to-end hypothesis selection."""
-
-    def test_select_from_empty(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(tmpdir)
-            with CaseDB(case) as db:
-                results = select_focus_hypotheses(db, limit=2)
-                self.assertEqual(len(results), 0)
 
     def test_selects_active_hypothesis(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
                 db.execute(
-                    "INSERT INTO hypotheses (hypothesis_id, description, status) "
-                    "VALUES ('H-001', 'suspicious logon', 'active')"
+                    "INSERT INTO hypotheses (hypothesis_id, description, status, "
+                    "verification_spec) VALUES "
+                    "('H-001', 'suspicious logon', 'active', '{\"spec_version\": \"1\"}')"
                 )
                 results = select_focus_hypotheses(db, limit=2)
                 self.assertEqual(len(results), 1)
                 self.assertTrue(results[0].eligible)
                 self.assertEqual(results[0].hypothesis_id, "H-001")
 
+    def test_unchanged_stalled_work_blocks_only_its_session(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                db.execute(
+                    "INSERT INTO hypotheses (hypothesis_id, description, status, "
+                    "required_entities, verification_spec) VALUES "
+                    "('H-STALL', 'stalled work', 'active', '[\"host\"]', "
+                    '\'{"spec_version": "1"}\')'
+                )
+                snapshot = work_progress_snapshot(db, "H-STALL")
+                fingerprint = work_progress_fingerprint(snapshot)
+                db.execute(
+                    "INSERT INTO trace.investigation_steps "
+                    "(step_id, session_id, hypothesis_id, iteration, phase, "
+                    "input_json, output_json, created_at) "
+                    "VALUES ('stall-1', 'S-1', 'H-STALL', 1, 'work-progress', "
+                    "'{}', ?, now())",
+                    [
+                        json.dumps(
+                            {
+                                "status": "completed",
+                                "fingerprint": fingerprint,
+                                "progressed": False,
+                            }
+                        )
+                    ],
+                )
+                judgment = judge_work(
+                    db,
+                    ["H-STALL"],
+                    selection_gate=True,
+                    session_id="S-1",
+                )["H-STALL"]
+                self.assertFalse(judgment.runnable)
+                self.assertIn(
+                    "work_exhausted", {blocker.code for blocker in judgment.blockers}
+                )
+                judgment = judge_work(
+                    db,
+                    ["H-STALL"],
+                    selection_gate=True,
+                    session_id="S-1",
+                )["H-STALL"]
+                self.assertFalse(judgment.runnable)
+                self.assertIn(
+                    "work_exhausted", {blocker.code for blocker in judgment.blockers}
+                )
+                self.assertTrue(
+                    judge_work(
+                        db,
+                        ["H-STALL"],
+                        selection_gate=True,
+                        session_id="S-2",
+                    )["H-STALL"].runnable
+                )
+
+                db.execute(
+                    "UPDATE hypotheses SET verification_spec = ? "
+                    "WHERE hypothesis_id = 'H-STALL'",
+                    ['{"spec_version":"1","required_capabilities":["logon"]}'],
+                )
+                db.execute(
+                    "INSERT INTO evidence_coverage (capability, source_family, state) "
+                    "VALUES ('logon', 'evtx', 'available')"
+                )
+                self.assertTrue(
+                    judge_work(
+                        db,
+                        ["H-STALL"],
+                        selection_gate=True,
+                        session_id="S-1",
+                    )["H-STALL"].runnable
+                )
+
+                current = work_progress_snapshot(db, "H-STALL")
+                db.execute(
+                    "UPDATE trace.investigation_steps SET output_json = ? "
+                    "WHERE step_id = 'stall-1'",
+                    [
+                        json.dumps(
+                            {
+                                "status": "completed",
+                                "fingerprint": work_progress_fingerprint(current),
+                                "progressed": False,
+                            }
+                        )
+                    ],
+                )
+                db.execute(
+                    "INSERT INTO evidence_coverage (capability, source_family, state) "
+                    "VALUES ('other-cap', 'mft', 'available')"
+                )
+                self.assertTrue(
+                    judge_work(
+                        db,
+                        ["H-STALL"],
+                        selection_gate=True,
+                        session_id="S-1",
+                    )["H-STALL"].runnable
+                )
+
     def test_skips_blocked_hypothesis(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
                 db.execute(
-                    "INSERT INTO hypotheses (hypothesis_id, description, status, blocked_reason) "
-                    "VALUES ('H-001', 'blocked hypothesis', 'active', 'waiting for data')"
+                    "INSERT INTO hypotheses (hypothesis_id, description, status, "
+                    "blocked_reason, verification_spec) VALUES "
+                    "('H-001', 'blocked hypothesis', 'active', 'waiting for data', "
+                    '\'{"spec_version": "1"}\')'
                 )
                 db.execute(
-                    "INSERT INTO hypotheses (hypothesis_id, description, status) "
-                    "VALUES ('H-002', 'active hypothesis', 'active')"
+                    "INSERT INTO hypotheses (hypothesis_id, description, status, "
+                    "verification_spec) VALUES "
+                    "('H-002', 'active hypothesis', 'active', '{\"spec_version\": \"1\"}')"
+                )
+                db.execute(
+                    "INSERT INTO investigation_state (state_id, preferred_hypothesis_id) "
+                    "VALUES ('case', 'H-001')"
                 )
                 results = select_focus_hypotheses(db, limit=2)
                 eligible = [r for r in results if r.eligible]
                 self.assertEqual(len(eligible), 1)
                 self.assertEqual(eligible[0].hypothesis_id, "H-002")
 
+    def test_preferred_hypothesis_ranks_first_without_changing_score(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                db.execute(
+                    "INSERT INTO hypotheses (hypothesis_id, description, status, "
+                    "verification_spec) VALUES "
+                    "('H-001', 'ordinary priority', 'active', '{\"spec_version\": \"1\"}'), "
+                    "('H-002', 'operator preference', 'active', '{\"spec_version\": \"1\"}')"
+                )
+                db.execute(
+                    "INSERT INTO investigation_state (state_id, preferred_hypothesis_id) "
+                    "VALUES ('case', 'H-002')"
+                )
+                with patch(
+                    "forensia.investigation.selection.compute_priority_score",
+                    side_effect=lambda hyp, *_args, **_kwargs: (
+                        (1.0 if hyp["hypothesis_id"] == "H-001" else 0.0),
+                        [],
+                    ),
+                ):
+                    results = select_focus_hypotheses(db, limit=1)
+                self.assertEqual(results[0].hypothesis_id, "H-002")
+                self.assertEqual(results[0].total_score, 0.0)
+                self.assertEqual(results[0].components[0].name, "human_preference")
+                self.assertIn("eligible work", results[0].components[0].reason)
+
     def test_selection_updates_count(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
                 db.execute(
-                    "INSERT INTO hypotheses (hypothesis_id, description, status, selection_count) "
-                    "VALUES ('H-001', 'test', 'active', 0)"
+                    "INSERT INTO hypotheses (hypothesis_id, description, status, "
+                    "selection_count, verification_spec) VALUES "
+                    "('H-001', 'test', 'active', 0, '{\"spec_version\": \"1\"}')"
                 )
                 select_focus_hypotheses(db, limit=1)
                 row = db.execute(
@@ -184,8 +433,10 @@ class SelectionIntegrationTests(unittest.TestCase):
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
                 db.execute(
-                    "INSERT INTO hypotheses (hypothesis_id, description, status) "
-                    "VALUES ('H-001', 'one', 'active'), ('H-002', 'two', 'active')"
+                    "INSERT INTO hypotheses (hypothesis_id, description, status, "
+                    "verification_spec) VALUES "
+                    "('H-001', 'one', 'active', '{\"spec_version\": \"1\"}'), "
+                    "('H-002', 'two', 'active', '{\"spec_version\": \"1\"}')"
                 )
                 results = [
                     result

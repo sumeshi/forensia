@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +24,8 @@ from forensia.report.finding_themes import (
     classify_finding_theme,
 )
 from forensia.report.resources import render_templates_dir
+from forensia.report.sections.report_input import active_report_section_keys
+from forensia.report.sections.section_store import fetch_report_sections
 
 
 def _fetch_records(
@@ -86,26 +88,14 @@ def _group_findings_for_display(
 
 def _load_report_sections(db: CaseDB) -> tuple[list[dict[str, Any]], str]:
     """Load report sections from the database into an ordered list, returning both list and concatenated markdown."""
-    sections = _normalize_rows(
-        _fetch_records(
-            db,
-            """
-            SELECT section_key, title, body, confidence, status, gaps, last_filled_session, last_filled_at
-            FROM report_sections
-            ORDER BY section_key
-            """,
-        )
-    )
+    sections = _normalize_rows(fetch_report_sections(db))
     report_path = db.case.reports_dir / "report.md"
     if report_path.exists():
         report_markdown = report_path.read_text(encoding="utf-8").strip()
     else:
-        ordered = [
-            str(section.get("body") or "").strip()
-            for section in sections
-            if str(section.get("body") or "").strip()
-        ]
-        report_markdown = "\n\n".join(ordered).strip()
+        from forensia.report.render.writer import build_report_markdown_from_db
+
+        report_markdown = build_report_markdown_from_db(db).strip()
     if report_markdown:
         report_markdown += "\n"
     for section in sections:
@@ -230,7 +220,9 @@ def _split_table_row(line: str) -> list[str]:
         stripped = stripped[1:]
     if stripped.endswith("|"):
         stripped = stripped[:-1]
-    return [cell.strip() for cell in stripped.split("|")]
+    return [
+        cell.strip().replace(r"\|", "|") for cell in re.split(r"(?<!\\)\|", stripped)
+    ]
 
 
 def _is_table_separator(line: str) -> bool:
@@ -484,7 +476,7 @@ def render_html_report(
             db,
             """
             SELECT review_id, finding_id, verdict, report_text, confidence_adjustment, created_at
-            FROM ai_reviews
+            FROM trace.ai_reviews
             ORDER BY created_at DESC
             LIMIT 200
             """,
@@ -500,6 +492,10 @@ def render_html_report(
             """,
         )
     )
+    active_keys = active_report_section_keys(db)
+    if active_keys is not None:
+        active = set(active_keys)
+        claims = [row for row in claims if str(row["section_key"]) in active]
     report_sections, report_markdown = _load_report_sections(db)
     interactive_html = _inject_evidence_interactivity(
         str(render_markdown_fragment(report_markdown)), _load_evidence_map(case)
@@ -524,7 +520,7 @@ def render_html_report(
         for row in host_rows
         if str(row.get("computer") or "").strip()
     ]
-    generated_at = datetime.now().isoformat(timespec="seconds")
+    generated_at = datetime.now(UTC).isoformat(timespec="seconds")
     payload = {
         "case_name": case.path.name,
         "manifest": manifest,

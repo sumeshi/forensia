@@ -1,32 +1,36 @@
 """Canonical filesystem locations for packaged knowledge data.
 
-All code must resolve rulepacks/profiles paths through these helpers instead
+All code must resolve knowledge paths through these helpers instead
 of Path(__file__) arithmetic, so the physical layout can change in one place.
 """
 
 from __future__ import annotations
 
+import os
 from importlib.resources import files
 from pathlib import Path
 
-_KNOWLEDGE_ROOT = files("forensia.knowledge")
+_DATA_ROOT = files("forensia").joinpath("data")
 
 
-def rulepacks_dir() -> Path:
-    """Directory containing the packaged detection rulepacks (YAML)."""
-    return Path(_KNOWLEDGE_ROOT.joinpath("rulepacks"))
+def rules_dir() -> Path:
+    """Directory containing the packaged detection rules (YAML)."""
+    return Path(_DATA_ROOT.joinpath("rules"))
 
 
 def schema_dir() -> Path:
-    """Directory containing schema cards, catalogs, and playbook data."""
-    return Path(_KNOWLEDGE_ROOT.joinpath("rulepacks", "_schema"))
+    """Directory containing schema cards and catalogs."""
+    return Path(_DATA_ROOT.joinpath("schema"))
 
 
-def profiles_dir() -> Path:
-    """Directory containing the packaged investigation profiles (YAML)."""
-    return Path(_KNOWLEDGE_ROOT.joinpath("profiles"))
+def playbook_dir() -> Path:
+    """Directory containing the packaged investigation playbook."""
+    return Path(_DATA_ROOT.joinpath("playbook"))
 
 
-def profile_path(profile_name: str) -> Path:
-    """Path of one packaged profile YAML by name (may not exist)."""
-    return Path(_KNOWLEDGE_ROOT.joinpath("profiles", f"{profile_name}.yaml"))
+def sigma_bundle_path() -> Path:
+    """User-installed Sigma rules, separate from the Python distribution."""
+    from importlib.metadata import version
+
+    root = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share"))
+    return root / "forensia" / "sigma" / version("forensia") / "sigma_bundle.json"

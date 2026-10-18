@@ -7,35 +7,20 @@ import re
 from functools import lru_cache
 from typing import Any
 
-from forensia.core.case import Case
 from forensia.db.database import CaseDB
 from forensia.db.evidence_lookup import find_missing_evidence_ids
 from forensia.db.query import fetch_records
 from forensia.knowledge.catalog import event_context_eligible, event_context_from_row
 from forensia.knowledge.resources import schema_dir
-from forensia.report.answers.answer_registry import (
-    build_structured_answer,
-)
-from forensia.report.answers.answer_store import (
-    _render_structured_answer_markdown,
-    _structured_answer_interpretation,
-    _structured_block_id,
-)
 from forensia.report.evidence_refs import (
     EVIDENCE_ID_PATTERN,
 )
 from forensia.report.metrics import query_case_metrics
-from forensia.report.render.markdown import (
-    _strip_hidden_report_columns_from_markdown_tables,
-)
 from forensia.report.sections.quality_gates import (
     HTML_FILL_PATTERN,
     _first_heading_text,
 )
-from forensia.report.sections.template_parsing import (
-    GAP_PATTERN,
-    RAW_EVIDENCE_HEADING_PATTERN,
-)
+from forensia.report.sections.template_parsing import GAP_PATTERN
 
 
 def _section_confidence(body: str) -> float:
@@ -49,28 +34,6 @@ def _section_confidence(body: str) -> float:
 def _title_from_template_body(template_body: str, fallback: str) -> str:
     title = _first_heading_text(template_body)
     return title or fallback
-
-
-def _duplicate_finding_titles(db: CaseDB, body: str) -> list[str]:
-    """Detect finding titles that appear more than twice in a section body."""
-    lowered_body = body.casefold()
-    duplicates: list[str] = []
-    rows = fetch_records(
-        db,
-        """
-        SELECT DISTINCT title
-        FROM findings
-        WHERE COALESCE(title, '') != ''
-        """,
-    )
-    for row in rows:
-        title = str(row.get("title") or "").strip()
-        if len(title) < 5:
-            continue
-        count = lowered_body.count(title.casefold())
-        if count > 2:
-            duplicates.append(title)
-    return duplicates
 
 
 def _correlation_finding_ids(finding_ids: list[str], db: CaseDB) -> list[str]:
@@ -97,7 +60,7 @@ def _correlation_finding_ids(finding_ids: list[str], db: CaseDB) -> list[str]:
 
 @lru_cache(maxsize=1)
 def _load_event_id_hints() -> dict[int, dict[str, Any]]:
-    """Load the event_id to hints mapping from _schema/event_ids.yaml."""
+    """Load the event_id to hints mapping from data/schema/event_ids.yaml."""
     import yaml
 
     path = schema_dir() / "event_ids.yaml"
@@ -159,7 +122,7 @@ def _collect_event_contexts_from_results(
                 continue
             try:
                 event_id = int(row.get("event_id"))
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 continue
             context = event_context_from_row(row)
             if context not in contexts.setdefault(event_id, []):
@@ -384,12 +347,7 @@ def _verify_block_output(db: CaseDB, body: str) -> tuple[list[str], float]:
 
 
 def _strip_narrative_status_lines(body: str) -> str:
-    """Remove internal block status badges from human-facing narrative sections.
-
-    The raw_sql → evidence query replacement is a legacy safeguard for section bodies
-    persisted before `_result_source_label` was renamed; new runs emit `evidence_query`
-    via the source label itself and never hit the replace branch.
-    """
+    """Remove internal block status badges from human-facing narrative sections."""
     lines = []
     for line in str(body or "").splitlines():
         stripped = line.strip()
@@ -401,183 +359,8 @@ def _strip_narrative_status_lines(body: str) -> str:
             continue
         lines.append(line)
     text = "\n".join(lines)
-    text = text.replace("raw_sql", "evidence query")
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
-
-
-def _parse_markdown_answer_rows(block: str) -> list[dict[str, Any]]:
-    answer_part = re.split(
-        r"(?m)^### (?:Missing Reason|Queries Run|Structured Data)\s*$",
-        block,
-        maxsplit=1,
-    )[0]
-    if "### Answer" in answer_part:
-        answer_part = answer_part.split("### Answer", 1)[1]
-    table_lines = [
-        line.strip()
-        for line in answer_part.splitlines()
-        if line.strip().startswith("|") and line.strip().endswith("|")
-    ]
-    if len(table_lines) < 2:
-        return []
-    headers = [
-        cell.strip().replace("\\|", "|")
-        for cell in table_lines[0].strip("|").split("|")
-    ]
-    rows: list[dict[str, Any]] = []
-    for line in table_lines[1:]:
-        cells = [
-            cell.strip().replace("\\|", "|") for cell in line.strip("|").split("|")
-        ]
-        if all(re.fullmatch(r":?-{3,}:?", cell or "") for cell in cells):
-            continue
-        if len(cells) != len(headers):
-            continue
-        rows.append(dict(zip(headers, cells, strict=False)))
-    return rows
-
-
-def _ensure_appendix_interpretations(body: str, tz_name: str | None = None) -> str:
-    """Insert short reader-facing interpretations into existing appendix question blocks."""
-    chunks = re.split(r"(?m)(?=^## .+$)", str(body or "").strip())
-    rendered: list[str] = []
-    for chunk in chunks:
-        if not chunk.strip() or not chunk.lstrip().startswith("## "):
-            rendered.append(chunk)
-            continue
-        if "### Interpretation" in chunk or "### Answer" not in chunk:
-            rendered.append(chunk)
-            continue
-        heading = chunk.splitlines()[0].lstrip("#").strip()
-        id_match = re.search(r"(?m)^\*\*ID:\*\*\s*(.+)$", chunk)
-        status_match = re.search(r"(?m)^\*\*Status:\*\*\s*(.+)$", chunk)
-        spec_match = re.search(r"(?m)^- structured:(?P<spec>[^:]+):", chunk)
-        answer = {
-            "answer_spec": spec_match.group("spec").strip() if spec_match else "",
-            "id": id_match.group(1).strip()
-            if id_match
-            else _structured_block_id(heading),
-            "status": status_match.group(1).strip() if status_match else "",
-            "answer": _parse_markdown_answer_rows(chunk),
-        }
-        interpretation = _structured_answer_interpretation(
-            answer, heading, tz_name=tz_name
-        )
-        chunk = chunk.replace(
-            "\n### Answer", f"\n### Interpretation\n{interpretation}\n\n### Answer", 1
-        )
-        rendered.append(chunk)
-    text = "".join(rendered)
-    return re.sub(r"\n{3,}", "\n\n", text).strip()
-
-
-def _refresh_appendix_structured_blocks(
-    db: CaseDB | None, body: str, tz_name: str | None = None
-) -> str:
-    """Refresh stale high-risk appendix blocks whose old Markdown can retain noisy rows."""
-    if db is None:
-        return body
-    chunks = re.split(r"(?m)(?=^## .+$)", str(body or "").strip())
-    rendered: list[str] = []
-    for chunk in chunks:
-        if not chunk.strip() or not chunk.lstrip().startswith("## "):
-            rendered.append(chunk)
-            continue
-        heading = chunk.splitlines()[0].lstrip("#").strip()
-        lower_heading = heading.casefold()
-        answer_spec = ""
-        if "antiforensic" in lower_heading or "anti-forensic" in lower_heading:
-            answer_spec = "antiforensic_activity"
-        if not answer_spec:
-            rendered.append(chunk)
-            continue
-        id_match = re.search(r"(?m)^\*\*ID:\*\*\s*(.+)$", chunk)
-        answer_id = (
-            id_match.group(1).strip() if id_match else _structured_block_id(heading)
-        )
-        try:
-            answer = build_structured_answer(
-                db.case,
-                db,
-                answer_spec=answer_spec,
-                answer_id=answer_id,
-                section_key="6_appendix",
-                block_heading=heading,
-            )
-        except Exception:
-            answer = None
-        rendered.append(
-            _render_structured_answer_markdown(
-                answer,
-                heading,
-                tz_name=tz_name,
-                template_dir=db.case.report_template_dir,
-            )
-            if answer
-            else chunk
-        )
-    return "".join(rendered).strip()
-
-
-def _final_report_section_body(
-    section_key: str, body: str, db: CaseDB | None = None, case: Case | None = None
-) -> str:
-    """Return the Markdown body intended for report.md, leaving debug metadata out."""
-    text = str(body or "").strip()
-    if section_key != "6_appendix":
-        text = _strip_narrative_status_lines(text)
-    else:
-        tz_name = getattr(case, "source_timezone", "UTC") if case else "UTC"
-        text = _refresh_appendix_structured_blocks(db, text, tz_name=tz_name)
-        text = _ensure_appendix_interpretations(text, tz_name=tz_name)
-        text = _strip_hidden_report_columns_from_markdown_tables(text)
-    return text
-
-
-def _sanitize_raw_evidence_body(section_key: str, body: str) -> tuple[str, bool]:
-    """Replace raw evidence tables under Raw Evidence headings with a redirection notice."""
-    text = str(body or "").rstrip()
-    if not text:
-        return text, False
-    lines = text.splitlines()
-    out: list[str] = []
-    removed = False
-    index = 0
-    while index < len(lines):
-        line = lines[index]
-        if RAW_EVIDENCE_HEADING_PATTERN.match(line.strip()):
-            removed = True
-            out.append(line)
-            out.append("")
-            out.append(
-                f"Raw evidence moved to reports/evidence/{section_key}.json; this section keeps only normalized summaries."
-            )
-            index += 1
-            while index < len(lines):
-                next_line = lines[index]
-                if next_line.strip().startswith(
-                    "## "
-                ) and not next_line.strip().startswith("### "):
-                    break
-                if next_line.strip().startswith(
-                    "### "
-                ) and not next_line.strip().startswith("#### "):
-                    break
-                index += 1
-            continue
-        out.append(line)
-        index += 1
-    sanitized = "\n".join(out).strip()
-    if removed and (
-        "| None |" in text
-        or "| NULL |" in text
-        or "| - |" in text
-        or "None" in text
-        or "NULL" in text
-    ):
-        sanitized = re.sub(r"\n{3,}", "\n\n", sanitized)
-    return sanitized, removed
 
 
 def collect_gaps(filled_sections: dict[str, str]) -> list[str]:

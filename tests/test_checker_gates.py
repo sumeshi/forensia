@@ -6,16 +6,15 @@ import datetime
 import unittest
 from typing import Any
 
-from forensia.ai.checking.check_guardrails import (
+from forensia.core.session import Hypothesis
+from forensia.investigation.verification.check_guardrails import (
     annotate_benign_context,
     guardrail_check_payload,
     verify_verdict_consistency,
 )
-from forensia.ai.checking.check_normalize import (
-    filter_memory_updates,
+from forensia.investigation.verification.check_normalize import (
     validate_extracted_findings,
 )
-from forensia.core.session import Hypothesis
 
 
 def _hypothesis(
@@ -38,6 +37,22 @@ def _summary(rows: list[dict[str, Any]], event_ids: list[int]) -> dict[str, Any]
     }
 
 
+def _event_row(event_id: int, **fields: Any) -> dict[str, Any]:
+    row = {"event_id": event_id, **fields}
+    if event_id in {4624, 4625}:
+        row.update(
+            {
+                "channel": "Security",
+                "raw_json": {
+                    "winlog": {
+                        "provider": {"name": "Microsoft-Windows-Security-Auditing"}
+                    }
+                },
+            }
+        )
+    return row
+
+
 class TestVerifyVerdictConsistency(unittest.TestCase):
     def test_event_and_required_entity_contracts(self) -> None:
         cases = (
@@ -46,7 +61,11 @@ class TestVerifyVerdictConsistency(unittest.TestCase):
                 "confirmed",
                 _hypothesis(confirm_when={"co_observed_event_ids": [4625, 4624]}),
                 _summary(
-                    [{"target_user": "alice", "evidence_id": "ev-1"}], [4625, 4624]
+                    [
+                        _event_row(4625, target_user="alice", evidence_id="ev-1"),
+                        _event_row(4624, target_user="alice", evidence_id="ev-2"),
+                    ],
+                    [4625, 4624],
                 ),
                 "confirmed",
             ),
@@ -54,7 +73,9 @@ class TestVerifyVerdictConsistency(unittest.TestCase):
                 "missing event",
                 "confirmed",
                 _hypothesis(confirm_when={"co_observed_event_ids": [4625]}),
-                _summary([{"target_user": "alice", "evidence_id": "ev-1"}], [2004]),
+                _summary(
+                    [_event_row(2004, target_user="alice", evidence_id="ev-1")], [2004]
+                ),
                 "inconclusive",
             ),
             (
@@ -62,7 +83,11 @@ class TestVerifyVerdictConsistency(unittest.TestCase):
                 "confirmed",
                 _hypothesis(required=["target_user", "src_ip"]),
                 _summary(
-                    [{"target_user": "n/a", "src_ip": None, "evidence_id": "ev-1"}],
+                    [
+                        _event_row(
+                            4624, target_user="n/a", src_ip=None, evidence_id="ev-1"
+                        )
+                    ],
                     [4624],
                 ),
                 "inconclusive",
@@ -71,7 +96,9 @@ class TestVerifyVerdictConsistency(unittest.TestCase):
                 "required value present",
                 "confirmed",
                 _hypothesis(required=["target_user"]),
-                _summary([{"target_user": "alice", "evidence_id": "ev-1"}], [4624]),
+                _summary(
+                    [_event_row(4624, target_user="alice", evidence_id="ev-1")], [4624]
+                ),
                 "confirmed",
             ),
             ("refuted bypass", "refuted", _hypothesis(), _summary([], []), "refuted"),
@@ -126,6 +153,12 @@ class TestVerifyVerdictConsistency(unittest.TestCase):
                     "event_id": 4624,
                     "computer": second_host,
                     "target_user": second_user,
+                    "channel": "Security",
+                    "raw_json": {
+                        "winlog": {
+                            "provider": {"name": "Microsoft-Windows-Security-Auditing"}
+                        }
+                    },
                     "timestamp": (
                         base + datetime.timedelta(minutes=minutes)
                     ).isoformat(),
@@ -136,6 +169,21 @@ class TestVerifyVerdictConsistency(unittest.TestCase):
                     "confirmed", "", hypothesis, _summary(rows, [25, 4624])
                 )
                 assert actual == expected
+
+    def test_duplicate_evidence_id_does_not_satisfy_min_count(self) -> None:
+        hypothesis = _hypothesis(
+            confirm_when={"co_observed_event_ids": [4624], "min_count": 2}
+        )
+        rows = [
+            {"evidence_id": "evtx-one", "event_id": 4624},
+            {"evidence_id": "evtx-one", "event_id": 4624},
+        ]
+
+        actual, _ = verify_verdict_consistency(
+            "confirmed", "", hypothesis, _summary(rows, [4624])
+        )
+
+        assert actual == "inconclusive"
 
     def test_benign_context_only_downgrades_fully_benign_support(self) -> None:
         benign = {"subject_user": "PC-01$", "evidence_id": "ev-1"}
@@ -163,7 +211,6 @@ class TestPayloadGuardrails(unittest.TestCase):
             "finding_updates": [],
             "suspicious_evidence": [],
             "new_hypotheses": [],
-            "memory_updates": {},
             "report_text": "test report",
             "extracted_findings": [],
             "query_id": "q-test",
@@ -194,42 +241,6 @@ class TestPayloadGuardrails(unittest.TestCase):
                     result_summary=_summary([], []),
                 )
                 assert guarded["verdict"] == "inconclusive"
-
-
-class TestMemoryUpdateFiltering(unittest.TestCase):
-    def test_entity_validation_matrix(self) -> None:
-        sample_rows = [
-            {
-                "target_user": "alice",
-                "computer": "pc-01",
-                "file_path": r"C:\Users\jdoe\app.exe",
-                "evidence_id": "ev-1",
-            }
-        ]
-        cases = (
-            ("exact", "user", "alice", True),
-            ("path substring", "user", "jdoe", True),
-            ("absent", "user", "nobody", False),
-            ("too short", "host", "pc", False),
-            ("invalid type", "garbage_type", "alice", False),
-            ("placeholder", "user", "n/a", False),
-        )
-        for name, entity_type, value, expected in cases:
-            updates = {
-                "entities": [
-                    {
-                        "entity_type": entity_type,
-                        "name": value,
-                        "role": "actor_user",
-                        "evidence_ids": ["ev-1"],
-                    }
-                ]
-            }
-            with self.subTest(name=name):
-                filtered = filter_memory_updates(
-                    updates, {"ev-1"}, sample_rows=sample_rows
-                )
-                assert bool(filtered.get("entities")) is expected
 
 
 class TestExtractedFindingValidation(unittest.TestCase):

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import fnmatch
 import json
-import logging
 import re
 from functools import lru_cache
 from typing import Any
@@ -11,9 +10,19 @@ import yaml
 
 from forensia.knowledge.resources import schema_dir
 
-logger = logging.getLogger(__name__)
-
 _SCHEMA_DIR = schema_dir()
+
+
+def _load_yaml(name: str) -> dict[str, Any]:
+    """Required packaged declarations must never masquerade as empty evidence."""
+    path = _SCHEMA_DIR / name
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, yaml.YAMLError) as exc:
+        raise ValueError(f"Cannot load required declaration {path}: {exc}") from exc
+    if not isinstance(data, dict) or not data:
+        raise ValueError(f"Required declaration {path} must be a nonempty mapping")
+    return data
 
 
 # ── DFIR YAML bulk loader ──────────────────────────────────────────────────
@@ -21,17 +30,7 @@ _SCHEMA_DIR = schema_dir()
 
 @lru_cache(maxsize=1)
 def load_dfir_yamls() -> dict[str, Any]:
-    """Load all DFIR YAML schemas from _schema/ directory with caching."""
-
-    def _load_yaml(name: str) -> dict:
-        path = _SCHEMA_DIR / name
-        if not path.exists():
-            return {}
-        try:
-            data = yaml.safe_load(path.read_text(encoding="utf-8"))
-            return data if isinstance(data, dict) else {}
-        except Exception:
-            return {}
+    """Load all DFIR YAML schemas from data/schema/ directory with caching."""
 
     return {
         "evtx_events": _load_yaml("evtx_events.yaml"),
@@ -49,25 +48,20 @@ def load_dfir_yamls() -> dict[str, Any]:
 
 @lru_cache(maxsize=1)
 def load_event_id_hints() -> dict[int, dict[str, Any]]:
-    """Load event ID hints from _schema/event_ids.yaml keyed by integer event ID."""
-    path = _SCHEMA_DIR / "event_ids.yaml"
-    if not path.exists():
-        return {}
-    try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    except Exception:
-        return {}
+    """Load event ID hints from data/schema/event_ids.yaml keyed by integer event ID."""
+    data = load_dfir_yamls()["event_ids"]
     events: dict[int, dict[str, Any]] = {}
-    raw_events = data.get("events") if isinstance(data, dict) else {}
+    raw_events = data.get("events")
     if not isinstance(raw_events, dict):
-        return {}
+        raise ValueError("event_ids.yaml: events must be a mapping")
     for key, value in raw_events.items():
         try:
             event_id = int(key)
-        except TypeError, ValueError:
-            continue
-        if isinstance(value, dict):
-            events[event_id] = value
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"event_ids.yaml: invalid event ID {key!r}") from exc
+        if not isinstance(value, dict):
+            raise ValueError(f"event_ids.yaml: event {key} must be a mapping")
+        events[event_id] = value
     return events
 
 
@@ -83,13 +77,13 @@ def event_context_eligible(
     The event catalog is the authority for those constraints.  A context-aware
     caller should pass both values when available; a missing value is treated as
     unknown and therefore cannot satisfy a constrained catalog entry.
-    Entries without a declared constraint remain eligible for backward-compatible
-    catalog records.
+    A constrained event requires both declared values. Unconstrained catalog
+    entries retain their existing event-ID semantics.
     """
 
     try:
         hint = load_event_id_hints().get(int(event_id))
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return False
     if not hint:
         return False
@@ -99,11 +93,52 @@ def event_context_eligible(
 
     channels = [normalized(value) for value in hint.get("channels") or [] if value]
     providers = [normalized(value) for value in hint.get("providers") or [] if value]
+    if bool(channels) != bool(providers):
+        return False
     if channels and normalized(channel) not in channels:
         return False
     if providers and normalized(provider) not in providers:
         return False
     return True
+
+
+def event_context_sql(event_ids: tuple[int, ...] | list[int]) -> str:
+    """Build an event predicate from the catalog's channel/provider declarations."""
+    clauses: list[str] = []
+    for event_id in event_ids:
+        hint = load_event_id_hints().get(int(event_id))
+        if not hint:
+            continue
+        channels = [
+            str(value).strip().casefold()
+            for value in hint.get("channels") or []
+            if value
+        ]
+        providers = [
+            str(value).strip().casefold()
+            for value in hint.get("providers") or []
+            if value
+        ]
+        if not channels or not providers:
+            continue
+        channel_values = ", ".join(
+            "'" + value.replace("'", "''") + "'" for value in channels
+        )
+        provider_values = ", ".join(
+            "'" + value.replace("'", "''") + "'" for value in providers
+        )
+        clause = (
+            f"event_id = {int(event_id)}"
+            " AND LOWER(CAST(COALESCE(channel, "
+            "json_extract_string(raw_json, '$.winlog.channel'), ''"
+            ") AS VARCHAR))"
+            f" IN ({channel_values})"
+            " AND LOWER(CAST("
+            "json_extract_string(raw_json, '$.winlog.provider.name')"
+            f" AS VARCHAR)) IN ({provider_values})"
+        )
+        clauses.append(f"({clause})")
+    return f"({' OR '.join(clauses)})" if clauses else "FALSE"
 
 
 def event_context_from_row(row: dict[str, Any]) -> tuple[str | None, str | None]:
@@ -121,10 +156,8 @@ def event_context_from_row(row: dict[str, Any]) -> tuple[str | None, str | None]
                     provider_obj = winlog.get("provider")
                     if isinstance(provider_obj, dict):
                         provider = provider_obj.get("name")
-                    elif provider_obj:
-                        provider = provider_obj
                     channel = channel or winlog.get("channel")
-        except (TypeError, ValueError, json.JSONDecodeError):
+        except TypeError, ValueError, json.JSONDecodeError:
             pass
     return (
         str(channel).strip() if channel not in (None, "") else None,
@@ -140,23 +173,23 @@ def load_benign_context_rules() -> list[dict[str, Any]]:
     """Load benign-context rules from false_positive_rules.yaml."""
     yamls = load_dfir_yamls()
     fp_rules = yamls.get("fp_rules", {})
-    if isinstance(fp_rules, dict):
-        rules = fp_rules.get("benign_context_rules") or []
-        return list(rules) if isinstance(rules, list) else []
-    return []
+    rules = fp_rules.get("benign_context_rules", [])
+    if not isinstance(rules, list) or any(not isinstance(rule, dict) for rule in rules):
+        raise ValueError(
+            "false_positive_rules.yaml: benign_context_rules must be a list of mappings"
+        )
+    return rules
 
 
 @lru_cache(maxsize=1)
 def load_finding_benign_context_rules() -> list[dict[str, Any]]:
     """Load finding-level benign context rules from false_positive_rules.yaml."""
-    fp_path = _SCHEMA_DIR / "false_positive_rules.yaml"
-    if not fp_path.exists():
-        return []
-    try:
-        data = yaml.safe_load(fp_path.read_text(encoding="utf-8")) or {}
-    except Exception:
-        return []
-    return data.get("finding_benign_context") or []
+    rules = load_dfir_yamls()["fp_rules"].get("finding_benign_context", [])
+    if not isinstance(rules, list) or any(not isinstance(rule, dict) for rule in rules):
+        raise ValueError(
+            "false_positive_rules.yaml: finding_benign_context must be a list of mappings"
+        )
+    return rules
 
 
 # ── Schema hints (table-aware) ─────────────────────────────────────────────
@@ -164,19 +197,15 @@ def load_finding_benign_context_rules() -> list[dict[str, Any]]:
 
 @lru_cache(maxsize=1)
 def load_schema_hints() -> dict[str, dict[str, Any]]:
-    """Load schema hints from rulepacks/_schema/*.yaml for planner guidance."""
+    """Load schema hints from data/schema/*.yaml for planner guidance."""
     hints: dict[str, dict[str, Any]] = {}
-    if not _SCHEMA_DIR.exists():
-        return hints
+    if not _SCHEMA_DIR.is_dir():
+        raise ValueError(f"Required declaration directory is missing: {_SCHEMA_DIR}")
     for path in _SCHEMA_DIR.glob("*.yaml"):
-        try:
-            data = yaml.safe_load(path.read_text(encoding="utf-8"))
-            if data and isinstance(data, dict):
-                table_name = data.get("table")
-                if table_name:
-                    hints[str(table_name)] = data
-        except Exception:
-            continue
+        data = _load_yaml(path.name)
+        table_name = data.get("table")
+        if table_name:
+            hints[str(table_name)] = data
     return hints
 
 
@@ -185,18 +214,8 @@ def load_schema_hints() -> dict[str, dict[str, Any]]:
 
 @lru_cache(maxsize=1)
 def load_question_routing_raw() -> dict[str, Any]:
-    """Load raw question-routing schema from _schema/question_routing.yaml."""
-    routing_path = _SCHEMA_DIR / "question_routing.yaml"
-    try:
-        raw = yaml.safe_load(routing_path.read_text(encoding="utf-8"))
-        if isinstance(raw, dict):
-            return raw
-    except Exception:
-        logger.warning(
-            "Failed to load question_routing.yaml; falling back to empty routing schema",
-            exc_info=True,
-        )
-    return {}
+    """Load raw question-routing schema from data/schema/question_routing.yaml."""
+    return _load_yaml("question_routing.yaml")
 
 
 # ── IOC catalog ────────────────────────────────────────────────────────────
@@ -222,12 +241,7 @@ def _sql_literal(value: str) -> str:
 @lru_cache(maxsize=1)
 def ioc_catalog() -> dict[str, Any]:
     """Load IOC catalog from dfir_ioc_catalog.yaml."""
-    path = _SCHEMA_DIR / "dfir_ioc_catalog.yaml"
-    try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    except Exception:
-        return {}
-    return data if isinstance(data, dict) else {}
+    return load_dfir_yamls()["dfir_ioc_catalog"]
 
 
 def _catalog_entries(section: str) -> list[dict[str, Any]]:
@@ -462,7 +476,7 @@ def exe_glob_sql(column: str, globs: tuple[str, ...]) -> str:
 
 
 _CATALOG_SQL_PLACEHOLDER_RE = re.compile(
-    r"\{\{\s*catalog_(?P<kind>[a-z_]+):(?P<body>[^{}]+?)\s*\}\}"
+    r"\{\{\s*(?P<kind>catalog_[a-z_]+|event_context):(?P<body>[^{}]+?)\s*\}\}"
 )
 
 
@@ -477,11 +491,20 @@ def expand_catalog_sql_placeholders(sql: str) -> str:
     - ``{{catalog_extension_sql:section:column}}``
     - ``{{catalog_artifact_sql:section:column}}``
     - ``{{catalog_label_sql:section:label_key:value_keys:columns:alias}}``
+    - ``{{event_context:event_id,...}}``
     """
 
     def repl(match: re.Match[str]) -> str:
-        kind = match.group("kind")
+        kind = match.group("kind").removeprefix("catalog_")
         parts = [part.strip() for part in match.group("body").split(":")]
+        if kind == "event_context" and len(parts) == 1:
+            try:
+                event_ids = [int(value.strip()) for value in parts[0].split(",")]
+            except ValueError as exc:
+                raise ValueError(
+                    f"Invalid event_context placeholder: {parts[0]}"
+                ) from exc
+            return event_context_sql(event_ids)
         if kind == "exe_sql" and len(parts) == 2:
             section, column = parts
             return exe_glob_sql(column, catalog_exe_globs(section))
@@ -531,28 +554,65 @@ def matches_exe_globs(name: str, globs: tuple[str, ...]) -> bool:
 @lru_cache(maxsize=1)
 def load_event_class_definitions() -> dict[str, dict[str, Any]]:
     """Load event_class groupings from event_ids.yaml."""
-    path = _SCHEMA_DIR / "event_ids.yaml"
-    if not path.exists():
-        return {}
-    try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    except Exception:
-        return {}
-    classes = data.get("event_classes") if isinstance(data, dict) else {}
+    classes = load_dfir_yamls()["event_ids"].get("event_classes")
     if not isinstance(classes, dict):
-        return {}
+        raise ValueError("event_ids.yaml: event_classes must be a mapping")
     result: dict[str, dict[str, Any]] = {}
     for class_name, class_def in classes.items():
         if not isinstance(class_def, dict):
-            continue
+            raise ValueError(f"event_ids.yaml: class {class_name} must be a mapping")
         event_ids = class_def.get("event_ids", [])
-        if isinstance(event_ids, list) and event_ids:
+        logon_types = class_def.get("logon_types", [])
+        if (
+            not isinstance(event_ids, list)
+            or not event_ids
+            or not isinstance(logon_types, list)
+        ):
+            raise ValueError(f"event_ids.yaml: invalid class {class_name}")
+        try:
             entry: dict[str, Any] = {"event_ids": [int(eid) for eid in event_ids]}
-            logon_types = class_def.get("logon_types")
-            if logon_types and isinstance(logon_types, list):
+            if logon_types:
                 entry["logon_types"] = [int(lt) for lt in logon_types]
-            result[class_name] = entry
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"event_ids.yaml: invalid class {class_name}: {exc}"
+            ) from exc
+        result[class_name] = entry
     return result
+
+
+def validate_declarations() -> None:
+    """Validate packaged contracts before an investigation changes Case State."""
+    from forensia.knowledge.rules.loader import (
+        _cached_rule_map,
+    )
+
+    loaders = (
+        load_dfir_yamls,
+        load_schema_hints,
+        load_event_id_hints,
+        load_event_class_definitions,
+        load_benign_context_rules,
+        load_finding_benign_context_rules,
+        load_question_routing_raw,
+        ioc_catalog,
+    )
+    # Adopt bundled declarations at each run boundary, never stale process data.
+    for loader in loaders:
+        loader.cache_clear()
+    _cached_rule_map.cache_clear()
+    for loader in loaders:
+        loader()
+    for name in (
+        "artifact_capabilities.yaml",
+        "evidence_sufficiency.yaml",
+        "verdict_taxonomy.yaml",
+    ):
+        _load_yaml(name)
+    from forensia.knowledge.resources import rules_dir
+    from forensia.knowledge.rules.loader import load_rules_from_dir
+
+    load_rules_from_dir(rules_dir())
 
 
 # ── Cache management ───────────────────────────────────────────────────────

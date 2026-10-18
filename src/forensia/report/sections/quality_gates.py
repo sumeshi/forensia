@@ -23,7 +23,7 @@ from forensia.report.evidence_refs import EVIDENCE_ID_PATTERN
 def failure_markers() -> tuple[str, ...]:
     """Block-failure phrases shared with final report validation.
 
-    Single vocabulary owner: ``_schema/report_validation_vocab.yaml``.
+    Single vocabulary owner: ``data/schema/report_validation_vocab.yaml``.
     """
     path = schema_dir() / "report_validation_vocab.yaml"
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
@@ -34,6 +34,7 @@ def failure_markers() -> tuple[str, ...]:
     if not markers:
         raise ValueError(f"failure_markers contains no usable values: {path}")
     return markers
+
 
 # ====================================================================
 # Patterns used by quality gates
@@ -339,7 +340,6 @@ def _check_raw_evidence_dump(
         "#### raw evidence",
         "### raw evidence",
         "raw_evidence_rows",
-        "raw evidence moved to reports/evidence/",
     )
     lowered_body = body.casefold()
     if any(pattern in lowered_body for pattern in raw_evidence_patterns):
@@ -349,7 +349,7 @@ def _check_raw_evidence_dump(
         )
         if raw_row_dump:
             return (
-                "Raw evidence rows should be moved to the appendix evidence export or reports/evidence JSON, not copied into the narrative body.",
+                "Avoid copying raw evidence dumps into the narrative; summarize relevant observations with their evidence references.",
                 0.55,
             )
     return None, None
@@ -478,27 +478,6 @@ def _check_out_of_range_timestamp(
     return None, None
 
 
-def _check_overused_evidence_id(
-    body: str, ctx: _GateCtx
-) -> tuple[str | None, float | None]:
-    if ctx.db is None:
-        return None, None
-    used_ids = set(EVIDENCE_ID_PATTERN.findall(body))
-    if not used_ids:
-        return None, None
-    overused: list[str] = []
-    for eid in used_ids:
-        count = ctx.db.execute(
-            "SELECT COUNT(DISTINCT section_key) FROM section_evidence WHERE evidence_id = ?",
-            (eid,),
-        ).fetchone()[0]
-        if count > 2:
-            overused.append(eid)
-    if overused:
-        return f"Evidence id reused across > 2 sections: {overused[:3]}", 0.7
-    return None, None
-
-
 def _check_json_object_leak(
     body: str, ctx: _GateCtx
 ) -> tuple[str | None, float | None]:
@@ -541,7 +520,6 @@ _QUALITY_CHECKS: list[QualityCheck] = [
     _check_citation_token_no_finding_id,
     _check_duplicate_paragraph,
     _check_out_of_range_timestamp,
-    _check_overused_evidence_id,
     _check_kp_citation,
     _check_json_object_leak,
     _check_failure_spam,

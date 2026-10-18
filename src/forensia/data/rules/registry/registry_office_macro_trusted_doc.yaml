@@ -1,0 +1,15 @@
+id: registry-office-macro-trusted-doc
+title: "Office TrustRecord observed"
+severity: medium
+confidence: 0.55
+required_fields:
+- value_name
+- hive
+tags:
+- registry
+- office
+- trust-record
+query: "SELECT\n    artifact_id AS evidence_id,\n    key_path,\n    value_name,\n    hive,\n    timestamp\nFROM registry_artifacts\nWHERE plugin = 'office_macros'\n"
+finding:
+  title: "Office TrustRecord: {value_name}"
+  summary: "The Registry parser reported an Office TrustRecord for {value_name} in {hive}. It records an Office trust setting and does not establish how the document arrived or whether a macro ran."

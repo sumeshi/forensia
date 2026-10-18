@@ -1,0 +1,16 @@
+id: registry-rdp-client-history
+title: "RDP client history entry observed"
+severity: low
+confidence: 0.55
+required_fields:
+- key_path
+- hive
+- plugin
+tags:
+- registry
+- rdp
+- client-history
+query: "SELECT\n    artifact_id AS evidence_id,\n    key_path,\n    value_name,\n    hive,\n    plugin,\n    timestamp\nFROM registry_artifacts\nWHERE plugin IN ('mstscmru', 'rdphint')\n"
+finding:
+  title: "RDP client history: {key_path}"
+  summary: "The Registry parser reported {plugin} history under {key_path} ({hive}). Stored client history does not establish that a remote session completed."

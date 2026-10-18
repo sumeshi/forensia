@@ -16,7 +16,6 @@ from forensia.db.database import CaseDB
 from forensia.knowledge.questions import (
     question_spec_for_answer_spec,
     resolve_question_spec,
-    sub_requirement_coverage,
 )
 from forensia.report.answers.answer_registry import build_structured_answer
 from forensia.report.report_validation import check_claim_traceability
@@ -40,7 +39,7 @@ class BenchmarkTimelineTest(unittest.TestCase):
         case = _init_case()
         with CaseDB(case) as db:
             db.execute(
-                "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer, target_user, logon_type) VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer, target_user, logon_type, channel, raw_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     "evtx-early",
                     4624,
@@ -48,10 +47,12 @@ class BenchmarkTimelineTest(unittest.TestCase):
                     "HOST1",
                     "alice",
                     "2",
+                    "Security",
+                    '{"winlog":{"provider":{"name":"Microsoft-Windows-Security-Auditing"}}}',
                 ),
             )
             db.execute(
-                "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer, target_user, logon_type) VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer, target_user, logon_type, channel, raw_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     "evtx-in",
                     4624,
@@ -59,11 +60,20 @@ class BenchmarkTimelineTest(unittest.TestCase):
                     "HOST1",
                     "alice",
                     "2",
+                    "Security",
+                    '{"winlog":{"provider":{"name":"Microsoft-Windows-Security-Auditing"}}}',
                 ),
             )
             db.execute(
-                "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer) VALUES (?, ?, ?, ?)",
-                ("evtx-down", 1074, datetime(2015, 3, 22, 17, 30, 0), "HOST1"),
+                "INSERT INTO evtx_events (evidence_id, event_id, timestamp, computer, channel, raw_json) VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    "evtx-down",
+                    1074,
+                    datetime(2015, 3, 22, 17, 30, 0),
+                    "HOST1",
+                    "System",
+                    '{"winlog":{"provider":{"name":"User32"}}}',
+                ),
             )
             answer = build_structured_answer(
                 case,
@@ -71,7 +81,7 @@ class BenchmarkTimelineTest(unittest.TestCase):
                 answer_spec="daily_session_timeline",
                 answer_id="Q13",
                 section_key="6_appendix",
-                block_heading="13. Startup, shutdown, logon, and logoff history between 09:00 and 18:00",
+                block_heading="13. Startup, shutdown, logon, and logoff history between 09:00 and 18:00 UTC",
             )
         self.assertEqual("answered", answer["status"])
         row = answer["answer"][0]
@@ -80,30 +90,31 @@ class BenchmarkTimelineTest(unittest.TestCase):
         self.assertTrue(row["first_logon"].startswith("2015-03-22"))
 
 
-class BenchmarkRenameDirectionTest(unittest.TestCase):
-    """Q24 rename results are authoritative from -> to mappings."""
-
-    def test_q24_reports_from_to_mapping(self) -> None:
+class UnsupportedEvidenceClaimsTest(unittest.TestCase):
+    def test_recent_lnk_pairs_are_not_reported_as_renames(self) -> None:
         case = _init_case()
         with CaseDB(case) as db:
+            for evidence_id, name, when in [
+                ("lnk-1", "notes.lnk", datetime(2025, 1, 1)),
+                ("lnk-2", "tax-return.lnk", datetime(2025, 1, 1, 0, 1)),
+            ]:
+                db.execute(
+                    "INSERT INTO mft_entries (evidence_id, file_path, file_name, si_created, fn_created) VALUES (?, ?, ?, ?, ?)",
+                    (
+                        evidence_id,
+                        f"Users/Alice/Windows/Recent/{name}",
+                        name,
+                        when,
+                        when,
+                    ),
+                )
             db.execute(
-                "INSERT INTO mft_entries (evidence_id, file_path, file_name, si_created, fn_created) VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO mft_entries (evidence_id, file_path, file_name, raw_json) VALUES (?, ?, ?, ?)",
                 (
-                    "mft-rn-1",
-                    "Users/informant/AppData/Roaming/Microsoft/Windows/Recent/old name.lnk",
-                    "old name.lnk",
-                    datetime(2015, 3, 23, 20, 26, 54),
-                    datetime(2015, 3, 23, 20, 26, 54),
-                ),
-            )
-            db.execute(
-                "INSERT INTO mft_entries (evidence_id, file_path, file_name, si_created, fn_created) VALUES (?, ?, ?, ?, ?)",
-                (
-                    "mft-rn-2",
-                    "Users/informant/AppData/Roaming/Microsoft/Windows/Recent/new name v2.lnk",
-                    "new name v2.lnk",
-                    datetime(2015, 3, 23, 20, 26, 53),
-                    datetime(2015, 3, 23, 20, 26, 53),
+                    "mft-fn-name",
+                    "Users/Alice/Desktop/quarterly_budget.xlsx",
+                    "quarterly_budget.xlsx",
+                    '{"fn_filename":"old_quarterly_budget.xlsx"}',
                 ),
             )
             answer = build_structured_answer(
@@ -112,60 +123,14 @@ class BenchmarkRenameDirectionTest(unittest.TestCase):
                 answer_spec="desktop_rename_candidates",
                 answer_id="Q24",
                 section_key="6_appendix",
-                block_heading="24. Desktop file renames",
+                block_heading="File rename history",
             )
-        self.assertEqual("candidate_only", answer["status"])
-        row = answer["answer"][0]
-        self.assertEqual("old name", row["original_name"])
-        self.assertEqual("new name v2", row["new_name"])
-        self.assertNotEqual(row["original_name"], row["new_name"])
+        self.assertEqual("unobservable", answer["status"])
+        self.assertEqual([], answer["answer"])
 
-
-class BenchmarkPartialCompositeTest(unittest.TestCase):
-    """Q45 is a composite; a partial sub-requirement set must not claim answered."""
-
-    def test_q45_partial_composite_not_answered(self) -> None:
-        case = _init_case()
-        with CaseDB(case) as db:
-            db.execute(
-                "INSERT INTO prefetch_executions (evidence_id, executable_name, exec_count, last_exec_time) VALUES (?, ?, ?, ?)",
-                (
-                    "prefetch-ccleaner",
-                    "CCleaner64.exe",
-                    3,
-                    datetime(2015, 3, 25, 15, 15, 0),
-                ),
-            )
-            answer = build_structured_answer(
-                case,
-                db,
-                answer_spec="antiforensic_activity",
-                answer_id="Q45",
-                section_key="6_appendix",
-                block_heading="45. Antiforensic activity",
-            )
-        self.assertEqual("partial", answer["status"])
+    def test_antiforensic_inventory_does_not_require_unrelated_evidence(self) -> None:
         spec = question_spec_for_answer_spec("antiforensic_activity")
-        coverage = sub_requirement_coverage(spec, answer["answer"])
-        satisfied = [c for c in coverage if c["satisfied"]]
-        self.assertLess(len(satisfied), len(coverage))
-        self.assertTrue(any(c["key"] == "tool_use_install" for c in satisfied))
-
-    def test_path_subrequirements_use_contains_matching(self) -> None:
-        spec = question_spec_for_answer_spec("antiforensic_activity")
-        rows = [
-            {
-                "evidence_type": "tool_or_cleanup_artifact",
-                "file_name": "deleted-mail.ost",
-                "file_path": r"C:\$Recycle.Bin\S-1-5-21\deleted-mail.ost",
-                "evidence_id": "mft-recycle-1",
-            }
-        ]
-        coverage = sub_requirement_coverage(spec, rows)
-        recycle = next(item for item in coverage if item["key"] == "recycle_bin")
-        self.assertTrue(recycle["satisfied"])
-        self.assertEqual(1, recycle["matched_rows"])
-        self.assertLessEqual(recycle["matched_rows"], len(rows))
+        self.assertEqual((), spec.sub_requirements)
 
 
 class BenchmarkTraceabilityTest(unittest.TestCase):
@@ -173,12 +138,13 @@ class BenchmarkTraceabilityTest(unittest.TestCase):
 
     def test_each_evidence_claim_requires_its_own_ref(self) -> None:
         findings = check_claim_traceability(
-            "4624 logon events were observed (evtx-security-000000000001).\n\n"
+            "4624 logon events were observed (evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000001).\n\n"
             "4672 special privilege events were observed."
         )
         self.assertTrue(
             any("lacks a machine-detectable" in f.message for f in findings)
         )
+
 
 if __name__ == "__main__":
     unittest.main()

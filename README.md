@@ -1,273 +1,250 @@
-# forensia
+# FORENSIA
 
-![forensia-logo](https://gist.githubusercontent.com/sumeshi/c2f430d352ae763273faadf9616a29e5/raw/afaaa9317a3170fc22b17e0a833632b0018acd12/forensia.svg)
+![forensia-logo](https://gist.githubusercontent.com/sumeshi/c2f430d352ae763273faadf9616a29e5/raw/f0b46d7a1801f359ddae0927ba5c4c4f969b1953/forensia2.svg)
 
-**Your local AI assistant for weekend forensic work.**
+[日本語](README-ja.md)
 
----
+FORENSIA is an experimental harness for LLM-assisted Windows digital forensics.
 
-## Overview
+It ingests artifacts such as MFT, EVTX, Prefetch, and Registry data, then uses findings from detection rules to begin a cycle of **forming hypotheses, searching and testing evidence, and updating a report**.
 
-**forensia is an experimental local-LLM harness for Windows digital forensic investigations.** You give it artifacts that have already been acquired from a target machine (EVTX, MFT, Prefetch, Registry hives), and it uses a local LLM to generate and verify investigation hypotheses and to continuously update a report. It does not collect evidence from live systems, and the model is only asked to handle one narrow step at a time.
+The project explores an architecture that lets **even a limited LLM carry out a forensic investigation autonomously while keeping its work consistent**.
 
-Incident data is often too sensitive to send anywhere — sometimes it cannot even leave the machine. So forensia is designed to run fully offline, on hardware a small CSIRT can actually afford, with small local models in the 4B–8B range. Models that small misread instructions, lose long context, and repeat mistakes; the harness exists to compensate for exactly that. It is not an AI wrapper for speeding up existing tools, but an architectural experiment in treating a weak LLM as one component of an investigation loop.
+## Background
 
-Three principles drive the design:
+For some mysterious reason, incident investigation requests tend to arrive on **Fridays**. Or just before a long holiday.\
+Whatever trip you were planning for the weekend is beside the point.
 
-1. **Fight alone** — keep working fully offline, in isolated environments.
-2. **Do not over-expect from the LLM** — the model handles the parts that benefit from interpretation, and proposes one small next step at a time. forensia decides what is safe to inspect, checks the result against the evidence, and controls what may be remembered or concluded.
-3. **Spend time like water** — no perfect conclusion in one pass. Hold multiple hypotheses, iterate with bounded stopping conditions, and update the report continuously as the investigation progresses.
+You could work through the weekend, day and night, and perhaps deliver results sooner. But is that really what needs to happen right now?
 
-## Screenshots
+Incident response does not end with the investigation. Nor does everything else have to wait until the investigation is finished.\
+While you focus on the decisions that actually need your attention, is there anyone who can sort through the evidence, test hypotheses, and keep working without sleep or fatigue?
 
-![cockpit](https://github.com/user-attachments/assets/36225144-70ea-4ecd-96f9-b9f84ce9e30d)
-Investigation cockpit showing case progress, hypotheses, findings, and report sections.
+No one. Except **your AI friend**.
 
-![report](https://github.com/user-attachments/assets/c6d61b5e-16e2-4e73-82e2-bde4b29fac99)
-Generated forensic report with evidence-backed findings and investigation context.
+## Purpose
 
-## Quick start
+Digital forensics involves repeatedly finding relevant evidence in large datasets, forming hypotheses, and checking them against other evidence. The assumptions and investigative steps vary considerably from case to case, making this work difficult to automate with a fixed procedure.
 
-### Requirements
+LLMs may help with tasks that conventional deterministic programs struggle with: interpreting instructions in natural language and deciding how to investigate a developing situation. With suitable tools, an LLM might be able to keep an investigation moving without a person directing every step.
 
-* Python 3.14 or later
-* Windows forensic artifacts that have already been collected: EVTX, MFT, Prefetch, and/or Registry hive files
-* An OpenAI-compatible LLM server, typically local (e.g. LM Studio or a llama.cpp server), for hypothesis testing and report writing
+Forensic evidence, however, often contains sensitive information. Sending it to an external cloud service can introduce new risks, and is not something I would personally recommend. That makes local LLMs, which can operate in fully isolated environments, especially relevant.
 
-forensia itself does not require a GPU; model speed and quality depend on the backend serving the LLM.
+Individuals and small CSIRTs also have limited computing resources. Running frontier-scale models capable of handling the whole job autonomously would require an enormous budget. The question behind this project is whether smaller models—roughly 2B to 30B parameters, running on ordinary computers—could do the work instead.
 
-### Installation
+Give a small model a large body of evidence and a long investigation, and problems soon appear: lost context, repeated work, and unsupported inferences. We cannot simply hand over everything from planning to conclusions.
 
-```bash
-pip install forensia
-```
+FORENSIA therefore asks **how far a carefully designed harness can compensate for a limited LLM, allowing it to conduct a consistent forensic investigation without constant human intervention**.
 
-You can also use:
+## Design Principles
 
-```bash
-uvx forensia investigate case001 ./input --profile windows-basic
-uv tool install forensia
-```
+Three principles guide the project.
 
-For development:
+### 1. Go it alone
 
-```bash
-git clone https://github.com/sumeshi/forensia.git
-cd forensia
-uv sync --dev
-```
+An investigation should be able to continue in a fully isolated environment, without sending sensitive evidence outside it.\
+Evidence storage, search, investigation state, and LLM inference are all designed to run locally.
 
-### LLM backend configuration
+Leave a network-connected AI system unattended for the weekend, and Monday's welcome screen might be a ransomware demand.
 
-Forensia accepts any OpenAI-compatible model and does not branch on model IDs. To start
-quickly, copy the tested example profile, then edit its model, endpoint, and capacity values:
+### 2. Don't expect too much from the LLM
 
-```bash
-cp .env.example .env
-```
+The LLM proposes hypotheses, suggests ways to test them, interprets evidence, and drafts report text—tasks that are difficult to express as deterministic programs.\
+The harness handles query execution, operation limits, evaluation of verification conditions, and state updates mechanically wherever possible.
 
-Supported variables, defaults, automatic budget derivation, and runtime owners are
-documented in [docs/development.md](docs/development.md#11-python).
+The harness orchestrates the investigation on the assumption that the LLM will make mistakes and forget things.
 
-Do not commit `.env`. Note that "local tool" does not automatically mean "no data leaves the machine": if `LLM_BASE_URL` points to a cloud or external endpoint, prompts containing case-derived evidence and summaries will be sent there. For sensitive investigations, use a local or offline LLM backend.
-Authenticated OpenAI-compatible endpoints can use `LLM_API_KEY`; the value is sent as a
-Bearer header and is not included in forensia's configuration API or LLM audit files.
+### 3. Spend time freely
 
-### Run an investigation
+There is no need to get the right answer in a single inference. People cannot do that either.\
+Start with an observation, form a hypothesis, examine the evidence, consider other explanations, and make progress a little at a time.
 
-Place artifacts in an input directory and run:
+But spending more time means nothing if it only produces the same failures over and over.
 
-```bash
-forensia investigate case001 ./input --profile windows-basic
-```
-
-Other common operations:
-
-```bash
-forensia investigate case001 --max-iter 50    # continue an existing case with more cycles
-forensia add case001 ./new-input              # ingest additional evidence
-forensia report case001 --write               # regenerate report sections with the LLM (reports are also visible in the web UI)
-forensia templates-export ./my-templates      # export the packaged templates
-forensia investigate case001 ./input --template-dir ./my-templates   # use custom report templates
-forensia investigate case001 ./input --knowledge ./knowledge.sample  # inject organization-specific knowledge
-forensia serve case001 --port 8000            # open the local web UI (cockpit)
-```
-
-### What gets generated
-
-The `case_dir` argument (`case001` above) becomes the case directory itself — forensia does not nest output under a separate build folder:
-
-```
-case001/
-├─ raw/                 · Parsed artifact records (JSONL) staged during ingest
-├─ db/case.duckdb       · Normalized evidence + hypotheses + findings + report sections
-├─ db/trace.duckdb      · Investigation steps and retrieval telemetry
-├─ memory/              · Regenerable Markdown projection used to build LLM context
-├─ ai_logs/             · Raw LLM input/output logs (per-phase JSON)
-├─ report_template/     · Case-local copy of editable report templates and formats
-├─ reports/             · report.md / report.html / structured CSV / UI snapshots
-├─ findings/            · Per-rule finding details
-├─ allowlist.yaml       · Per-case suppression rules for known-benign findings
-└─ manifest.yaml        · Case metadata
-```
-
-> **Before you rely on the output**
->
-> * Auto-generated findings require human verification against the source evidence before use. They must not feed legal or disciplinary decisions directly, and they do not replace the original evidence.
-> * Work on read-only copies of artifacts, never on originals.
-> * Case directories contain evidence-derived data (databases, memory files, AI logs). Do not publish them. See [SECURITY.md](SECURITY.md).
-
-## Current capabilities
-
-What works today:
-
-* Ingestion and normalization of EVTX, MFT, Prefetch, and Windows Registry artifacts into DuckDB. Registry evidence is kept separate when its origin is uncertain, and an incomplete search is never presented as proof that something did not happen. The current adapter interface can be used to add other artifact types, although it is not yet stable (see [docs/extending.md](docs/extending.md)).
-* A rule engine that produces findings, key points, and hypothesis seeds from declarative rulepacks.
-* A case-aware investigation loop: hypothesis seeding, deterministic next-best-focus selection, SQL query planning and composition, execution with fallback search, evidence sufficiency reconciliation, verdict propagation, and finding extraction.
-* Lightweight hypothesis relationships (`parent_of`, `prerequisite_for`, `derived_from`, `contradicts`, `alternative_to`, and `supersedes`) stored in DuckDB and validated in Python, without a graph database.
-* Evidence coverage and observability tracking that distinguishes a negative query result from unavailable, incomplete, failed, or unsupported evidence sources. Raw artifact timestamps remain available while sentinel, overflow, parser-invalid, and case-window outliers are excluded from analysis ranges with reason counts.
-* Incremental report generation from templates, refreshed as findings are confirmed, exported as Markdown and HTML.
-* A local web UI (`forensia serve`) showing investigation progress, findings, hypotheses, report sections, timeline data, and evidence references.
-* Knowledge injection from a local folder of Markdown files (`--knowledge`), used to bring organization- or case-specific context into prompts.
-
-In the configurations tested during development — small local models such as `google/gemma-4-e4b` and `qwen/qwen3.5-9b` served through an OpenAI-compatible local server — the models are not reliable enough to drive a long, unstructured investigation on their own. forensia's architecture exists to compensate for exactly that. Larger or newer models may behave differently; the harness does not assume any specific model.
+FORENSIA records what it examined, what it learned, and where it failed, so that later work can use those results. Progress, the ability to test remaining hypotheses, and execution budgets determine when to continue and when to stop.
 
 ## Architecture
 
-At the center of forensia is the repetition of hypothesis and verification. Simplified:
+At the center of FORENSIA is an investigation loop that repeatedly forms hypotheses and tests them against evidence.
 
-1. Ingest traces and normalize them into an investigable form
-2. Generate hypotheses, seeded by rule-based detections
-3. Select the next hypothesis to verify
-4. Search the actual evidence and verify the hypothesis
-5. Judge and record the result, and reflect it in the report
-6. Return unresolved questions to the next cycle
+In a typical AI agent, the model selects an action and adds the tool's result to its conversation history before taking the next step. Conversation history alone is not enough for a forensic investigation.\
+Earlier reasoning may be wrong. A search that finds no evidence does not necessarily disprove a hypothesis. As work continues, the model may also lose track of what has already been tested and what remains unresolved.
 
-Only work where a language model is genuinely useful — generation and interpretation — goes to the LLM; everything deterministic runs in code.
+FORENSIA manages investigation state separately from the LLM's conversation history. Plans, evidence, the basis for decisions, and past attempts are stored outside the model. Only the information needed for the current task is selected and passed to it.\
+The design builds on the execution loop of coding agents, incorporating separation of planning and execution, persistent tasks, and shared search history to support long investigations.
 
-```mermaid
-flowchart LR
-    A["Artifacts<br/>EVTX / MFT / Prefetch / Registry / ..."]
-    A -->|Ingest / Normalize| C
-    C[("Case State<br/>normalized evidence")]
-    C --> D["Rule Engine<br/>Findings / Key Points"]
-
-    subgraph L["Investigation Loop"]
-        D --> E["Case State Update<br/>coverage / gaps / tasks / relations"]
-        E --> S["Focus Selection<br/>eligibility + priority scoring"]
-        S --> P["Planner<br/>query intent → SQL composition"]
-        P --> X["Executor<br/>query execution + fallback search"]
-        X --> CK["Checker<br/>evidence links + verdict proposal"]
-        CK --> SF["Sufficiency Guard<br/>coverage / independence / contradiction"]
-        SF --> TR["Progress Tracker<br/>propagate / confirm / refute / pivot"]
-        TR -->|active| P
-        TR -->|resolved| R["Resolver<br/>stale report sections + follow-up gaps"]
-        TR -->|bounded / blocked| WS["Termination Handler<br/>classify unresolved work + persist retry conditions"]
-        WS --> E
-        R --> RW["Report Writer<br/>section outline → narrative paragraphs"]
-        RW -->|new gaps| E
-    end
-
-    T[("Trace State<br/>steps / verdicts / evidence links")]
-    M[("Working State<br/>context projection")]
-
-    E --> T
-    S --> T
-    CK --> T
-    SF --> T
-    R --> T
-
-    C -. derive .-> M
-    T -. derive .-> M
-    M -. context .-> P
-    M -. context .-> CK
-```
-
-A weak LLM would get lost running this loop alone, so it is held together by three pillars:
-
-**1. Hypothesis verification bound to evidence.** LLM output is never stored as fact directly; the actual evidence is searched and checked first. Verdicts are managed as five states (`confirmed`, `refuted`, `inconclusive`, `untestable`, `newlead`), and code re-checks the referenced evidence, independence, contradictions, and observability before anything settles. A zero-row result is not refutation: only when the evidence source exists, the window is covered, and the result is still empty does refutation come into view. Hypothesis generation is seeded by rules that declare investigative intent — what was detected, why it matters, what to check next — rather than left to the model's imagination:
-
-```yaml
-id: windows-security-4624-rdp-logon
-query: SELECT ... FROM evtx_events WHERE event_id = 4624 AND logon_type = '10'
-finding:
-  title: RDP logon for {target_user}
-hypotheses:
-- id: lateral_movement_via_rdp
-  description: RDP logon from {src_ip} to {computer} may indicate lateral movement
-  confirm_when: { co_observed_event_ids: [4624], same_host: true, within_minutes: 5 }
-  refute_when: { zero_rows: true }
-  follow_up_questions:
-  - Was this RDP session followed by process execution (4688) on {computer}?
-correlate_with:
-- { event_ids: [4625, 4768, 4776], rationale: preceding failures or kerberos/NTLM auth }
-```
-
-**2. Structured memory.** Three layers: **Case State** (`case.duckdb`, the single source of truth — evidence, findings, hypotheses, tasks, report progress), **Trace State** (`trace.duckdb` — why each state was reached: per-step I/O, judgments, focus-selection scores), and **Working State** (a regenerable projection that rebuilds, per LLM call, only the context the current role needs). Unconfirmed information is isolated per hypothesis and never leaks into another. External knowledge in the [OKF format](https://cloud.google.com/blog/products/data-analytics/how-the-open-knowledge-format-can-improve-data-sharing) is selected deterministically and injected as reference material, never as instructions.
+The following diagram shows the main responsibilities and the data exchanged between them.
 
 ```mermaid
+---
+config:
+  theme: base
+  themeVariables:
+    primaryColor: "#ffffff"
+    primaryTextColor: "#242424"
+    primaryBorderColor: "#888888"
+    lineColor: "#777777"
+    fontFamily: "Arial"
+  flowchart:
+    curve: linear
+    nodeSpacing: 24
+    rankSpacing: 36
+---
 flowchart TB
-    CASE[("db/case.duckdb<br/>single source of truth")]
-    TRACE[("db/trace.duckdb<br/>audit log of steps + retrievals")]
+    A["Acquired Artifacts"] --> N["Ingestion Module"]
+    N --> E[("Evidence Store")]
+    E --> R["Rule Engine"]
+    R -->|"Findings"| C[("Case State")]
 
-    subgraph MEM["memory/ — Markdown projection (regenerable)"]
-        SHARED["Shared confirmed memory<br/>facts / timeline / entities"]
-        SCRATCH["Per-hypothesis scratch<br/>private working notes"]
-    end
+    C -->|"Hypotheses"| H["Hypothesis & Task Manager"]
+    H -->|"Selected task"| X["Context Builder"]
+    X -->|"Working State"| L["LLM Inference"]
+    L -->|"Query proposal"| Q["Query Engine"]
+    E -.-> Q
 
-    CASE -->|validated facts only| SHARED
-    CASE -->|current hypothesis| SCRATCH
+    Q -->|"Results"| V["Evidence Assessor"]
+    V --> S["Sufficiency Guard"]
+    S -->|"Assessment"| C
 
-    SHARED --> GATE{"Scope gate<br/>only shared memory and the<br/>current hypothesis pass"}
-    SCRATCH --> GATE
+    S -.-> T[("Trace State")]
+    T -.->|"History"| X
 
-    KNOW["Knowledge files (--knowledge)<br/>org/case-specific Markdown"]
+    C --> B["Report Engine"]
+    B --> O["Evidence-linked Report"]
 
-    GATE --> PROMPT["Per-call prompt<br/>rebuilt for every LLM call"]
-    KNOW --> PROMPT
-    PROMPT --> LLM["Local LLM<br/>one narrow role at a time"]
-
-    LLM -->|validated results only| CASE
-    GATE -. what was shown and why .-> TRACE
-    LLM -. request / response log .-> TRACE
+    classDef store fill:#f0f0f0,stroke:#777777,color:#242424
+    class E,C,T store
 ```
 
-**3. Auditability of the investigation process.** Information is managed by role — **Evidence** (normalized rows), **Finding** (observed phenomena), **Hypothesis** (interpretations to verify), **Claim** (assertions in the report, linked to their grounds), **Gap** (missing information) — so unverified hypotheses cannot become remembered facts. The report itself is investigation state: tables come from code, prose comes from the LLM paragraph by paragraph, and every section records the evidence it used. Excluded or suppressed data is never deleted; the value and the reason for exclusion are kept as state. What matters is not that the AI believes it is right, but that a human can verify correctness afterwards.
+### 1. Findings as a starting point
 
-Full details are in [docs/architecture.md](docs/architecture.md) and [docs/data-model.md](docs/data-model.md).
+If an investigation starts entirely from the LLM's own knowledge, gaps in that knowledge or faulty reasoning can affect everything that follows.\
+FORENSIA instead applies Sigma and its own forensic rules to the ingested artifacts, extracting observations that can serve as investigative leads.
 
-### Design choices
+A rule match is not necessarily proof of compromise. Findings lead to hypotheses, which are checked against evidence as the investigation narrows or expands its scope.
 
-* **The investigation loop lives outside the model.** Rather than giving an LLM direct control of analysis tools, forensia turns results into the next question, selects evidence, and carries unresolved work forward through deterministic orchestration.
-* **Own rules instead of Sigma reuse.** Rule ecosystems like [Sigma](https://github.com/sigmahq/sigma) encode what to detect; forensia's rules additionally encode what to investigate next, so they carry intent and hypothesis hints alongside detection SQL.
-* **No internal Tool Calling.** Small local models handle it unreliably, and depending on a specific model's implementation would narrow the choice of backends. The backend is only asked for OpenAI-compatible `chat/completions` with role-specific structured output; execution, validation, routing, and state transitions stay in code.
+### 2. Memory that keeps the investigation consistent
 
-## Roadmap
+Conversation history alone cannot reliably preserve what has been examined, what remains unverified, and why a conclusion was reached.\
+FORENSIA distinguishes and links Evidence, Findings, Hypotheses, Tasks, Gaps, and Claims.
 
-The current goal is not a tool accurate enough to replace practice; it is to find out how much of what static rules and fixed processing cannot handle can be covered architecturally with a weak local LLM.
+It also separates investigative memory into three kinds of state.
 
-* **Broadening the evidence.** Today's traces ([EVTX](https://github.com/sumeshi/evtx2es), [MFT](https://github.com/sumeshi/mft2es), [Prefetch](https://github.com/sumeshi/prefetch2es), and Windows Registry hives) were chosen because they answer useful investigative questions without trying to support every possible artifact. Browser records and other traces will be added where the effort is lower and the payoff higher — full coverage is not the goal.
-* **Multi-host support.** Real incidents rarely involve one machine. Each host must be treated independently while accounts, IPs, processes, and timelines are examined across them — a large design change.
-* **Measuring investigation quality.** In local trials with the [CFReDS](https://cfreds-archive.nist.gov/data_leakage_case/data-leakage-case.html) data-leakage case, runs have come close to the answer on 8–9 of 12 questions (a handful of runs, one model and configuration — not an official result). Beyond answer accuracy, evaluation will also track hypothesis diversity, memory duplication, and LLM call patterns, since chasing benchmark answers alone can degrade the investigation itself.
+| State | Role |
+|---|---|
+| **Case State** | Evidence references, findings, hypotheses, verification results, and unresolved work |
+| **Trace State** | The history of searches, reasoning, failures, and state transitions |
+| **Working State** | Temporary context assembled for the current task |
 
-Benchmark notes are in [BENCHMARK.md](BENCHMARK.md), with ground-truth answers in [BENCHMARK-ANSWERS.md](BENCHMARK-ANSWERS.md). The repository does not include forensic datasets; obtain them from the original public sources. Benchmark-specific behavior should come from templates, profiles, or rules — never from hidden assumptions in the core engine.
+Case State and Trace State are stored outside the LLM. Working State is assembled for each task.\
+This avoids sending all the evidence and previous conversations to the model every time, while retaining references to the underlying evidence and execution history.
 
-## Development status and contributing
+### 3. Separating planning from verification
 
-forensia is in **early development**. The architecture, internal schemas, templates, rule formats, command-line interface, and repository layout may change significantly. Treat it as a working research prototype, and remember that auto-generated findings always require human verification.
+An LLM can become so focused on the immediate task that it loses sight of the original objective or unresolved questions. People do this too.\
+FORENSIA persists hypotheses and tasks, and uses a planner to select the next piece of work based on priorities and dependencies.
 
-Contributions are welcome. A few notes to make them land smoothly:
+The LLM receives only the context needed for that work and proposes search strategies, queries, and interpretations. The harness controls validation and execution of those queries.\
+Separating overall planning from individual verification steps is intended to let a single small model work toward the investigation's objective without losing track of progress.
 
-* Core architecture is the current priority, so improvements to the generic engine are the most impactful contributions right now.
-* forensia prefers declarative changes: detection knowledge, investigation hints, schema cards, and report behavior should go into rulepacks and templates before core code.
-* Rule and template formats are still likely to change. For larger rule additions, please open an issue first so we can discuss the direction before you invest time.
+### 4. Conclusions grounded in evidence
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the package map, call-flow diagrams, and development guidelines. Concrete extension recipes are in [docs/extending.md](docs/extending.md), with the full document index in [docs/README.md](docs/README.md).
+A plausible explanation from an LLM is not necessarily a correct conclusion.\
+The model's judgment of a search result is treated as a proposal. The harness checks its relationship to the actual evidence and whether the verification conditions have been met.
 
-## Safety notes
+For example, a query returning zero rows cannot establish that an activity never occurred if the required logs were not collected.\
+FORENSIA considers evidence sufficiency, independence, contradictions, and scope, with an emphasis on leaving inadequately tested claims unresolved.
 
-The warning under [What gets generated](#what-gets-generated) covers the essentials — human verification, read-only artifact handling, and not publishing case directories. See [SECURITY.md](SECURITY.md) for the full data-handling and disclosure policy, including guidance on cloud vs. local LLM endpoints.
+Even when a report contains questionable reasoning, **a person must be able to trace the decision back to its evidence and assess whether it holds up**.
+
+### 5. Managing continuation and termination
+
+Repeating the same searches and failures does not make an investigation more useful.
+
+Past attempts are recorded, and progress, available verification work, and execution budgets determine whether the investigation continues.\
+Unresolved questions are kept with the reasons they could not be tested and the conditions for retrying them. New evidence can then support resuming that work.
+
+A forensic investigation rarely resolves every question. Even with incomplete information, the aim is to **develop hypotheses supported by evidence and make clear what has been established and what remains unresolved**.
+
+## Usage
+
+### Quick Start
+
+FORENSIA requires acquired Windows artifacts and an OpenAI-compatible LLM backend.\
+The development environment uses Python 3.14 or later and [uv](https://docs.astral.sh/uv/).
+
+```bash
+$ git clone https://github.com/sumeshi/forensia
+$ cd forensia
+$ uv sync --locked
+$ uv run forensia setup
+$ cp .env.example .env
+```
+
+Set the backend URL and model ID in `.env`.
+
+```dotenv
+LLM_BASE_URL=http://127.0.0.1:8080
+LLM_MODEL=your-loaded-model-id
+FORENSIA_OUTPUT_LANGUAGE=en
+```
+
+Use the server's root URL for `LLM_BASE_URL`, without `/v1`.
+
+With a locally hosted LLM, the investigation can run without sending evidence-derived data outside the machine.\
+If you configure an external endpoint, evidence-derived information included in prompts will be sent to it.
+
+Place the acquired artifacts in `./input`, then start an investigation.
+
+```bash
+$ uv run forensia investigate ./input --out ./CASE001-WINDESKTOP-FOOBAR
+```
+
+See `--help` for other options.
+
+`setup` downloads a pinned SigmaHQ revision, converts and validates it, and stores the rules locally. The first investigation also runs setup if needed. To use local Sigma YAML instead, pass `--rules ./rules` (a file or directory); `setup --rules ./rules` installs it as the default. Once installed, rule loading needs no network access. Each case retains its adopted rules for subsequent runs.
+
+To start over in the same output location for testing, use `--overwrite`. This deletes the entire case directory and reingests the original artifacts. Keep originals and any configuration documents you want to reuse outside the case directory, and stop the investigation before using it.
+
+In the TUI, `/quit` or `Ctrl+Q` also shuts down the investigation process. Use `/kill` to force termination while stopping, or `/detach` to close the screen while the investigation continues. Forced termination interrupts unfinished work.
+
+## Limitations and Evaluation
+
+FORENSIA is experimental.\
+Investigation results and reports may contain errors and require human review against the original evidence.
+
+The project uses repeated benchmarks with the [CFReDS Data Leakage Case](https://cfreds-archive.nist.gov/data_leakage_case/data-leakage-case.html) to evaluate investigative capability and quality, and to improve the architecture.\
+Evaluation covers more than whether the final answers are correct: it also examines the validity of hypotheses, incorrect judgments caused by missing evidence, continuity of investigation state, redundant attempts, inference counts, and execution time.
+
+## References
+
+The project builds on the following work.
+
+- [Do Local LLMs Dream of Forensic Investigators?](https://sumeshi.github.io/posts/works/do-localllms-dream-of-forensic-investigator) (Japanese) — Project background and design philosophy
+- `*2es` — Parsing and normalization of Windows artifacts
+  - [evtx2es](https://github.com/sumeshi/evtx2es)
+  - [mft2es](https://github.com/sumeshi/mft2es)
+  - [prefetch2es](https://github.com/sumeshi/prefetch2es)
+  - [reg2es](https://github.com/sumeshi/reg2es)
+
+FORENSIA uses these open source projects.
+
+- [DuckDB](https://duckdb.org/) — Evidence queries and investigation state storage
+- [Sigma](https://github.com/SigmaHQ/sigma) — Detection rules that provide investigative leads
+
+Its design is also influenced by these projects.
+
+- [Pi](https://github.com/earendil-works/pi) — Agent execution loops and context management
+- [ARTEX](https://github.com/mhtsec/ARTEX) — Separation of planning and execution, persistent tasks, and shared search history
+
+## Contributing
+
+FORENSIA is under active development. Its architecture and interfaces may change substantially.
+Contributions and discussion are welcome, including ways to simplify the harness, examples of failed investigations, and methods for measuring reasoning and verification quality.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) (currently in Japanese) for the implementation's design decisions, processing flow, and development essentials.
 
 ## License
 
-forensia is released under the [MIT License](LICENSE).
+The software is available under the [MIT License](LICENSE).
+SigmaHQ rules are acquired separately under the [Detection Rule License 1.1](https://github.com/SigmaHQ/Detection-Rule-License). Reports retain the supplied rule authors and sources. Upstream regression data in `tests/fixtures/sigma/` is excluded from Python distributions and retains its own license.

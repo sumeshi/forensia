@@ -1,0 +1,16 @@
+id: "filesystem-mft-server-side-script-web-root"
+title: "Server-side script recorded in a web root"
+severity: medium
+confidence: 0.55
+required_fields:
+- file_name
+- file_path
+tags:
+- filesystem
+- mft
+- web-root
+- script
+query: "SELECT\n    evidence_id,\n    file_name,\n    file_path,\n    extension,\n    size,\n    si_created,\n    si_modified,\n    fn_created,\n    is_deleted\nFROM mft_entries\nWHERE LOWER(extension) IN ('aspx', 'php', 'jsp', 'asp', 'ashx', 'asmx', 'cfm', 'asax')\n    AND (\n        LOWER(file_path) LIKE '%/inetpub/%'\n        OR LOWER(file_path) LIKE '%/wwwroot/%'\n        OR LOWER(file_path) LIKE '%/htdocs/%'\n    )\n"
+finding:
+  title: "Server-side script in web root: {file_name}"
+  summary: "MFT records server-side script {file_name} at {file_path}. The extension and location do not establish that the file is a web shell or was accessed remotely."

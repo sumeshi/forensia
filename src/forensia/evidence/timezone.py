@@ -190,34 +190,6 @@ def infer_timezone(db) -> tuple[int | None, str]:
     return _aggregate_observations(observations, msg_offsets)
 
 
-def get_timezone_info(db) -> dict[str, Any]:
-    """Return timezone information with status tracking.
-
-    R7-08: Returns a dict with:
-    - status: 'declared' | 'inferred' | 'unknown'
-    - offset_minutes: int | None
-    - basis: str
-    - confidence: float (0.0-1.0)
-    - display_tz: str for display purposes
-    """
-    offset, basis = infer_timezone(db)
-    if offset is not None:
-        return {
-            "status": "inferred",
-            "offset_minutes": offset,
-            "basis": basis,
-            "confidence": 0.8,
-            "display_tz": f"UTC{offset // 60:+d}" if offset != 0 else "UTC",
-        }
-    return {
-        "status": "unknown",
-        "offset_minutes": None,
-        "basis": "Could not determine timezone from available events",
-        "confidence": 0.0,
-        "display_tz": "Normalized timestamps (source timezone undetermined)",
-    }
-
-
 def _all_agree(values: list[int], tolerance: int = 30) -> int | None:
     """Return the offset if all non-None values agree within tolerance."""
     filtered = [v for v in values if v is not None]

@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Iterable, Iterator
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from string import Formatter
 from typing import Any
 
-import orjson
 import yaml
 
 from forensia.core.case import Case
@@ -19,11 +20,9 @@ from forensia.knowledge.catalog import (
 from forensia.knowledge.catalog import (
     load_finding_benign_context_rules as _load_finding_benign_context_rules,
 )
-from forensia.knowledge.resources import schema_dir
 from forensia.knowledge.rules.models import Finding, FindingTemplate, Rule
 
 _MISSING_TEXT_VALUES = {"", "-", "n/a", "na", "none", "null", "unknown"}
-_BUILTIN_ALLOWLIST_PATH = schema_dir() / "suppression" / "allowlist_services.yaml"
 
 FALLBACK_PHASES = {"keyword_in_raw_json", "related_event_ids", "artifact_table"}
 
@@ -38,10 +37,45 @@ _ALLOWED_FALLBACK_TABLES = {
 }
 
 
-def run_rule(db: CaseDB, rule: Rule) -> list[dict[str, Any]]:
-    result = db.execute(rule.query)
-    columns = [item[0] for item in result.description]
-    return [dict(zip(columns, row, strict=False)) for row in result.fetchall()]
+RULE_RESULT_BATCH_SIZE = 500
+FINDING_INSERT_BATCH_SIZE = 500
+_FINDING_INSERT_SQL = """
+INSERT INTO findings (
+    finding_id, rule_id, title, summary, severity, confidence,
+    status, tags, attack, evidence, ai_summary, missing_checks, created_at
+)
+SELECT
+    json_extract_string(row.value, '$[0]'),
+    json_extract_string(row.value, '$[1]'),
+    json_extract_string(row.value, '$[2]'),
+    json_extract_string(row.value, '$[3]'),
+    json_extract_string(row.value, '$[4]'),
+    CAST(json_extract_string(row.value, '$[5]') AS DOUBLE),
+    json_extract_string(row.value, '$[6]'),
+    json_extract_string(row.value, '$[7]'),
+    json_extract_string(row.value, '$[8]'),
+    json_extract_string(row.value, '$[9]'),
+    json_extract_string(row.value, '$[10]'),
+    json_extract_string(row.value, '$[11]'),
+    CAST(json_extract_string(row.value, '$[12]') AS TIMESTAMP)
+FROM json_each(?) AS row
+"""
+
+
+def iter_rule_row_batches(
+    db: CaseDB, rule: Rule, *, batch_size: int = RULE_RESULT_BATCH_SIZE
+) -> Iterator[list[dict[str, Any]]]:
+    """Yield bounded query result batches from an independent DuckDB cursor."""
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive")
+    cursor = db.conn.cursor()
+    try:
+        result = cursor.execute(rule.query)
+        columns = [item[0] for item in result.description]
+        while rows := result.fetchmany(batch_size):
+            yield [dict(zip(columns, row, strict=False)) for row in rows]
+    finally:
+        cursor.close()
 
 
 def _is_missing_value(value: Any) -> bool:
@@ -76,7 +110,9 @@ def _confidence_with_missing_fields(
     return max(0.0, min(1.0, base_confidence - penalty))
 
 
-def generate_findings(rule: Rule, rows: list[dict[str, Any]]) -> list[Finding]:
+def generate_findings(
+    rule: Rule, rows: Iterable[dict[str, Any]], *, first_ordinal: int = 1
+) -> list[Finding]:
     """Create Finding objects from rule query result rows by rendering title/summary templates.
 
     Auto-detects missing required fields per row and reduces the finding's confidence
@@ -84,7 +120,7 @@ def generate_findings(rule: Rule, rows: list[dict[str, Any]]) -> list[Finding]:
     plus a zero-padded row index.
     """
     findings = []
-    for index, row in enumerate(rows, start=1):
+    for index, row in enumerate(rows, start=first_ordinal):
         # Path-bearing columns may carry the analyst's local ingest tree
         # (e.g. a pre-basename-fix DB whose prefetch source_file is the
         # raw ingest path). Sanitize before the row is rendered into the
@@ -143,32 +179,23 @@ def _load_allowlist(case: Case) -> list[dict[str, Any]]:
     return []
 
 
-def _load_builtin_benign_allowlist() -> dict[str, list[str]]:
-    if not _BUILTIN_ALLOWLIST_PATH.exists():
-        return {"service_names": [], "process_names": [], "title_keywords": []}
-    data = yaml.safe_load(_BUILTIN_ALLOWLIST_PATH.read_text(encoding="utf-8")) or {}
-    return {
-        "rule_ids": [
-            str(item).strip()
-            for item in data.get("rule_ids") or []
-            if str(item).strip()
-        ],
-        "service_names": [
-            str(item).strip().lower()
-            for item in data.get("service_names") or []
-            if str(item).strip()
-        ],
-        "process_names": [
-            str(item).strip().lower()
-            for item in data.get("process_names") or []
-            if str(item).strip()
-        ],
-        "title_keywords": [
-            str(item).strip().lower()
-            for item in data.get("title_keywords") or []
-            if str(item).strip()
-        ],
-    }
+@dataclass(frozen=True, slots=True)
+class FindingRunContext:
+    """Immutable annotations shared while one rule-analysis run saves findings."""
+
+    allowlist_rules: list[dict[str, Any]]
+    benign_context_rules: list[dict[str, Any]]
+    co_occur_index: dict[int, list[tuple[datetime, str]]]
+
+
+def prepare_finding_run(case: Case, db: CaseDB) -> FindingRunContext:
+    """Load finding annotations and event context once for a pipeline rule run."""
+    benign_rules = _load_finding_benign_context_rules()
+    return FindingRunContext(
+        allowlist_rules=_load_allowlist(case),
+        benign_context_rules=benign_rules,
+        co_occur_index=build_co_occur_index(db, benign_rules),
+    )
 
 
 def _value_matches(actual: Any, expected_values: Any) -> bool:
@@ -201,58 +228,6 @@ def _is_suppressed(finding: Finding, allowlist_rules: list[dict[str, Any]]) -> b
         ):
             return True
     return False
-
-
-def _builtin_benign_match(
-    finding: Finding, allowlist_data: dict[str, list[str]]
-) -> str | None:
-    """Return a description string if the finding matches built-in benign allowlists.
-
-    Checks service_name, process_name, and title/summary keywords in that order.
-    Returns a description of the first match (e.g. 'service_name=wuauserv') or None.
-    """
-    row = (
-        finding.evidence[0]
-        if finding.evidence and isinstance(finding.evidence[0], dict)
-        else {}
-    )
-    scoped_rule_ids = set(allowlist_data.get("rule_ids") or [])
-    if scoped_rule_ids and finding.rule_id not in scoped_rule_ids:
-        return None
-    service_name = str(row.get("service_name") or "").strip().lower()
-    process_name = str(row.get("process_name") or "").strip().lower()
-    title = str(finding.title or "").strip().lower()
-    summary = str(finding.summary or "").strip().lower()
-    for candidate in allowlist_data.get("service_names") or []:
-        if candidate and candidate in service_name:
-            return f"service_name={candidate}"
-    for candidate in allowlist_data.get("process_names") or []:
-        if candidate and candidate in process_name:
-            return f"process_name={candidate}"
-    for candidate in allowlist_data.get("title_keywords") or []:
-        if candidate and (candidate in title or candidate in summary):
-            return f"title_keyword={candidate}"
-    return None
-
-
-def _downgrade_builtin_benign_finding(
-    finding: Finding, allowlist_data: dict[str, list[str]]
-) -> None:
-    """Downgrade severity and confidence for findings matching built-in benign allowlists.
-
-    Sets status to 'suppressed', caps confidence at 0.2, and reduces severity to 'low'.
-    Appends the matched rule detail to missing_checks for auditability.
-    """
-    matched = _builtin_benign_match(finding, allowlist_data)
-    if not matched:
-        return
-    finding.status = "suppressed"
-    finding.confidence = min(float(finding.confidence), 0.2)
-    if finding.severity in {"critical", "high", "medium"}:
-        finding.severity = "low"
-    note = f"Matched built-in benign allowlist: {matched}"
-    if note not in finding.missing_checks:
-        finding.missing_checks.append(note)
 
 
 def _parse_event_ts(value: Any) -> datetime | None:
@@ -330,6 +305,7 @@ def _co_occurs_satisfied(
 def _annotate_finding_benign_context(
     finding: Finding,
     co_occur_index: dict[int, list[tuple[datetime, str]]] | None = None,
+    rules: list[dict[str, Any]] | None = None,
 ) -> None:
     """Annotate findings with benign-context tags if they match finding-level rules.
 
@@ -338,7 +314,7 @@ def _annotate_finding_benign_context(
     All when_all conditions must positively match: a missing column or an
     unverifiable co-occurrence means NO downgrade (conservative default).
     """
-    rules = _load_finding_benign_context_rules()
+    rules = rules if rules is not None else _load_finding_benign_context_rules()
     if not rules:
         return
 
@@ -396,20 +372,21 @@ def _annotate_finding_benign_context(
             finding.missing_checks = list(finding.missing_checks or []) + [note]
 
 
-def clear_rule_findings(case: Case, db: CaseDB, rule_id: str) -> None:
-    rows = db.execute(
-        "SELECT finding_id FROM findings WHERE rule_id = ?", (rule_id,)
-    ).fetchall()
-    for row in rows:
-        finding_id = str(row[0] or "")
-        if finding_id:
-            db.execute(
-                "DELETE FROM case_timeline WHERE entry_id = ?",
-                (f"tl-finding-{finding_id}",),
-            )
-    db.execute("DELETE FROM findings WHERE rule_id = ?", (rule_id,))
-    for path in case.findings_dir.glob(f"{rule_id}-*.json"):
-        path.unlink(missing_ok=True)
+def clear_rule_findings_batch(db: CaseDB, rule_ids: set[str]) -> None:
+    """Remove findings and timeline projections for a set of rule IDs."""
+    ids = sorted(rule_id for rule_id in rule_ids if rule_id)
+    if not ids:
+        return
+    placeholders = ", ".join("?" for _ in ids)
+    params = ids
+    with db.transaction():
+        db.execute(
+            "DELETE FROM case_timeline WHERE entry_id IN ("
+            "SELECT 'tl-finding-' || finding_id FROM findings "
+            f"WHERE rule_id IN ({placeholders}))",
+            params,
+        )
+        db.execute(f"DELETE FROM findings WHERE rule_id IN ({placeholders})", params)
 
 
 def feed_findings_to_timeline(db: CaseDB) -> None:
@@ -439,38 +416,37 @@ def feed_findings_to_timeline(db: CaseDB) -> None:
     """)
 
 
-def save_findings(case: Case, db: CaseDB, findings: list[Finding]) -> None:
-    """Persist findings to individual JSON files and the findings database table.
+def save_findings(
+    case: Case,
+    db: CaseDB,
+    findings: list[Finding],
+    *,
+    run_context: FindingRunContext | None = None,
+    feed_timeline: bool = True,
+) -> None:
+    """Persist findings to the findings database table.
 
-    Applies built-in benign allowlist downgrading and user-defined suppression
-    before writing. Each finding is written as a JSON file for easy inspection
-    and inserted as a row in the findings table for structured querying.
+    Applies benign-context annotations and user-defined suppression
+    before writing. A caller can reuse ``run_context`` and defer the timeline projection when it
+    coordinates persistence for a complete rule-analysis pass.
     """
     now = datetime.now(UTC).replace(tzinfo=None)
-    allowlist_rules = _load_allowlist(case)
-    builtin_allowlist = _load_builtin_benign_allowlist()
-    co_occur_index = build_co_occur_index(db)
+    context = run_context or prepare_finding_run(case, db)
+    rows: list[tuple[Any, ...]] = []
     for finding in findings:
-        _downgrade_builtin_benign_finding(finding, builtin_allowlist)
-        _annotate_finding_benign_context(finding, co_occur_index)
-        if _is_suppressed(finding, allowlist_rules):
+        _annotate_finding_benign_context(
+            finding, context.co_occur_index, context.benign_context_rules
+        )
+        if _is_suppressed(finding, context.allowlist_rules):
             finding.status = "suppressed"
-        path = case.findings_dir / f"{finding.finding_id}.json"
-        path.write_bytes(orjson.dumps(finding.model_dump(), option=orjson.OPT_INDENT_2))
-        db.execute(
-            """
-            INSERT INTO findings (
-                finding_id, rule_id, title, summary, severity, confidence,
-                status, tags, attack, evidence, ai_summary, missing_checks, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
+        rows.append(
             (
                 finding.finding_id,
                 finding.rule_id,
                 finding.title,
                 finding.summary,
                 finding.severity,
-                finding.confidence,
+                str(finding.confidence),
                 finding.status,
                 json.dumps(finding.tags, ensure_ascii=False),
                 json.dumps(
@@ -480,9 +456,18 @@ def save_findings(case: Case, db: CaseDB, findings: list[Finding]) -> None:
                 finding.ai_summary,
                 json.dumps(finding.missing_checks, ensure_ascii=False),
                 now,
-            ),
+            )
         )
-    feed_findings_to_timeline(db)
+    if rows:
+        with db.transaction():
+            for offset in range(0, len(rows), FINDING_INSERT_BATCH_SIZE):
+                batch = rows[offset : offset + FINDING_INSERT_BATCH_SIZE]
+                db.execute(
+                    _FINDING_INSERT_SQL,
+                    [json.dumps(batch, ensure_ascii=False, default=str)],
+                )
+    if feed_timeline:
+        feed_findings_to_timeline(db)
 
 
 def _escape_like_pattern(keyword: str) -> str:
@@ -575,7 +560,7 @@ def execute_event_keyword_fallback_search(
 ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
     """Fallback for queries that explicitly reference event_ids but return no rows.
 
-    Looks up event-specific string search keywords in rulepacks/_schema/event_ids.yaml,
+    Looks up event-specific string search keywords in data/schema/event_ids.yaml,
     then re-queries evtx_events by matching raw_json text.
     """
     event_ids = _extract_event_ids_from_sql(sql)
@@ -619,15 +604,19 @@ def execute_fallback_search(
             for kw in valid_keywords
         )
         sql = f"SELECT * FROM evtx_events WHERE {like_clauses} LIMIT 100"
-        return run_rule(
-            db,
-            Rule(
-                id="fallback-keyword",
-                title="",
-                query=sql,
-                finding=FindingTemplate(title="", summary=""),
-            ),
-        )
+        return [
+            row
+            for batch in iter_rule_row_batches(
+                db,
+                Rule(
+                    id="fallback-keyword",
+                    title="",
+                    query=sql,
+                    finding=FindingTemplate(title="", summary=""),
+                ),
+            )
+            for row in batch
+        ]
     if phase == "related_event_ids":
         event_ids = fallback.get("event_ids") or []
         if not event_ids:
@@ -646,15 +635,19 @@ def execute_fallback_search(
             return []
         event_list = ",".join(str(eid) for eid in valid_event_ids)
         sql = f"SELECT * FROM evtx_events WHERE event_id IN ({event_list}) LIMIT 100"
-        return run_rule(
-            db,
-            Rule(
-                id="fallback-correlation",
-                title="",
-                query=sql,
-                finding=FindingTemplate(title="", summary=""),
-            ),
-        )
+        return [
+            row
+            for batch in iter_rule_row_batches(
+                db,
+                Rule(
+                    id="fallback-correlation",
+                    title="",
+                    query=sql,
+                    finding=FindingTemplate(title="", summary=""),
+                ),
+            )
+            for row in batch
+        ]
     if phase == "artifact_table":
         table = fallback.get("table")
         if not table:
@@ -669,15 +662,19 @@ def execute_fallback_search(
             )
             return []
         sql = f"SELECT * FROM {table_name} LIMIT 100"
-        return run_rule(
-            db,
-            Rule(
-                id="fallback-artifact",
-                title="",
-                query=sql,
-                finding=FindingTemplate(title="", summary=""),
-            ),
-        )
+        return [
+            row
+            for batch in iter_rule_row_batches(
+                db,
+                Rule(
+                    id="fallback-artifact",
+                    title="",
+                    query=sql,
+                    finding=FindingTemplate(title="", summary=""),
+                ),
+            )
+            for row in batch
+        ]
     if phase and phase not in FALLBACK_PHASES:
         import logging
 

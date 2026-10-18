@@ -12,28 +12,178 @@ from __future__ import annotations
 import tempfile
 import unittest
 
-from forensia.ai.checking.check_guardrails import _co_observation_satisfied
-from forensia.ai.hypotheses.hypothesis_manager import (
-    MAX_SECTION_UPDATES,
+from forensia.core.case import Case
+from forensia.core.session import Hypothesis, SessionState
+from forensia.db.database import CaseDB
+from forensia.investigation.hypotheses.hypothesis_manager import (
     admit_new_hypothesis,
-    mark_section_stale,
     merge_active_hypotheses,
     qualify_event_contexts,
     resolve_hypothesis,
 )
-from forensia.ai.hypotheses.hypothesis_model import (
+from forensia.investigation.hypotheses.hypothesis_model import (
     extract_semantic_triple,
     hypothesis_evidence_strength,
-    hypothesis_similarity,
 )
-from forensia.core.case import Case
-from forensia.core.session import Hypothesis, SessionState
-from forensia.db.database import CaseDB
-from forensia.report.sections.section_quality import _event_claim_gaps
+from forensia.investigation.verification.assessment import assess_evidence_group
 from forensia.report.sections.section_taxonomy import sections_for_keypoint
 
 
 class TestHypothesisAdmissionConformance(unittest.TestCase):
+    def test_verdict_timeline_uses_verified_canonical_timestamp(self) -> None:
+        from datetime import datetime
+
+        from forensia.investigation.hypotheses.hypothesis_manager import (
+            _feed_verdict_to_timeline,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir, CaseDB(Case.init(tmpdir)) as db:
+            db.execute(
+                "INSERT INTO mft_entries (evidence_id, fn_created, si_modified, is_deleted) "
+                "VALUES ('mft-target', '2038-04-05 06:07:08', '2002-01-02 03:04:05', true)"
+            )
+            for field, value, expected in (
+                ("fn_created", "2038-04-05 06:07:08", datetime(2038, 4, 5, 6, 7, 8)),
+                ("si_modified", "2002-01-02 03:04:05", datetime(2002, 1, 2, 3, 4, 5)),
+                ("is_deleted", True, None),
+            ):
+                hyp = Hypothesis(
+                    id=field,
+                    description="A typed observation",
+                    confirm_when={
+                        "observation": {
+                            "family": "mft",
+                            "capability": "file_activity",
+                            "field": field,
+                            "operator": "equals",
+                            "value": value,
+                            "evidence_ids": ["mft-target"],
+                        }
+                    },
+                )
+                _feed_verdict_to_timeline(
+                    db,
+                    hyp.id,
+                    "confirmed",
+                    hyp.description,
+                    [
+                        {
+                            "evidence_id": "mft-target",
+                            "timestamp": "1999-01-01",
+                            "fn_created": "1999-02-02",
+                        }
+                    ],
+                    hyp.verification_spec,
+                )
+                result = db.execute(
+                    "SELECT timestamp FROM case_timeline WHERE ref_id = ?", [field]
+                ).fetchone()
+                self.assertEqual((expected,) if expected else None, result)
+
+    def test_distinct_report_questions_admit_and_replay_exact_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                gap_ids = {"GAP-A", "GAP-B"}
+                for gap_id, heading, description in (
+                    ("GAP-A", "Logons", "Logon events for user Alice"),
+                    ("GAP-B", "Logons", "Logon events for user Alicia"),
+                ):
+                    db.execute(
+                        "INSERT INTO report_gaps (gap_id, section_key, block_heading, "
+                        "description, kind, status, origin, created_at, updated_at) "
+                        "VALUES (?, 'activity', ?, ?, 'internal_db_check', 'open', "
+                        "'section', now(), now())",
+                        [gap_id, heading, description],
+                    )
+                persisted_gap_ids = {
+                    str(row[0])
+                    for row in db.execute(
+                        "SELECT gap_id FROM report_gaps WHERE block_heading IS NOT NULL "
+                        "AND trim(block_heading) <> ''"
+                    ).fetchall()
+                }
+                self.assertEqual(persisted_gap_ids, gap_ids)
+
+                condition = {
+                    "co_observed_event_ids": [4624, 4625],
+                    "within_minutes": 30,
+                    "event_contexts": [
+                        {
+                            "event_id": event_id,
+                            "channel": "Security",
+                            "provider": "Microsoft-Windows-Security-Auditing",
+                        }
+                        for event_id in (4624, 4625)
+                    ],
+                    "same_entities": ["src_ip", "target_user"],
+                    "min_count": 2,
+                }
+
+                def candidate(gap_id: str, user: str) -> Hypothesis:
+                    return Hypothesis(
+                        id=f"hyp-{gap_id}",
+                        description=(
+                            f"Repeated logon events for user {user} from src_ip "
+                            "against target_user within 30 minutes indicate automated access"
+                        ),
+                        source_gap_id=gap_id,
+                        required_entities=["src_ip", "target_user"],
+                        confirm_when=condition,
+                    )
+
+                state = SessionState(session_id="S-report-gap")
+                first = candidate("GAP-A", "Alice")
+                second = candidate("GAP-B", "Alicia")
+                self.assertEqual(
+                    admit_new_hypothesis(first, state),
+                    (True, "accepted"),
+                )
+                state.active_hypotheses.append(first)
+                self.assertEqual(
+                    admit_new_hypothesis(second, state),
+                    (True, "accepted"),
+                )
+                replay = candidate("GAP-A", "Alice")
+                self.assertEqual(
+                    admit_new_hypothesis(replay, state),
+                    (False, "duplicate-of-active"),
+                )
+                ordinary = candidate("GAP-ordinary", "Alice")
+                ordinary.source_gap_id = None
+                ordinary_state = SessionState(
+                    session_id="S-ordinary", active_hypotheses=[ordinary]
+                )
+                self.assertEqual(
+                    admit_new_hypothesis(second, ordinary_state),
+                    (True, "accepted"),
+                )
+                refuted = ordinary.model_copy(deep=True)
+                refuted.status = "refuted"
+                refuted_state = SessionState(
+                    session_id="S-refuted", resolved_hypotheses=[refuted]
+                )
+                self.assertEqual(
+                    admit_new_hypothesis(second, refuted_state),
+                    (True, "accepted"),
+                )
+                merged = merge_active_hypotheses(
+                    db,
+                    current=[],
+                    updates=[
+                        first.model_copy(deep=True),
+                        ordinary.model_copy(deep=True),
+                        second.model_copy(deep=True),
+                    ],
+                    resolved=[],
+                    session_id="S-report-gap",
+                    origin="report_gap",
+                )
+                self.assertEqual(
+                    {item.source_gap_id for item in merged},
+                    {None, "GAP-A", "GAP-B"},
+                )
+
     def test_rejects_unmaterialized_or_unverifiable_claims(self) -> None:
         state = SessionState(session_id="S-admission")
 
@@ -48,7 +198,9 @@ class TestHypothesisAdmissionConformance(unittest.TestCase):
 
         self.assertEqual(
             (False, "unresolved-placeholder"),
-            admission("Execution from {src_ip} against target_user", {"event_id": 4624}),
+            admission(
+                "Execution from {src_ip} against target_user", {"event_id": 4624}
+            ),
         )
         self.assertEqual(
             (False, "empty-verification-spec"),
@@ -58,7 +210,18 @@ class TestHypothesisAdmissionConformance(unittest.TestCase):
             "Repeated logon events from a single src_ip to the same target_user "
             "within 30 minutes indicate automated access"
         )
-        base = {"co_observed_event_ids": [4624, 4625], "within_minutes": 30}
+        base = {
+            "co_observed_event_ids": [4624, 4625],
+            "within_minutes": 30,
+            "event_contexts": [
+                {
+                    "event_id": event_id,
+                    "channel": "Security",
+                    "provider": "Microsoft-Windows-Security-Auditing",
+                }
+                for event_id in (4624, 4625)
+            ],
+        }
         self.assertEqual(
             (False, "claim-spec-entity-correlation-missing"),
             admission(description, base),
@@ -71,6 +234,98 @@ class TestHypothesisAdmissionConformance(unittest.TestCase):
             ),
         )
 
+    def test_admits_catalogued_non_evtx_observation_specs(self) -> None:
+        state = SessionState(session_id="S-observation")
+        for family, capability, field in (
+            ("prefetch", "process_execution", "executable_name"),
+            ("mft", "file_activity", "file_path"),
+            ("registry", "registry_observation", "key_path"),
+        ):
+            candidate = Hypothesis(
+                id=f"draft-{family}",
+                description=f'At least 1 {family} observation has {field} contains "example".',
+                confirm_when={
+                    "observation": {
+                        "family": family,
+                        "capability": capability,
+                        "field": field,
+                        "operator": "contains",
+                        "value": "example",
+                    }
+                },
+            )
+            self.assertEqual((True, "accepted"), admit_new_hypothesis(candidate, state))
+            state.active_hypotheses.append(candidate.model_copy(deep=True))
+            alternative = candidate.model_copy(deep=True)
+            alternative.id += "-alternative"
+            alternative.verification_spec.support_conditions["observation"]["value"] = (
+                "different"
+            )
+            alternative.description = (
+                f'At least 1 {family} observation has {field} contains "different".'
+            )
+            self.assertEqual(
+                (True, "accepted"), admit_new_hypothesis(alternative, state)
+            )
+            candidate.description = "The executable stole confidential files"
+            self.assertEqual(
+                (False, "observation-claim-scope-unproven"),
+                admit_new_hypothesis(candidate, state),
+            )
+
+        invalid = Hypothesis(
+            id="draft-invalid-observation",
+            description="Observed an unsupported field",
+            confirm_when={
+                "observation": {
+                    "family": "prefetch",
+                    "capability": "process_execution",
+                    "field": "raw_json",
+                    "operator": "equals",
+                    "value": "anything",
+                }
+            },
+        )
+        self.assertEqual(
+            (False, "observation-field-unsupported"),
+            admit_new_hypothesis(invalid, state),
+        )
+
+    def test_admits_boolean_observation_with_boolean_operand(self) -> None:
+        state = SessionState(session_id="S-boolean-observation")
+        valid = Hypothesis(
+            id="draft-mft-deleted",
+            description="At least 1 mft observation has is_deleted equals true.",
+            confirm_when={
+                "observation": {
+                    "family": "mft",
+                    "capability": "file_activity",
+                    "field": "is_deleted",
+                    "operator": "equals",
+                    "value": True,
+                }
+            },
+        )
+        self.assertEqual((True, "accepted"), admit_new_hypothesis(valid, state))
+
+        invalid = Hypothesis(
+            id="draft-mft-deleted-string",
+            description="An MFT record marks the file as deleted",
+            confirm_when={
+                "observation": {
+                    "family": "mft",
+                    "capability": "file_activity",
+                    "field": "is_deleted",
+                    "operator": "equals",
+                    "value": "true",
+                }
+            },
+        )
+        self.assertEqual(
+            (False, "observation-value-invalid"),
+            admit_new_hypothesis(invalid, state),
+        )
+
     def test_rejects_known_event_reinterpretations(self) -> None:
         state = SessionState(session_id="S-semantic")
         for description, event_id in (
@@ -78,11 +333,20 @@ class TestHypothesisAdmissionConformance(unittest.TestCase):
             ("Password reset (4624)", 4624),
         ):
             with self.subTest(event_id=event_id):
+                condition = {"co_observed_event_ids": [event_id]}
+                if event_id == 4624:
+                    condition["event_contexts"] = [
+                        {
+                            "event_id": 4624,
+                            "channel": "Security",
+                            "provider": "Microsoft-Windows-Security-Auditing",
+                        }
+                    ]
                 candidate = Hypothesis(
                     id="draft-semantic",
                     description=description,
                     required_entities=["computer"],
-                    confirm_when={"co_observed_event_ids": [event_id]},
+                    confirm_when=condition,
                 )
                 self.assertEqual(
                     (False, f"event-semantic-mismatch:{event_id}"),
@@ -135,6 +399,24 @@ class TestHypothesisAdmissionConformance(unittest.TestCase):
             },
         )
         self.assertEqual((True, "accepted"), admit_new_hypothesis(valid, state))
+        # Admission and Assessment share one condition vocabulary: a spec
+        # admitted with event_contexts must be evaluable by Assessment.
+        admitted_rows = [
+            {
+                "evidence_id": "evtx-1",
+                "event_id": 4104,
+                "channel": "Microsoft-Windows-PowerShell/Operational",
+                "raw_json": {
+                    "winlog": {"provider": {"name": "Microsoft-Windows-PowerShell"}}
+                },
+            }
+        ]
+        assessment = assess_evidence_group(
+            hypothesis=valid,
+            rows=admitted_rows,
+            evidence_ids=["evtx-1"],
+        )
+        self.assertEqual(assessment.role, "supporting")
         invalid = Hypothesis(
             id="draft-winlogon",
             description=valid.description,
@@ -155,7 +437,7 @@ class TestHypothesisAdmissionConformance(unittest.TestCase):
             admit_new_hypothesis(invalid, state),
         )
 
-    def test_context_list_may_omit_unconstrained_co_observed_ids(self) -> None:
+    def test_context_list_must_cover_constrained_co_observed_ids(self) -> None:
         candidate = Hypothesis(
             id="draft-mixed-context",
             description="RDP followed by PowerShell script block execution",
@@ -172,7 +454,7 @@ class TestHypothesisAdmissionConformance(unittest.TestCase):
             },
         )
         self.assertEqual(
-            (True, "accepted"),
+            (False, "event-context-missing:4624"),
             admit_new_hypothesis(candidate, SessionState(session_id="S-mixed")),
         )
 
@@ -204,7 +486,9 @@ class TestHypothesisAdmissionConformance(unittest.TestCase):
                 )
                 qualify_event_contexts(candidate, db)
         self.assertEqual(
-            candidate.confirm_when["event_contexts"][0]["provider"],
+            candidate.verification_spec.support_conditions["event_contexts"][0][
+                "provider"
+            ],
             "Microsoft-Windows-PowerShell",
         )
         self.assertEqual(
@@ -212,63 +496,72 @@ class TestHypothesisAdmissionConformance(unittest.TestCase):
             admit_new_hypothesis(candidate, SessionState(session_id="S-derived")),
         )
 
-    def test_co_observation_ignores_ineligible_provider_rows(self) -> None:
-        rows = [
-            {
-                "event_id": 4104,
-                "channel": "Application",
-                "raw_json": {
-                    "winlog": {"provider": {"name": "Microsoft-Windows-Winlogon"}}
-                },
-            }
-        ]
-        condition = {
-            "co_observed_event_ids": [4104],
-            "event_contexts": [
+    def test_admitted_spec_with_unknown_key_stays_contextual(self) -> None:
+        """Admission tolerates keys outside the shared vocabulary, but such a
+        spec must not silently become supporting at Assessment."""
+
+        state = SessionState(session_id="S-unknown-key")
+        candidate = Hypothesis(
+            id="draft-keywords",
+            description="Logon activity on the workstation",
+            confirm_when={
+                "co_observed_event_ids": [4624],
+                "keywords": ["sc.exe"],
+                "event_contexts": [
+                    {
+                        "event_id": 4624,
+                        "channel": "Security",
+                        "provider": "Microsoft-Windows-Security-Auditing",
+                    }
+                ],
+            },
+        )
+        self.assertEqual((True, "accepted"), admit_new_hypothesis(candidate, state))
+        assessment = assess_evidence_group(
+            hypothesis=candidate,
+            rows=[
                 {
-                    "event_id": 4104,
-                    "channel": "Microsoft-Windows-PowerShell/Operational",
-                    "provider": "Microsoft-Windows-PowerShell",
+                    "evidence_id": "evtx-1",
+                    "event_id": 4624,
+                    "channel": "Security",
+                    "raw_json": {
+                        "winlog": {
+                            "provider": {"name": "Microsoft-Windows-Security-Auditing"}
+                        }
+                    },
                 }
             ],
-        }
-        satisfied, reason = _co_observation_satisfied(condition, rows)
-        self.assertFalse(satisfied)
-        self.assertIn("missing", reason)
-
-    def test_quality_uses_eligible_context_when_rows_are_mixed(self) -> None:
-        rows = [
-            {
-                "event_id": 4104,
-                "channel": "Microsoft-Windows-PowerShell/Operational",
-                "raw_json": {
-                    "winlog": {
-                        "provider": {"name": "Microsoft-Windows-PowerShell"}
-                    }
-                },
-            },
-            {
-                "event_id": 4104,
-                "channel": "Application",
-                "raw_json": {
-                    "winlog": {
-                        "provider": {"name": "Microsoft-Windows-Winlogon"}
-                    }
-                },
-            },
-        ]
-        gaps = _event_claim_gaps(
-            "PowerShell script block execution was observed", [{"sample_rows": rows}]
+            evidence_ids=["evtx-1"],
         )
-        self.assertFalse(any("channel/provider context" in gap for gap in gaps))
+        self.assertEqual(assessment.role, "contextual")
+        self.assertIn("unsupported condition keys", assessment.reason)
+
+        # A spec admission rejects (no evaluable event IDs) must likewise
+        # never become supporting at Assessment.
+        rejected_candidate = Hypothesis(
+            id="draft-keywords-only",
+            description="Logon activity on the workstation",
+            confirm_when={"keywords": ["logon"]},
+        )
+        self.assertEqual(
+            (False, "non-testable-verification-spec"),
+            admit_new_hypothesis(rejected_candidate, state),
+        )
+        rejected_assessment = assess_evidence_group(
+            hypothesis=rejected_candidate,
+            rows=[{"evidence_id": "evtx-1", "event_id": 4624}],
+            evidence_ids=["evtx-1"],
+        )
+        self.assertEqual(rejected_assessment.role, "contextual")
 
 
 def _setup_confirmed_invariant(db: CaseDB, hypothesis_id: str) -> None:
     """Set up sufficiency and evidence links so confirmed verdict passes invariants."""
     # First ensure the hypothesis exists in the DB
     db.execute(
-        "INSERT INTO hypotheses (hypothesis_id, description, status, sufficiency_status) "
-        "VALUES (?, 'test', 'active', 'unknown') ON CONFLICT (hypothesis_id) DO NOTHING",
+        "INSERT INTO hypotheses (hypothesis_id, description, status, sufficiency_status, "
+        "verification_spec) VALUES (?, 'test', 'active', 'unknown', "
+        '\'{"spec_version":"1"}\') ON CONFLICT (hypothesis_id) DO NOTHING',
         (hypothesis_id,),
     )
     db.execute(
@@ -276,8 +569,14 @@ def _setup_confirmed_invariant(db: CaseDB, hypothesis_id: str) -> None:
         "sufficiency_score = 0.8 WHERE hypothesis_id = ?",
         (hypothesis_id,),
     )
-    from forensia.ai.checking.sufficiency import create_hypothesis_evidence_link
+    from forensia.investigation.verification.sufficiency import (
+        create_hypothesis_evidence_link,
+    )
 
+    db.execute(
+        "INSERT INTO evtx_events (evidence_id, source_file) VALUES (?, 'test-source')",
+        (f"evtx-{hypothesis_id}",),
+    )
     create_hypothesis_evidence_link(
         db,
         hypothesis_id=hypothesis_id,
@@ -335,31 +634,6 @@ class TestExtractSemanticTriple:
         )
         assert triple["target"] == "account"
 
-    def test_full_triple(self) -> None:
-        triple = extract_semantic_triple(
-            "Lateral movement by attacker to a server via stolen credentials"
-        )
-        assert triple["actor"] not in ("", None)
-        assert triple["action"] == "lateral movement"
-        assert triple["target"] == "server"
-
-    def test_empty_description(self) -> None:
-        triple = extract_semantic_triple("")
-        assert triple == {"actor": "unknown", "action": "unknown", "target": "unknown"}
-
-
-class TestHypothesisSimilarity:
-    def test_similarity_handles_keyword_only_descriptions(self) -> None:
-        """End-to-end: similarity between rule-seeded style descriptions must not raise."""
-        left = "Explicit credential logon for account informant may indicate misuse"
-        right = "Service installed shortly after logon suggests persistence"
-        score = hypothesis_similarity(left, right)
-        assert 0.0 <= score <= 1.0
-
-    def test_identical_descriptions_score_high(self) -> None:
-        text = "Repeated failed logons from a single source ip targeting one user"
-        assert hypothesis_similarity(text, text) >= 0.85
-
 
 class TestResolvedHypothesisDedup:
     """Regression: near-duplicate of a resolved hypothesis must not create
@@ -379,10 +653,10 @@ class TestResolvedHypothesisDedup:
                     """INSERT INTO hypotheses (
                         hypothesis_id, description, status, verdict, summary, origin,
                         created_session, resolved_session, created_at, updated_at,
-                        source_rule_ids, required_entities, confirm_when
+                        source_rule_ids, required_entities
                     ) VALUES (
                         'H-001', ?, 'confirmed', 'confirmed', 'done', 'broad_plan',
-                        'S-1', 'S-2', now(), now(), '["rule-1"]', '["host"]', NULL
+                        'S-1', 'S-2', now(), now(), '["rule-1"]', '["host"]'
                     )""",
                     (desc_a,),
                 )
@@ -439,114 +713,224 @@ class TestResolvedHypothesisDedup:
                     f"expected log about binding, got: {captured.out}"
                 )
 
-    def test_identical_to_resolved_not_duplicated(self, capsys) -> None:
-        """Exact description match against a resolved hypothesis
-        does not create a new active hypothesis."""
-        desc = "Backdoor via service install using explicit credentials"
+    def test_spec_change_reopens_resolved_hypothesis(self) -> None:
+        from forensia.evidence.links import (
+            evidence_link_currentness,
+            load_evidence_links,
+        )
+        from forensia.investigation.hypotheses.hypothesis_manager import (
+            _merge_active_hypotheses_in_transaction,
+        )
+        from forensia.investigation.hypotheses.hypothesis_store import (
+            _upsert_hypothesis,
+            load_persisted_hypotheses,
+        )
+        from forensia.investigation.selection import select_focus_hypotheses
+        from forensia.investigation.verification.sufficiency import (
+            create_hypothesis_evidence_link,
+        )
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(tmpdir)
-            with CaseDB(case) as db:
+            with CaseDB(Case.init(tmpdir)) as db:
+                resolved = Hypothesis(
+                    id="H-001",
+                    description="4624 event shows remote interactive logon",
+                    status="confirmed",
+                    verdict="confirmed",
+                    summary="Previously confirmed",
+                    target_keypoint_id="host_execution_activity",
+                )
+                _insert_section(db, "3_technical", update_count=17)
+                _upsert_hypothesis(
+                    db,
+                    resolved,
+                    origin="rule",
+                    session_id="session-old",
+                    resolved_session="session-old",
+                )
                 db.execute(
-                    """INSERT INTO hypotheses (
-                        hypothesis_id, description, status, verdict, summary, origin,
-                        created_session, resolved_session, created_at, updated_at,
-                        source_rule_ids, required_entities, confirm_when
-                    ) VALUES (
-                        'H-004', ?, 'confirmed', 'confirmed',
-                        'confirmed by evidence', 'broad_plan',
-                        'S-1', 'S-2', now(), now(),
-                        '["rule-backdoor"]', '["service"]',
-                        '{"co_observed_event_ids": ["E-001"]}'
-                    )""",
-                    (desc,),
+                    "UPDATE hypotheses SET selection_count = 7, "
+                    "last_selected_at = now(), next_eligible_at = now() + INTERVAL '1 day', "
+                    "blocked_reason = 'old retry block', sufficiency_status = 'sufficient', "
+                    "sufficiency_score = 1.0 WHERE hypothesis_id = 'H-001'"
+                )
+                db.execute(
+                    "INSERT INTO evtx_events (evidence_id, source_file) "
+                    "VALUES ('evtx-H-001', 'source-H-001')"
+                )
+                create_hypothesis_evidence_link(
+                    db,
+                    hypothesis_id="H-001",
+                    evidence_id="evtx-H-001",
+                    assessment_id="EA-old-spec",
+                )
+                db.execute(
+                    "INSERT INTO claims (claim_id, section_key, claim_text, "
+                    "finding_ids, hypothesis_ids, evidence_ids, support_status, "
+                    "created_at, updated_at) VALUES ('C-H-001', '3_technical', "
+                    "'old claim', '[]', '[\"H-001\"]', '[\"evtx-H-001\"]', "
+                    "'supported', now(), now())"
+                )
+                assert len(load_evidence_links(db, "H-001", current_only=True)) == 1
+                assert (
+                    db.execute(
+                        "SELECT support_status FROM claims WHERE claim_id = 'C-H-001'"
+                    ).fetchone()[0]
+                    == "supported"
+                )
+                assert (
+                    db.execute(
+                        "SELECT stale FROM report_sections WHERE section_key = '3_technical'"
+                    ).fetchone()[0]
+                    is False
+                )
+                resolved_projection = [resolved]
+                aliases: dict[str, str] = {}
+                with db.transaction():
+                    reopened = _merge_active_hypotheses_in_transaction(
+                        db=db,
+                        current=[],
+                        updates=[
+                            Hypothesis(
+                                id="H-new",
+                                description=resolved.description,
+                                status="active",
+                                refute_when={"zero_rows": True},
+                            )
+                        ],
+                        resolved=resolved_projection,
+                        session_id="session-spec-change",
+                        origin="broad_plan",
+                        alias_map_out=aliases,
+                    )
+
+                assert len(reopened) == 1
+                assert reopened[0].id == "H-001"
+                assert aliases == {"H-new": "H-001"}
+                assert reopened[0].status == "active"
+                assert reopened[0].verdict is None
+                assert reopened[0].verification_spec.refute_conditions == {
+                    "zero_rows": True
+                }
+                assert resolved_projection == []
+                row = db.execute(
+                    "SELECT status, verdict, resolved_session, selection_count, "
+                    "last_selected_at, next_eligible_at, blocked_reason, "
+                    "sufficiency_status FROM hypotheses WHERE hypothesis_id = 'H-001'"
+                ).fetchone()
+                assert row == (
+                    "active",
+                    None,
+                    None,
+                    0,
+                    None,
+                    None,
+                    None,
+                    "needs_review",
+                )
+                active, terminal = load_persisted_hypotheses(db)
+                assert [item.id for item in active] == ["H-001"]
+                assert terminal == []
+                selected = select_focus_hypotheses(
+                    db,
+                    limit=1,
+                    session_id="session-spec-change",
+                    iteration=1,
+                )
+                assert [
+                    result.hypothesis_id for result in selected if result.eligible
+                ] == ["H-001"]
+                history = load_evidence_links(db, "H-001")
+                current = load_evidence_links(db, "H-001", current_only=True)
+                assert len(history) == 1 and current == []
+                assert (
+                    evidence_link_currentness(db, history[0])[1]
+                    == "verification_spec_changed"
+                )
+                assert (
+                    db.execute(
+                        "SELECT support_status FROM claims WHERE claim_id = 'C-H-001'"
+                    ).fetchone()[0]
+                    == "needs_review"
+                )
+                assert (
+                    db.execute(
+                        "SELECT stale FROM report_sections WHERE section_key = '3_technical'"
+                    ).fetchone()[0]
+                    is True
                 )
 
-                resolved = [
-                    Hypothesis(
-                        id="H-004",
-                        description=desc,
-                        status="confirmed",
-                        verdict="confirmed",
-                        summary="confirmed by evidence",
-                        source_rule_ids=["rule-backdoor"],
-                        confirm_when={"co_observed_event_ids": ["E-001"]},
-                    ),
-                ]
+    def test_same_id_spec_update_with_different_description_reopens_once(self) -> None:
+        from forensia.investigation.hypotheses.hypothesis_store import (
+            _upsert_hypothesis,
+        )
 
-                merged = merge_active_hypotheses(
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with CaseDB(Case.init(tmpdir)) as db:
+                resolved = Hypothesis(
+                    id="H-009",
+                    description="Original resolved claim",
+                    status="confirmed",
+                    verdict="confirmed",
+                )
+                _upsert_hypothesis(
+                    db,
+                    resolved,
+                    origin="rule",
+                    session_id="session-old",
+                    resolved_session="session-old",
+                )
+                resolved_projection = [resolved]
+                reopened = merge_active_hypotheses(
                     db=db,
                     current=[],
                     updates=[
                         Hypothesis(
-                            id="H-draft",
-                            description=desc,
+                            id="H-009",
+                            description="Different wording for the same persisted claim",
                             status="active",
-                            source_rule_ids=["rule-backdoor"],
-                            required_entities=["service"],
-                        ),
+                            refute_when={"zero_rows": True},
+                        )
                     ],
-                    resolved=resolved,
-                    session_id="session-test",
+                    resolved=resolved_projection,
+                    session_id="session-new",
                     origin="broad_plan",
                 )
 
-                # Should not be added to active
-                assert len(merged) == 0
-
-                captured = capsys.readouterr()
-                assert "bound to resolved H-004" in captured.out
+                assert len(reopened) == 1
+                assert reopened[0].id == "H-009"
+                assert reopened[0].description == "Original resolved claim"
+                assert reopened[0].status == "active"
+                assert reopened[0].verdict is None
+                assert resolved_projection == []
+                assert (
+                    db.execute(
+                        "SELECT COUNT(*) FROM hypotheses WHERE hypothesis_id = 'H-009'"
+                    ).fetchone()[0]
+                    == 1
+                )
 
 
 class TestHypothesisEvidenceStrength:
-    """Unit tests for hypothesis_evidence_strength scoring."""
-
-    def test_llm_speculated_scores_zero(self) -> None:
-        h = Hypothesis(
-            id="H-000",
-            description="LLM-speculated hypothesis",
-            status="active",
-        )
-        assert hypothesis_evidence_strength(h) == 0
-
-    def test_rule_seeded_only_scores_one(self) -> None:
-        h = Hypothesis(
-            id="H-001",
-            description="Rule-seeded hypothesis",
-            status="active",
-            source_rule_ids=["rule-1"],
-        )
-        assert hypothesis_evidence_strength(h) == 1
-
-    def test_rule_seeded_with_evidence_scores_two(self) -> None:
-        h = Hypothesis(
-            id="H-002",
-            description="Rule-seeded with evidence",
-            status="active",
-            source_rule_ids=["rule-1"],
-            confirm_when={"co_observed_event_ids": ["E-001"]},
-        )
-        assert hypothesis_evidence_strength(h) == 2
-
-    def test_zero_rows_placeholder_not_strong_evidence(self) -> None:
-        h = Hypothesis(
-            id="H-003",
-            description="Rule-seeded with zero_rows placeholder",
-            status="active",
-            source_rule_ids=["rule-1"],
-            confirm_when={"zero_rows": True},
-        )
-        assert hypothesis_evidence_strength(h) == 1
-
-    def test_refute_when_also_counts_as_evidence(self) -> None:
-        h = Hypothesis(
-            id="H-004",
-            description="Rule-seeded with refute criteria",
-            status="active",
-            source_rule_ids=["rule-1"],
-            refute_when={"co_observed_event_ids": ["E-002"]},
-        )
-        assert hypothesis_evidence_strength(h) == 2
+    def test_rule_origin_and_declared_evidence_strength(self) -> None:
+        cases = [
+            ({}, 0),
+            ({"source_rule_ids": ["rule-1"]}, 1),
+            ({"source_rule_ids": ["rule-1"], "confirm_when": {"zero_rows": True}}, 1),
+            (
+                {
+                    "source_rule_ids": ["rule-1"],
+                    "confirm_when": {"co_observed_event_ids": [4624]},
+                },
+                2,
+            ),
+            ({"source_rule_ids": ["rule-1"], "refute_when": {"zero_rows": True}}, 2),
+        ]
+        for index, (declaration, expected) in enumerate(cases):
+            hypothesis = Hypothesis(
+                id=f"H-{index:03d}", description="candidate", **declaration
+            )
+            assert hypothesis_evidence_strength(hypothesis) == expected
 
 
 def _insert_section(db: CaseDB, section_key: str, update_count: int = 0) -> None:
@@ -708,14 +1092,14 @@ class StalePropagationViaDescriptionTests(unittest.TestCase):
                 self.assertTrue(_stale_status(db, "3_technical"))
 
 
-class StalePropagationUpdateCountCapTests(unittest.TestCase):
-    """Sections with update_count >= max should not be marked stale."""
+class StalePropagationUpdateCountTests(unittest.TestCase):
+    """Source changes stale sections even after many prior refreshes."""
 
-    def test_section_at_cap_not_marked_stale(self) -> None:
+    def test_section_with_high_update_count_is_marked_stale(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
-                _insert_section(db, "3_technical", update_count=MAX_SECTION_UPDATES)
+                _insert_section(db, "3_technical", update_count=17)
                 state = SessionState(
                     session_id="S-1",
                     iteration=1,
@@ -728,6 +1112,7 @@ class StalePropagationUpdateCountCapTests(unittest.TestCase):
                         )
                     ],
                 )
+                _setup_confirmed_invariant(db, "H-5")
                 resolve_hypothesis(
                     db=db,
                     state=state,
@@ -736,16 +1121,16 @@ class StalePropagationUpdateCountCapTests(unittest.TestCase):
                     summary="confirmed",
                     session_id="S-1",
                 )
-                self.assertFalse(
+                self.assertTrue(
                     _stale_status(db, "3_technical"),
-                    "section at update_count cap should NOT be marked stale",
+                    "invalidation must not be disabled by prior refresh count",
                 )
 
-    def test_section_below_cap_marked_stale(self) -> None:
+    def test_section_with_low_update_count_is_marked_stale(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
-                _insert_section(db, "3_technical", update_count=MAX_SECTION_UPDATES - 1)
+                _insert_section(db, "3_technical", update_count=1)
                 state = SessionState(
                     session_id="S-1",
                     iteration=1,
@@ -769,7 +1154,7 @@ class StalePropagationUpdateCountCapTests(unittest.TestCase):
                 )
                 self.assertTrue(
                     _stale_status(db, "3_technical"),
-                    "section below cap should be marked stale",
+                    "section should be marked stale",
                 )
 
 
@@ -809,167 +1194,6 @@ class StalePropagationRulepackDeclTests(unittest.TestCase):
                     _stale_status(db, "2_timeline"),
                     "rulepack declaration should mark 2_timeline stale",
                 )
-
-
-class MarkSectionStaleTests(unittest.TestCase):
-    """Direct tests for mark_section_stale helper."""
-
-    def test_mark_section_stale_below_cap(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(tmpdir)
-            with CaseDB(case) as db:
-                _insert_section(db, "4_gaps", update_count=2)
-                mark_section_stale(db, "4_gaps")
-                self.assertTrue(_stale_status(db, "4_gaps"))
-
-    def test_mark_section_stale_at_cap(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(tmpdir)
-            with CaseDB(case) as db:
-                _insert_section(db, "4_gaps", update_count=MAX_SECTION_UPDATES)
-                mark_section_stale(db, "4_gaps")
-                self.assertFalse(
-                    _stale_status(db, "4_gaps"),
-                    "at-cap section must not be marked stale",
-                )
-
-
-class CollectSectionRequestsTests(unittest.TestCase):
-    """R6-01: the stale-section query must survive contact with real DuckDB rows.
-
-    The previous implementation did dict-style access on raw fetchall() tuples
-    and crashed with TypeError on the first stale row — killing every report
-    refresh after the initial fill (sessions 89dae1d15b9a / 907bd96e669c)."""
-
-    def test_stale_section_produces_render_request(self) -> None:
-        from pathlib import Path
-
-        from forensia.ai.sections.section_refresher import collect_section_requests
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(tmpdir)
-            template_dir = Path(tmpdir) / "templates"
-            template_dir.mkdir()
-            (template_dir / "1_overview.md").write_text(
-                "# Investigation Overview\n\n## Executive Summary\n<!-- mode: narrative; summary -->\n",
-                encoding="utf-8",
-            )
-            (template_dir / "4_gaps.md").write_text(
-                "# Investigation Gaps\n\n## Evidence Gaps\n<!-- mode: table; builder: gaps_evidence -->\n",
-                encoding="utf-8",
-            )
-            with CaseDB(case) as db:
-                # 1_overview: filled and fresh → must NOT be re-rendered.
-                db.execute(
-                    "INSERT INTO report_sections (section_key, title, body, confidence, status, update_count, stale) "
-                    "VALUES ('1_overview', 'Overview', 'filled body text', 0.8, 'ai_exhausted', 1, FALSE)"
-                )
-                # 4_gaps: filled but stale → must be re-rendered.
-                db.execute(
-                    "INSERT INTO report_sections (section_key, title, body, confidence, status, update_count, stale) "
-                    "VALUES ('4_gaps', 'Gaps', 'old gap body', 0.5, 'draft', 1, TRUE)"
-                )
-                prior_filled = {
-                    "1_overview": "filled body text",
-                    "4_gaps": "old gap body",
-                }
-                requests = collect_section_requests(
-                    case,
-                    db,
-                    sorted(template_dir.glob("[0-9]*_*.md")),
-                    prior_filled,
-                    report_brief={},
-                )
-
-        keys = [str(r.get("section_key")) for r in requests]
-        self.assertIn("4_gaps", keys, "stale section must produce a render request")
-        self.assertNotIn("1_overview", keys, "fresh filled section must be skipped")
-        gap_request = next(r for r in requests if r["section_key"] == "4_gaps")
-        self.assertTrue(gap_request["is_stale"])
-
-    def test_failure_marker_produces_retry_request_even_when_fresh(self) -> None:
-        from pathlib import Path
-
-        from forensia.ai.sections.section_refresher import collect_section_requests
-
-        marker = "_Section could not be generated due to an internal error._"
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(tmpdir)
-            template_path = Path(tmpdir) / "1_overview.md"
-            template_path.write_text(
-                "# Investigation Overview\n\n## Executive Summary\n<!-- mode: narrative; summary -->\n",
-                encoding="utf-8",
-            )
-            with CaseDB(case) as db:
-                db.execute(
-                    """
-                    INSERT INTO report_sections (
-                        section_key, title, body, confidence, status, update_count, stale
-                    ) VALUES ('1_overview', 'Overview', ?, 0, 'draft', 1, FALSE)
-                    """,
-                    [marker],
-                )
-                requests = collect_section_requests(
-                    case,
-                    db,
-                    [template_path],
-                    {"1_overview": marker},
-                    report_brief={},
-                )
-
-        self.assertEqual(["1_overview"], [item["section_key"] for item in requests])
-        self.assertTrue(requests[0]["is_stale"])
-
-    def test_force_all_returns_every_template(self) -> None:
-        from pathlib import Path
-
-        from forensia.ai.sections.section_refresher import collect_section_requests
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            case = Case.init(tmpdir)
-            template_dir = Path(tmpdir) / "templates"
-            template_dir.mkdir()
-            (template_dir / "1_overview.md").write_text(
-                "# Investigation Overview\n\n## Executive Summary\n<!-- mode: narrative; summary -->\n",
-                encoding="utf-8",
-            )
-            (template_dir / "4_gaps.md").write_text(
-                "# Investigation Gaps\n\n## Evidence Gaps\n<!-- mode: table; builder: gaps_evidence -->\n",
-                encoding="utf-8",
-            )
-            with CaseDB(case) as db:
-                db.execute(
-                    "INSERT INTO report_sections (section_key, title, body, confidence, status, update_count, stale) "
-                    "VALUES ('1_overview', 'Overview', 'filled body text', 0.8, 'ai_exhausted', 1, FALSE)"
-                )
-                db.execute(
-                    "INSERT INTO report_sections (section_key, title, body, confidence, status, update_count, stale) "
-                    "VALUES ('4_gaps', 'Gaps', 'old gap body', 0.5, 'draft', 5, FALSE)"
-                )
-                prior_filled = {
-                    "1_overview": "filled body text",
-                    "4_gaps": "old gap body",
-                }
-                requests = collect_section_requests(
-                    case,
-                    db,
-                    sorted(template_dir.glob("[0-9]*_*.md")),
-                    prior_filled,
-                    report_brief={},
-                    force_all=True,
-                )
-
-        keys = [str(r.get("section_key")) for r in requests]
-        self.assertIn("1_overview", keys, "force_all must include fresh sections")
-        self.assertIn("4_gaps", keys, "force_all must include at-cap sections")
-        for r in requests:
-            self.assertTrue(
-                r["is_stale"], f"force_all must mark {r['section_key']} as stale"
-            )
-            self.assertTrue(
-                r["needs_refresh"],
-                f"force_all must mark {r['section_key']} as needs_refresh",
-            )
 
 
 if __name__ == "__main__":

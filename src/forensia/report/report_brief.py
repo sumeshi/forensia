@@ -7,11 +7,10 @@ import re
 from typing import Any
 
 from forensia.core.case import Case
-from forensia.core.log import log as _log
 from forensia.core.textutil import sanitize_ingest_path
 from forensia.db.database import CaseDB
 from forensia.db.query import fetch_records, normalize_value
-from forensia.report.benign_auth import finding_is_auth_scoped, is_benign_local_auth
+from forensia.report.benign_auth import is_benign_local_auth
 from forensia.report.evidence_refs import (
     _extract_evidence_ids_from_value,
 )
@@ -22,7 +21,6 @@ from forensia.report.render.markdown import (
 )
 from forensia.report.report_validation import derive_publication_state
 from forensia.report.sections.section_quality import _collect_section_coverage
-from forensia.report.sections.section_store import _claim_text_key
 
 
 def _query_top_findings(
@@ -82,7 +80,7 @@ def _query_top_findings(
     for row in rows:
         item = normalize_value(row)
         if isinstance(item, dict):
-            title_key = _claim_text_key(str(item.get("title") or ""))
+            title_key = " ".join(str(item.get("title") or "").lower().split())
             if title_key and title_key in seen_titles:
                 continue
             finding_id = str(item.get("finding_id") or "")
@@ -125,12 +123,11 @@ def _short_path_context(path: Any) -> str:
 def _sanitize_evidence_paths(evidence: Any) -> Any:
     """Reduce local ingest paths in finding evidence to basenames.
 
-    Defense-in-depth for the report brief: findings persisted before the
+    Defense-in-depth for report context: findings persisted before the
     engine-side sanitize (or by a resumed case whose rules were not
     re-seeded) still carry raw ingest paths like ``sample/<case>/...pf`` in
-    their evidence rows. Sanitizing at brief-build time guarantees the local
-    filesystem layout never reaches report_brief.json regardless of when the
-    finding was stored. Real Windows paths are left unchanged.
+    their evidence rows. Sanitizing at build time keeps the local filesystem
+    layout out of report context. Real Windows paths are left unchanged.
     """
     if isinstance(evidence, str):
         try:
@@ -175,13 +172,10 @@ def _is_local_machine_account_4648(row: dict[str, Any]) -> bool:
         return False
     if not evidence:
         return False
-    assume_auth = finding_is_auth_scoped(
-        row.get("rule_id") or row.get("finding_id"), row.get("title")
-    )
     for entry in evidence:
         if not isinstance(entry, dict):
             return False
-        if not is_benign_local_auth(entry, assume_auth_event=assume_auth):
+        if not is_benign_local_auth(entry):
             return False
     return True
 
@@ -192,7 +186,7 @@ def _query_hypotheses_by_status(
     return fetch_records(
         db,
         """
-        SELECT hypothesis_id, description, status, verdict, summary, source_rule_ids, required_entities
+        SELECT hypothesis_id, description, status, verdict, summary, source_rule_ids, required_entities, verification_spec
         FROM hypotheses
         WHERE status = ?
         ORDER BY updated_at DESC, hypothesis_id
@@ -200,43 +194,6 @@ def _query_hypotheses_by_status(
         """,
         (status, limit),
     )
-
-
-def _query_prior_sections(db: CaseDB) -> list[dict[str, Any]]:
-    return fetch_records(
-        db,
-        """
-        SELECT section_key, title, LEFT(body, 400) AS body_excerpt, confidence, status
-        FROM report_sections
-        WHERE COALESCE(body, '') != ''
-        ORDER BY section_key
-        """,
-    )
-
-
-def _query_existing_claims(db: CaseDB, limit: int = 20) -> list[dict[str, Any]]:
-    return fetch_records(
-        db,
-        """
-        SELECT section_key, claim_text, support_status
-        FROM claims
-        ORDER BY updated_at DESC, claim_id DESC
-        LIMIT ?
-        """,
-        (limit,),
-    )
-
-
-def _dedupe_claims(raw: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    deduped: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for item in raw:
-        key = _claim_text_key(str(item.get("claim_text") or ""))
-        if not key or key in seen:
-            continue
-        seen.add(key)
-        deduped.append(normalize_value(item))
-    return deduped
 
 
 def _query_evtx_time_range(db: CaseDB, case: Case | None = None) -> dict[str, str]:
@@ -319,10 +276,15 @@ def _annotate_confirmed_hypotheses(
         rule_seeded = bool(rule_ids)
         benign_context = _rule_ids_have_benign_context(db, rule_ids)
         item = dict(item)
+        spec = normalize_value(item.get("verification_spec")) or {}
+        observation = "observation" in spec.get("support_conditions", {})
+        item["claim_kind"] = "observation" if observation else "interpretation"
         item["rule_seeded"] = rule_seeded
         item["benign_context"] = benign_context
         item["narrative_strength"] = (
-            "strong" if rule_seeded and not benign_context else "weak"
+            "strong"
+            if rule_seeded and not benign_context and not observation
+            else "weak"
         )
         annotated.append(item)
     return annotated
@@ -336,7 +298,7 @@ def _build_report_brief(
     tz_name = getattr(case, "source_timezone", "UTC") if case else "UTC"
     tz_offset = _tz_offset_str(tz_name) if tz_name != "UTC" else ""
     publication_state = derive_publication_state(db)
-    return {
+    brief = {
         "top_findings": [normalize_value(item) for item in _query_top_findings(db)],
         "active_hypotheses": [
             normalize_value(item) for item in _query_hypotheses_by_status(db, "active")
@@ -354,8 +316,6 @@ def _build_report_brief(
             normalize_value(item)
             for item in _query_hypotheses_by_status(db, "untestable")
         ],
-        "prior_sections": _query_prior_sections(db),
-        "existing_claims": _dedupe_claims(_query_existing_claims(db)),
         "evidence_coverage": _summarize_section_coverage(db),
         "case_metrics": query_case_metrics(db),
         "source_timezone": tz_name,
@@ -369,31 +329,12 @@ def _build_report_brief(
         "evidence_confidence": publication_state["evidence_confidence"],
         "claim_scope": publication_state["claim_scope"],
     }
+    from forensia.db.investigation_state import load_investigation_state
 
-
-def write_report_brief(case: Case, db: CaseDB) -> dict[str, Any]:
-    """Write the report brief to reports/report_brief.json and return the dict."""
-    brief = _build_report_brief(db, case)
-    overview_path = case.memory_dir / "overview.md"
-    if overview_path.exists():
-        overview_text = overview_path.read_text(encoding="utf-8")
-        match = re.search(r"## Investigation Objective\s+-\s+(.+)", overview_text)
-        if match:
-            brief["investigation_objective"] = match.group(1).strip()
-    path = case.reports_dir / "report_brief.json"
-    path.write_text(
-        json.dumps(brief, ensure_ascii=False, indent=2, default=str), encoding="utf-8"
-    )
-    # Post-generation validation: warn (never block) on thesis/evidence
-    # misalignment, refuted-content leakage, and contradictory verdicts.
-    from forensia.report.report_validation import validate_report
-
-    for issue in validate_report(brief):
-        _log(
-            "VALIDATION",
-            f"{issue.check_name}: {issue.message}",
-            level="error" if issue.severity == "error" else "warning",
-        )
+    investigation = load_investigation_state(db) or {}
+    objective = str(investigation.get("objective") or "").strip()
+    if objective:
+        brief["investigation_objective"] = objective
     return brief
 
 

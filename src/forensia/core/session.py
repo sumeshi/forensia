@@ -1,54 +1,20 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from forensia.core.verdicts import assert_valid_verdict
-from forensia.core.verification import VerificationSpec, normalize_verification_spec
+from forensia.core.verification import VerificationSpec
 
-ENTITY_TYPE_ALIASES = {
-    "host": "host",
-    "hostname": "host",
-    "computer": "host",
-    "user": "user",
-    "username": "user",
-    "account": "user",
-    "machine_account": "machine_account",
-    "computer_account": "machine_account",
-    "group": "group",
-    "security_group": "group",
-    "ip": "ip",
-    "src_ip": "ip",
-    "dst_ip": "ip",
-    "source_ip": "ip",
-    "destination_ip": "ip",
-    "ip_address": "ip",
-    "process": "process",
-    "new_process": "process",
-    "service": "service",
-    "service_name": "service",
-    "file": "file",
-    "path": "file",
-    "registry": "registry",
-    "unknown": "unknown",
-}
 
-ENTITY_ROLES = {
-    "actor_user",
-    "target_user",
-    "target_group",
-    "source_ip",
-    "source_host",
-    "source_account",
-    "destination_host",
-    "service_name",
-    "service_path",
-    "process_name",
-    "file_path",
-    "registry_key",
-    "unknown",
-}
+class LLMBudgetExceededError(RuntimeError):
+    """Investigation stopped before starting a logical LLM call at its cap."""
+
+    def __init__(self, used: int, limit: int) -> None:
+        self.used = used
+        self.limit = limit
+        super().__init__(f"LLM logical-call budget exhausted ({used}/{limit})")
 
 
 class Hypothesis(BaseModel):
@@ -62,12 +28,11 @@ class Hypothesis(BaseModel):
     target_keypoint_id: str | None = None
     source_decl_id: str | None = None
     source_gap_id: str | None = None
-    confirm_when: dict[str, Any] | None = None
-    refute_when: dict[str, Any] | None = None
-    evidence_requirements: dict[str, Any] | None = None
-    # Canonical source of verification semantics.  The three legacy fields
-    # above remain compatibility projections for existing callers.
-    verification_spec: VerificationSpec | None = None
+    # Canonical source of verification semantics.  Rule/LLM declarations
+    # (``confirm_when``/``refute_when``/``evidence_requirements``) are
+    # converted into it once, here; it is the only condition state the model
+    # carries and the only condition representation that is stored.
+    verification_spec: VerificationSpec = Field(default_factory=VerificationSpec)
     fallback_phase: str | None = None
     fallback_source_rule_id: str | None = None
 
@@ -84,24 +49,37 @@ class Hypothesis(BaseModel):
         assert_valid_verdict(v, "hypothesis_status")
         return v
 
-    @model_validator(mode="after")
-    def _normalize_verification_spec(self) -> Hypothesis:
-        spec = normalize_verification_spec(
-            confirm_when=self.confirm_when,
-            refute_when=self.refute_when,
-            evidence_requirements=self.evidence_requirements,
-            required_entities=self.required_entities,
-            verification_spec=self.verification_spec,
-        )
-        projections = spec.legacy_fields()
-        self.verification_spec = spec
-        self.confirm_when = projections["confirm_when"]
-        self.refute_when = projections["refute_when"]
-        self.evidence_requirements = projections["evidence_requirements"]
-        # Keep the existing entity field as a compatibility projection too;
-        # canonical specs loaded from a case must not lose it.
-        self.required_entities = projections["required_entities"]
-        return self
+    @model_validator(mode="before")
+    @classmethod
+    def _convert_declarations(cls, data: Any) -> Any:
+        """Convert declaration-vocabulary conditions into the canonical spec.
+
+        Rulepack and drafter declarations arrive as ``confirm_when`` /
+        ``refute_when`` / ``evidence_requirements``; they are normalized into
+        ``verification_spec`` exactly once here.  When a canonical spec is
+        supplied it wins and any declaration kwargs are ignored, so storage
+        can never overwrite canonical conditions from declaration-shaped
+        copies.
+        """
+        if not isinstance(data, dict):
+            return data
+        if data.get("verification_spec") is None:
+            declarations = {
+                key: data.pop(key)
+                for key in ("confirm_when", "refute_when", "evidence_requirements")
+                if data.get(key) is not None
+            }
+            if declarations:
+                data["verification_spec"] = VerificationSpec.from_declaration(
+                    **declarations
+                )
+            else:
+                # An explicit None means "no declared conditions"; the default
+                # empty spec applies.
+                data.pop("verification_spec", None)
+        for key in ("confirm_when", "refute_when", "evidence_requirements"):
+            data.pop(key, None)
+        return data
 
 
 class PlannedQuery(BaseModel):
@@ -111,6 +89,9 @@ class PlannedQuery(BaseModel):
     sql: str = ""
     template_id: str | None = None
     params: dict[str, Any] = Field(default_factory=dict)
+    test_intent: Literal["primary_verification", "corroboration"] = (
+        "primary_verification"
+    )
 
     @field_validator("params", mode="before")
     @classmethod
@@ -153,4 +134,3 @@ class SessionState(BaseModel):
     # query-intent call.  Keep it separate from SQL execution failures so the
     # planner never mistakes a materialization error for a failed query.
     last_planner_error: dict[str, Any] | None = None
-    proposed_keypoints: dict[str, int] = Field(default_factory=dict)

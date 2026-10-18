@@ -2,7 +2,15 @@
 
 from __future__ import annotations
 
-from forensia.report.answers.event_semantics import LOG_CLEAR_EVENT_SQL
+from forensia.report.answers.event_semantics import (
+    EXECUTION_EVENT_SQL,
+    LOG_CLEAR_EVENT_SQL,
+    LOGON_EVENT_SQL,
+    SCHEDULED_TASK_EVENT_SQL,
+    SERVICE_TASK_EVENT_SQL,
+    SYSTEM_SHUTDOWN_EVENT_SQL,
+    SYSTEM_STARTUP_EVENT_SQL,
+)
 from forensia.report.answers.keypoint_sql import (
     _CLOUD_FILE_SQL,
     _CLOUD_PATH_SQL,
@@ -69,7 +77,7 @@ ACTIVITY_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
         "Service installation or creation events with classification (benign-known / unknown).",
         lambda db: _report_keypoint_rows(
             db,
-            """
+            f"""
             SELECT timestamp, computer, service_name, subject_user, evidence_id,
               CASE
                 WHEN regexp_matches(LOWER(COALESCE(service_name,'')),
@@ -86,7 +94,7 @@ ACTIVITY_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
                 ELSE 'unknown'
               END AS classification
             FROM evtx_events
-            WHERE event_id IN (4697,7045)
+            WHERE {SERVICE_TASK_EVENT_SQL}
             ORDER BY timestamp
             """,
         ),
@@ -95,10 +103,10 @@ ACTIVITY_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
         "Scheduled task creation or deletion activity.",
         lambda db: _report_keypoint_rows(
             db,
-            """
+            f"""
             SELECT timestamp, computer, subject_user, message, evidence_id
             FROM evtx_events
-            WHERE event_id IN (4698,4699)
+            WHERE {SCHEDULED_TASK_EVENT_SQL}
             ORDER BY timestamp
             """,
         ),
@@ -107,10 +115,10 @@ ACTIVITY_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
         "PowerShell and LOLBas execution events.",
         lambda db: _report_keypoint_rows(
             db,
-            """
+            f"""
             SELECT timestamp, computer, target_user, process_name, command_line, evidence_id
             FROM evtx_events
-            WHERE event_id = 4688 AND (
+            WHERE ({EXECUTION_EVENT_SQL}) AND event_id = 4688 AND (
                 LOWER(process_name) LIKE '%powershell%' OR
                 LOWER(process_name) LIKE '%pwsh%' OR
                 LOWER(process_name) LIKE '%certutil%' OR
@@ -140,11 +148,13 @@ ACTIVITY_KEYPOINTS: dict[str, tuple[str, EvidenceResolver]] = {
         "Core system events covering startup, shutdown, logon, and logoff.",
         lambda db: _report_keypoint_rows(
             db,
-            """
+            f"""
             SELECT timestamp, computer, event_id, target_user, src_ip, process_name, command_line, evidence_id
             FROM evtx_events
-            WHERE (event_id IN (1074,4608,4609,4624,4634,4647))
-               OR (event_id IN (6005,6006,6008) AND (channel IS NULL OR LOWER(channel) LIKE '%system%'))
+            WHERE event_id IN (4608,4609)
+               OR ({LOGON_EVENT_SQL})
+               OR ({SYSTEM_SHUTDOWN_EVENT_SQL})
+               OR ({SYSTEM_STARTUP_EVENT_SQL})
             ORDER BY timestamp
             LIMIT 200
             """,

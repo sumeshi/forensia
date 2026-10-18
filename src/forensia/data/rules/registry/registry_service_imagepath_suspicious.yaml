@@ -1,0 +1,16 @@
+id: "registry-service-imagepath-user-path"
+title: "Service image path recorded in a user-writable location"
+severity: "medium"
+confidence: 0.65
+required_fields:
+- key_path
+- image_path
+- hive
+tags:
+- registry
+- service
+- configuration
+query: "SELECT\n    artifact_id AS evidence_id,\n    key_path,\n    hive,\n    timestamp,\n    json_extract_string(raw_json, '$.reg2es.custom.image_path') AS image_path\nFROM registry_artifacts\nWHERE plugin = 'services'\n    AND (\n        LOWER(COALESCE(json_extract_string(raw_json, '$.reg2es.custom.image_path'), '')) LIKE '%\\temp\\%'\n        OR LOWER(COALESCE(json_extract_string(raw_json, '$.reg2es.custom.image_path'), '')) LIKE '%\\appdata\\%'\n        OR LOWER(COALESCE(json_extract_string(raw_json, '$.reg2es.custom.image_path'), '')) LIKE '%\\programdata\\%'\n        OR LOWER(COALESCE(json_extract_string(raw_json, '$.reg2es.custom.image_path'), '')) LIKE '%\\users\\public\\%'\n    )\n"
+finding:
+  title: "Service image path: {image_path}"
+  summary: "The Registry parser reported service image path {image_path} under {key_path} ({hive}). This records service configuration and does not establish that the service started or was unwanted."

@@ -41,6 +41,23 @@ def ensure_investigation_state(
     )
 
 
+def set_preferred_hypothesis(db: CaseDB, hypothesis_id: str) -> None:
+    """Save an unresolved hypothesis preference without changing eligibility."""
+    row = db.execute(
+        "SELECT status FROM hypotheses WHERE hypothesis_id = ?", [hypothesis_id]
+    ).fetchone()
+    if row is None:
+        raise ValueError("hypothesis_not_found")
+    if row[0] not in {"active", "deferred", "blocked", "needs_review", "untestable"}:
+        raise ValueError("hypothesis_already_settled")
+    ensure_investigation_state(db)
+    db.execute(
+        "UPDATE investigation_state SET preferred_hypothesis_id = ?, updated_at = now() "
+        "WHERE state_id = 'case'",
+        [hypothesis_id],
+    )
+
+
 def save_stop_reason(
     db: CaseDB,
     *,
@@ -70,7 +87,7 @@ def mark_investigation_started(db: CaseDB) -> None:
 def load_investigation_state(db: CaseDB) -> dict[str, Any] | None:
     """Load the investigation state singleton."""
     row = db.execute(
-        "SELECT state_id, objective, status, termination_policy, "
+        "SELECT state_id, objective, preferred_hypothesis_id, status, termination_policy, "
         "stop_reason_code, stop_reason, stop_summary, updated_at FROM investigation_state "
         "WHERE state_id = 'case'"
     ).fetchone()
@@ -79,22 +96,23 @@ def load_investigation_state(db: CaseDB) -> dict[str, Any] | None:
     return {
         "state_id": row[0],
         "objective": row[1] or "",
-        "status": row[2] or "active",
+        "preferred_hypothesis_id": row[2] or "",
+        "status": row[3] or "active",
         "termination_policy": (
-            row[3]
-            if isinstance(row[3], dict)
-            else json.loads(row[3])
-            if isinstance(row[3], str)
+            row[4]
+            if isinstance(row[4], dict)
+            else json.loads(row[4])
+            if isinstance(row[4], str)
             else None
         ),
-        "stop_reason_code": row[4] or "",
-        "stop_reason": row[5] or "",
+        "stop_reason_code": row[5] or "",
+        "stop_reason": row[6] or "",
         "stop_summary": (
-            row[6]
-            if isinstance(row[6], dict)
-            else json.loads(row[6])
-            if isinstance(row[6], str) and row[6]
+            row[7]
+            if isinstance(row[7], dict)
+            else json.loads(row[7])
+            if isinstance(row[7], str) and row[7]
             else {}
         ),
-        "updated_at": row[7],
+        "updated_at": row[8],
     }

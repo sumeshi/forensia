@@ -4,16 +4,315 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from pathlib import Path
 
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
 from forensia.db.evidence_sources import register_evidence_source
 from forensia.knowledge.coverage import (
+    _load_yaml,
+    derive_required_capabilities,
+    derive_search_families,
+    disclosure_tables_for_spec,
     get_coverage_summary,
-    load_artifact_capabilities,
-    load_evidence_sufficiency_policy,
+    observation_catalog,
+    observation_condition_error,
     refresh_evidence_coverage,
+    verification_feasibility_error,
 )
+
+
+class RequiredCapabilityDerivationTests(unittest.TestCase):
+    """T02: one shared derivation owner with declared-spec priority."""
+
+    def test_declared_capabilities_short_circuit_inference(self) -> None:
+        self.assertEqual(
+            derive_required_capabilities(
+                ["logon"],
+                support_conditions={"keywords": ["evtx_events 4624"]},
+            ),
+            ["logon"],
+        )
+
+    def test_support_conditions_derive_capabilities(self) -> None:
+        self.assertEqual(
+            derive_required_capabilities(
+                support_conditions={"keywords": ["registry_artifacts"]},
+            ),
+            ["registry_observation"],
+        )
+        self.assertEqual(
+            derive_required_capabilities(
+                support_conditions={"co_observed_event_ids": [4688]},
+            ),
+            ["process_execution"],
+        )
+
+    def test_unclassified_structured_event_id_keeps_evtx_search_bounded(self) -> None:
+        conditions = {"co_observed_event_ids": [98765]}
+        self.assertEqual(derive_required_capabilities([], conditions), [])
+        self.assertEqual(derive_search_families([], conditions), ("evtx",))
+        self.assertEqual(
+            disclosure_tables_for_spec(
+                {"required_capabilities": [], "support_conditions": conditions}
+            ),
+            (("evtx_events",), ("evtx_events",)),
+        )
+        # Structured conditions are the only inference input; without them
+        # nothing is inferred (and no prose inference exists).
+        self.assertEqual(
+            derive_required_capabilities(required_capabilities=[]),
+            [],
+        )
+        self.assertEqual(
+            derive_required_capabilities(
+                support_conditions={
+                    "observation": {
+                        "family": "prefetch",
+                        "capability": "process_execution",
+                        "field": "executable_name",
+                        "operator": "equals",
+                        "value": "powershell.exe",
+                    }
+                }
+            ),
+            ["process_execution"],
+        )
+
+    def test_observation_catalog_uses_capability_families_and_schema_fields(
+        self,
+    ) -> None:
+        catalog = observation_catalog()
+        self.assertIn("process_execution", catalog["prefetch"]["capabilities"])
+        self.assertIn("executable_name", catalog["prefetch"]["fields"])
+        self.assertIn("exec_times", catalog["prefetch"]["fields"])
+        self.assertNotIn("exec_time", catalog["prefetch"]["fields"])
+        self.assertIn("file_path", catalog["mft"]["fields"])
+        self.assertNotIn("timestamp", catalog["mft"]["fields"])
+        self.assertEqual(
+            catalog["mft"]["boolean_fields"], ["is_deleted", "is_directory"]
+        )
+        self.assertIn("registry_observation", catalog["registry"]["capabilities"])
+        self.assertIn("key_path", catalog["registry"]["fields"])
+        self.assertIn("computer", catalog["evtx"]["fields"])
+        self.assertIn("timestamp", catalog["evtx"]["fields"])
+
+    def test_observation_condition_validation_is_shared_and_typed(self) -> None:
+        observation = {
+            "family": "registry",
+            "capability": "registry_observation",
+            "field": "key_path",
+            "operator": "contains",
+            "value": "Run\\",
+        }
+        self.assertIsNone(observation_condition_error({"observation": observation}))
+        self.assertIsNone(
+            observation_condition_error(
+                {
+                    "observation": {
+                        "family": "evtx",
+                        "capability": "logon",
+                        "field": "computer",
+                        "operator": "equals",
+                        "value": "ORCHID-7",
+                    }
+                }
+            )
+        )
+        self.assertIsNone(
+            observation_condition_error({"observation": observation, "min_count": 2})
+        )
+        self.assertEqual(
+            observation_condition_error(
+                {
+                    "observation": {
+                        "family": "prefetch",
+                        "capability": "process_execution",
+                        "field": "exec_time",
+                        "operator": "equals",
+                        "value": "2015-03-25 14:00:00",
+                    }
+                }
+            ),
+            "observation-field-unsupported",
+        )
+        invalid = (
+            (
+                {
+                    "observation": {
+                        **observation,
+                        "family": "evtx",
+                        "capability": "logon",
+                    }
+                },
+                "observation-field-unsupported",
+            ),
+            (
+                {
+                    "observation": observation,
+                    "co_observed_event_ids": [4624],
+                },
+                "mixed-verification-condition-kinds",
+            ),
+            (
+                {"observation": {**observation, "value": "   "}},
+                "observation-value-invalid",
+            ),
+            (
+                {"observation": observation, "min_count": True},
+                "observation-min-count-invalid",
+            ),
+            (
+                {"observation": observation, "min_count": 0},
+                "observation-min-count-invalid",
+            ),
+            (
+                {
+                    "observation": {
+                        **observation,
+                        "operator": "equals",
+                        "value": "Infinity",
+                    }
+                },
+                "observation-value-invalid",
+            ),
+            (
+                {"observation": {**observation, "operator": "contains", "value": 5}},
+                "observation-operator-value-invalid",
+            ),
+            (
+                {
+                    "observation": {
+                        **observation,
+                        "operator": "greater_than",
+                        "value": "sometime later",
+                    }
+                },
+                "observation-operator-value-invalid",
+            ),
+        )
+        for condition, error in invalid:
+            with self.subTest(condition=condition):
+                self.assertEqual(observation_condition_error(condition), error)
+
+    def test_boolean_observations_require_boolean_equality(self) -> None:
+        observation = {
+            "family": "mft",
+            "capability": "file_activity",
+            "field": "is_deleted",
+            "operator": "equals",
+            "value": True,
+        }
+        self.assertIsNone(observation_condition_error({"observation": observation}))
+        self.assertIsNone(
+            observation_condition_error(
+                {"observation": {**observation, "value": False}}
+            )
+        )
+        self.assertEqual(
+            "observation-value-invalid",
+            observation_condition_error(
+                {"observation": {**observation, "value": "true"}}
+            ),
+        )
+        self.assertEqual(
+            "observation-operator-value-invalid",
+            observation_condition_error(
+                {
+                    "observation": {
+                        **observation,
+                        "operator": "contains",
+                    }
+                }
+            ),
+        )
+        self.assertEqual(
+            "observation-value-invalid",
+            observation_condition_error(
+                {
+                    "observation": {
+                        **observation,
+                        "field": "size",
+                    }
+                }
+            ),
+        )
+
+    def test_observation_feasibility_uses_distinct_current_family_ids(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                db.execute(
+                    "INSERT INTO prefetch_executions "
+                    "(evidence_id, source_file, executable_name) "
+                    "VALUES (?, ?, ?), (?, ?, ?)",
+                    [
+                        "prefetch-one",
+                        "source-one",
+                        "cmd.exe",
+                        "prefetch-one",
+                        "source-one",
+                        "cmd.exe",
+                    ],
+                )
+                condition = {
+                    "observation": {
+                        "family": "prefetch",
+                        "capability": "process_execution",
+                        "field": "executable_name",
+                        "operator": "equals",
+                        "value": "cmd.exe",
+                    },
+                    "min_count": 2,
+                }
+                self.assertEqual(
+                    (
+                        "observation_min_count_exceeds_current_family_count",
+                        "current-family-count:1",
+                    ),
+                    verification_feasibility_error(db, condition),
+                )
+                self.assertEqual(
+                    (
+                        "required_entity_unobservable",
+                        "required entity columns absent from canonical query-family schema: computer",
+                    ),
+                    verification_feasibility_error(
+                        db, {"observation": condition["observation"]}, ["computer"]
+                    ),
+                )
+                self.assertIsNone(
+                    verification_feasibility_error(
+                        db, {"observation": condition["observation"]}, ["source_file"]
+                    )
+                )
+                self.assertEqual(
+                    (
+                        "required_entity_unobservable",
+                        "required entity columns absent from canonical query-family schema: executable_name",
+                    ),
+                    verification_feasibility_error(
+                        db, {"co_observed_event_ids": [4688]}, ["executable_name"]
+                    ),
+                )
+                self.assertIsNone(
+                    verification_feasibility_error(
+                        db, {"co_observed_event_ids": [4688]}, ["computer"]
+                    )
+                )
+                self.assertEqual(
+                    verification_feasibility_error(
+                        db, {"co_observed_event_ids": [4688]}, ["not_a_column"]
+                    )[0],
+                    "required_entity_unobservable",
+                )
+                self.assertIsNone(
+                    verification_feasibility_error(
+                        db,
+                        {"co_observed_event_ids": ["windows-evtx-1234-abcd"]},
+                        ["computer"],
+                    )
+                )
 
 
 class EvidenceSourceTests(unittest.TestCase):
@@ -204,29 +503,13 @@ class CoverageComputationTests(unittest.TestCase):
 
 
 class CapabilityDeclarationTests(unittest.TestCase):
-    """Test YAML declaration loading."""
+    """Schema declarations are checked by the doctor audit, not pinned here."""
 
-    def test_load_artifact_capabilities(self) -> None:
-        caps = load_artifact_capabilities()
-        self.assertIn("families", caps)
-        self.assertIn("evtx", caps["families"])
-        self.assertIn("mft", caps["families"])
-        self.assertIn("prefetch", caps["families"])
-
-    def test_evtx_has_process_execution_capability(self) -> None:
-        caps = load_artifact_capabilities()
-        evtx_caps = caps["families"]["evtx"]["capabilities"]
-        self.assertIn("process_execution", evtx_caps)
-        self.assertIn(4688, evtx_caps["process_execution"]["event_ids"])
-
-    def test_load_evidence_sufficiency_policy(self) -> None:
-        policy = load_evidence_sufficiency_policy()
-        self.assertIn("common_rules", policy)
-        self.assertTrue(policy["common_rules"]["zero_rows_is_not_support"])
-        self.assertIn("default_sufficiency", policy)
-
-    def test_cross_artifact_corroboration(self) -> None:
-        caps = load_artifact_capabilities()
-        self.assertIn("cross_artifact_corroboration", caps)
-        pe = caps["cross_artifact_corroboration"]["process_execution"]
-        self.assertIn("prefetch", pe["preferred_families"])
+    def test_required_yaml_loader_reports_missing_and_non_mapping_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "required.yaml"
+            with self.assertRaisesRegex(FileNotFoundError, str(path)):
+                _load_yaml(path)
+            path.write_text("- item\n", encoding="utf-8")
+            with self.assertRaisesRegex(TypeError, str(path)):
+                _load_yaml(path)

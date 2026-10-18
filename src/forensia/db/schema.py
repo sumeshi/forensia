@@ -1,3 +1,34 @@
+from functools import lru_cache
+from typing import Any
+
+import duckdb
+
+# Case and Trace share one database. Different versions are rejected before
+# persistent writes; re-ingest original artifacts into a new case instead.
+SCHEMA_VERSION = 10
+
+
+def load_live_schema(db: Any) -> dict[str, tuple[str, ...]]:
+    rows = db.execute("""
+        SELECT table_name, column_name
+        FROM information_schema.columns
+        WHERE table_schema = 'main'
+        ORDER BY table_name, ordinal_position
+    """).fetchall()
+    result: dict[str, list[str]] = {}
+    for table, column in rows:
+        result.setdefault(str(table), []).append(str(column))
+    return {key: tuple(value) for key, value in result.items()}
+
+
+@lru_cache(maxsize=1)
+def declared_schema() -> dict[str, tuple[str, ...]]:
+    """Derive schema guidance from the authoritative DDL without a case."""
+    with duckdb.connect() as conn:
+        conn.execute(CORE_SCHEMA_SQL)
+        return load_live_schema(conn)
+
+
 CORE_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS evtx_events (
     evidence_id VARCHAR,
@@ -121,9 +152,6 @@ CREATE TABLE IF NOT EXISTS hypotheses (
     source_rule_ids JSON,
     source_decl_id VARCHAR,
     required_entities JSON,
-    confirm_when JSON,
-    refute_when JSON,
-    evidence_requirements JSON,
     verification_spec JSON,
     source_gap_id VARCHAR,
     selection_count INTEGER DEFAULT 0,
@@ -165,21 +193,7 @@ CREATE TABLE IF NOT EXISTS claims (
 
 CREATE INDEX IF NOT EXISTS claims_by_section ON claims(section_key, updated_at);
 
-CREATE TABLE IF NOT EXISTS section_facts (
-    fact_id VARCHAR PRIMARY KEY,
-    fact_type VARCHAR NOT NULL,
-    fact_key VARCHAR,
-    fact_value JSON,
-    evidence_ids JSON NOT NULL,
-    source_query VARCHAR,
-    source_section VARCHAR,
-    confidence DOUBLE,
-    created_at TIMESTAMP,
-    updated_at TIMESTAMP
-);
 
-CREATE INDEX IF NOT EXISTS idx_section_facts_type ON section_facts(fact_type);
-CREATE INDEX IF NOT EXISTS idx_section_facts_section ON section_facts(source_section, fact_type);
 
 CREATE TABLE IF NOT EXISTS section_evidence (
     section_key VARCHAR,
@@ -194,12 +208,6 @@ CREATE TABLE IF NOT EXISTS section_evidence (
 CREATE INDEX IF NOT EXISTS idx_section_evidence_section ON section_evidence(section_key, block_heading);
 CREATE INDEX IF NOT EXISTS idx_section_evidence_id ON section_evidence(evidence_id);
 
-CREATE TABLE IF NOT EXISTS query_cache (
-    sql_hash VARCHAR PRIMARY KEY,
-    sql_text VARCHAR,
-    result_json JSON,
-    executed_at TIMESTAMP
-);
 
 CREATE TABLE IF NOT EXISTS section_runs (
     run_id VARCHAR PRIMARY KEY,
@@ -214,24 +222,6 @@ CREATE TABLE IF NOT EXISTS section_runs (
 
 CREATE INDEX IF NOT EXISTS idx_section_runs_section ON section_runs(section_key, block_heading, created_at);
 
-CREATE TABLE IF NOT EXISTS section_questions (
-    question_id VARCHAR PRIMARY KEY,
-    section_key VARCHAR,
-    block_heading VARCHAR,
-    question_text VARCHAR,
-    question_type VARCHAR,
-    answer_spec VARCHAR,
-    intent VARCHAR,
-    confidence DOUBLE,
-    matched_rule VARCHAR,
-    required_evidence JSON,
-    status VARCHAR,
-    created_at TIMESTAMP,
-    updated_at TIMESTAMP
-);
-
-CREATE INDEX IF NOT EXISTS idx_section_questions_section ON section_questions(section_key, block_heading);
-CREATE INDEX IF NOT EXISTS idx_section_questions_spec ON section_questions(answer_spec);
 
 CREATE OR REPLACE VIEW section_run_coverage AS
 SELECT
@@ -350,8 +340,6 @@ CREATE TABLE IF NOT EXISTS evidence_coverage (
     derived_at TIMESTAMP,
     UNIQUE(capability, host, channel, source_family)
 );
-CREATE INDEX IF NOT EXISTS idx_evidence_coverage_capability ON evidence_coverage(capability);
-
 -- Registry keeps the parser's raw ECS document lossless while reusing
 -- evidence_sources for source-level lineage.  These tables are deliberately
 -- narrow: plugin completeness and verdict semantics remain outside ingest.
@@ -405,6 +393,7 @@ CREATE INDEX IF NOT EXISTS idx_registry_timeline_timestamp ON registry_timeline(
 CREATE TABLE IF NOT EXISTS investigation_state (
     state_id VARCHAR PRIMARY KEY DEFAULT 'case',
     objective VARCHAR,
+    preferred_hypothesis_id VARCHAR,
     status VARCHAR DEFAULT 'active',
     termination_policy JSON,
     stop_reason_code VARCHAR,
@@ -475,6 +464,10 @@ CREATE TABLE IF NOT EXISTS hypothesis_evidence (
     source_family VARCHAR,
     source_file VARCHAR,
     derivation_group VARCHAR,
+    content_fingerprint VARCHAR,
+    verification_spec_fingerprint VARCHAR,
+    assessment_reason VARCHAR,
+    matched_conditions VARCHAR,
     strength VARCHAR,
     created_session VARCHAR,
     created_at TIMESTAMP
@@ -484,6 +477,19 @@ CREATE INDEX IF NOT EXISTS idx_hypothesis_evidence_evidence ON hypothesis_eviden
 """
 
 TRACE_SCHEMA_SQL = """
+CREATE SCHEMA IF NOT EXISTS trace;
+
+CREATE TABLE IF NOT EXISTS trace.runtime_commands (
+    command_id VARCHAR PRIMARY KEY,
+    operation VARCHAR NOT NULL,
+    payload JSON NOT NULL,
+    status VARCHAR NOT NULL,
+    reason VARCHAR,
+    result JSON,
+    created_at TIMESTAMP DEFAULT now(),
+    updated_at TIMESTAMP DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS trace.ai_reviews (
     review_id VARCHAR,
     finding_id VARCHAR,
@@ -559,10 +565,14 @@ CREATE INDEX IF NOT EXISTS retrieval_events_by_scope
 
 CREATE TABLE IF NOT EXISTS trace.progress_events (
     event_index BIGINT PRIMARY KEY,
+    session_id VARCHAR,
+    kind VARCHAR,
+    severity VARCHAR,
+    reason VARCHAR,
+    refs JSON,
     stage VARCHAR,
     status VARCHAR,
     iteration INTEGER,
-    current_query VARCHAR,
     summary VARCHAR,
     payload JSON,
     created_at TIMESTAMP
@@ -669,6 +679,7 @@ CREATE INDEX IF NOT EXISTS llm_deterministic_ops_by_session
 """
 
 TRACE_TABLES = {
+    "runtime_commands",
     "ai_reviews",
     "investigation_sessions",
     "investigation_steps",

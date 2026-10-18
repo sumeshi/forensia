@@ -3,12 +3,13 @@
 Each check is a pure function that inspects a generated report (its brief,
 body, or JSON) and returns a list of ``ValidationFinding`` objects.
 
-Checks are deterministic — no LLM calls. They are wired into ``forensia doctor``
+Checks are deterministic — no LLM calls. They are wired into ``python -m forensia.cli.doctor``
 to catch regressions after generation.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from collections.abc import Callable
@@ -17,12 +18,17 @@ from typing import Any
 
 import yaml
 
+from forensia.evidence.timestamp_policy import (
+    configured_timestamp_policy,
+    timestamp_year_range_sql,
+)
 from forensia.knowledge.resources import schema_dir
 from forensia.report.evidence_refs import EVIDENCE_ID_PATTERN
 from forensia.report.sections.quality_gates import (
     _detect_body_language,
     failure_markers,
 )
+from forensia.report.sections.section_store import fetch_report_sections
 
 _SCHEMA_DIR = schema_dir()
 _VOCAB_PATH = _SCHEMA_DIR / "report_validation_vocab.yaml"
@@ -96,37 +102,82 @@ class ValidationFinding:
 
 
 def derive_publication_state(db: Any) -> dict[str, Any]:
-    """Derive the publication gate from durable investigation state.
+    """Derive report readiness, investigation status, and evidence confidence.
 
-    ``report_sections.status`` describes generation state, while the evidence
-    confidence below describes whether an investigative conclusion is actually
-    established.  They are intentionally kept as separate values: an
-    ``ai_exhausted`` section with a high prose score is not evidence that a
-    hypothesis was confirmed.
+    Publication readiness is determined by current output for the adopted
+    report sections and resolvable evidence links. Investigation status and
+    confidence describe separate durable case facts and do not gate a report.
     """
     state: dict[str, Any] = {
-        "publication_status": "complete",
-        "confirmed_hypothesis_count": 0,
+        "publication_status": "needs_review",
+        "report_complete": False,
+        "confirmed_hypothesis_count": None,
         "confirmed_without_evidence_count": 0,
         "hypothesis_execution_step_count": 0,
         "plan_step_count": 0,
         "draft_sections": [],
         "section_statuses": {},
-        "evidence_confidence": "established",
-        "claim_scope": "confirmed_conclusions",
+        "missing_section_keys": [],
+        "stale_section_keys": [],
+        "invalid_reference_sections": [],
+        "investigation_status": "unknown",
+        "stop_reason_code": "",
+        "stop_reason": "",
+        "evidence_confidence": "not_established",
+        "claim_scope": "deterministic_signals_only",
         "reasons": [],
+        "investigation_reasons": [],
     }
     if db is None:
-        state.update(
-            {
-                "publication_status": "needs_review",
-                "evidence_confidence": "not_established",
-                "claim_scope": "deterministic_signals_only",
-                "reasons": ["database_unavailable"],
-            }
-        )
+        state["reasons"].append("database_unavailable")
+        state["investigation_reasons"].append("database_unavailable")
         return state
 
+    try:
+        from forensia.report.sections.status import build_report_status
+
+        report = build_report_status(db)
+        state["report_complete"] = bool(report.get("complete"))
+        state["missing_section_keys"] = list(report.get("missing_section_keys") or [])
+        state["stale_section_keys"] = list(report.get("stale_section_keys") or [])
+        state["invalid_reference_sections"] = list(
+            report.get("invalid_reference_sections") or []
+        )
+        statuses = {
+            str(item.get("section_key") or ""): str(item.get("status") or "draft")
+            for item in report.get("items", [])
+            if item.get("section_key")
+        }
+        state["section_statuses"] = statuses
+        state["draft_sections"] = sorted(
+            key for key, status in statuses.items() if status == "draft"
+        )
+        if not report.get("required_section_keys"):
+            state["reasons"].append("no_adopted_report_sections")
+        if state["missing_section_keys"]:
+            state["reasons"].append("report_sections_missing_current_output")
+        if state["stale_section_keys"]:
+            state["reasons"].append("report_sections_stale")
+        if state["invalid_reference_sections"]:
+            state["reasons"].append("report_sections_have_unresolved_evidence")
+    except Exception:
+        state["reasons"].append("report_status_unavailable")
+
+    try:
+        row = db.execute(
+            "SELECT status, stop_reason_code, stop_reason "
+            "FROM investigation_state WHERE state_id = 'case'"
+        ).fetchone()
+        if row:
+            state["investigation_status"] = str(row[0] or "active")
+            state["stop_reason_code"] = str(row[1] or "")
+            state["stop_reason"] = str(row[2] or "")
+        else:
+            state["investigation_reasons"].append("investigation_state_unavailable")
+    except Exception:
+        state["investigation_reasons"].append("investigation_state_unavailable")
+
+    confidence_reasons = state["investigation_reasons"]
     try:
         state["confirmed_hypothesis_count"] = int(
             db.execute(
@@ -134,23 +185,26 @@ def derive_publication_state(db: Any) -> dict[str, Any]:
             ).fetchone()[0]
         )
     except Exception:
-        state["reasons"].append("confirmed_hypotheses_unavailable")
+        confidence_reasons.append("confirmed_hypotheses_unavailable")
 
     try:
-        state["confirmed_without_evidence_count"] = int(
-            len(db.execute(
-                """
-                SELECT COUNT(*)
-                FROM hypotheses h
-                LEFT JOIN hypothesis_evidence he ON he.hypothesis_id = h.hypothesis_id
-                WHERE h.status = 'confirmed'
-                GROUP BY h.hypothesis_id
-                HAVING COUNT(he.link_id) = 0
-                """
-            ).fetchall())
-        )
+        from forensia.evidence.links import load_evidence_links
+
+        confirmed_ids = [
+            str(row[0])
+            for row in db.execute(
+                "SELECT hypothesis_id FROM hypotheses WHERE status = 'confirmed'"
+            ).fetchall()
+        ]
+        for hypothesis_id in confirmed_ids:
+            has_current_support = any(
+                link.assessment_id and link.role in {"supporting", "corroborating"}
+                for link in load_evidence_links(db, hypothesis_id, current_only=True)
+            )
+            if not has_current_support:
+                state["confirmed_without_evidence_count"] += 1
     except Exception:
-        state["reasons"].append("hypothesis_evidence_unavailable")
+        confidence_reasons.append("hypothesis_evidence_unavailable")
 
     # Hypothesis ``do`` and ``check`` are the durable receipts that prove the
     # planner actually investigated a hypothesis. Section query runs are not a
@@ -169,65 +223,79 @@ def derive_publication_state(db: Any) -> dict[str, Any]:
             ).fetchone()[0]
         )
     except Exception:
-        state["reasons"].append("hypothesis_execution_receipts_unavailable")
+        confidence_reasons.append("hypothesis_execution_receipts_unavailable")
 
-    try:
-        rows = db.execute(
-            "SELECT section_key, status FROM report_sections ORDER BY section_key"
-        ).fetchall()
-        statuses = {str(row[0]): str(row[1] or "draft") for row in rows}
-        state["section_statuses"] = statuses
-        state["draft_sections"] = sorted(
-            key for key, status in statuses.items() if status == "draft"
-        )
-    except Exception:
-        state["reasons"].append("section_statuses_unavailable")
-
-    reasons = state["reasons"]
     if state["confirmed_hypothesis_count"] == 0:
-        reasons.append("no_confirmed_hypotheses")
+        confidence_reasons.append("no_confirmed_hypotheses")
     if state["confirmed_without_evidence_count"]:
-        reasons.append("confirmed_hypotheses_without_evidence")
-    if state["hypothesis_execution_step_count"] == 0:
-        reasons.append("hypothesis_investigation_not_executed")
-    if state["draft_sections"]:
-        reasons.append("draft_sections_present")
-    if reasons:
-        state["publication_status"] = "needs_review"
-        state["evidence_confidence"] = "not_established"
-        state["claim_scope"] = "deterministic_signals_only"
+        confidence_reasons.append("confirmed_hypotheses_without_evidence")
+    if (
+        not any(
+            reason in confidence_reasons
+            for reason in (
+                "confirmed_hypotheses_unavailable",
+                "hypothesis_evidence_unavailable",
+            )
+        )
+        and state["confirmed_hypothesis_count"] is not None
+        and state["confirmed_hypothesis_count"] > 0
+        and not state["confirmed_without_evidence_count"]
+    ):
+        state["evidence_confidence"] = "established"
+        typed_count = db.execute(
+            "SELECT COUNT(*) FROM hypotheses WHERE status = 'confirmed' "
+            "AND json_exists(verification_spec, '$.support_conditions.observation')"
+        ).fetchone()[0]
+        state["claim_scope"] = (
+            "confirmed_observations"
+            if typed_count == state["confirmed_hypothesis_count"]
+            else "confirmed_conclusions"
+        )
+
+    if state["report_complete"]:
+        state["publication_status"] = "complete"
     return state
 
 
 def check_publication_readiness(db: Any) -> list[ValidationFinding]:
-    """Fail publication when generated prose outruns durable investigation."""
-    state = derive_publication_state(db)
+    """Require current output and resolvable evidence for adopted sections."""
+    from forensia.report.sections.status import build_report_status
+
+    state = build_report_status(db)
     findings: list[ValidationFinding] = []
-    if state["confirmed_hypothesis_count"] == 0:
+    if state["missing_section_keys"]:
         findings.append(
             ValidationFinding(
                 "publication_readiness",
                 "error",
-                "No confirmed hypothesis exists; rule findings are deterministic signals/review candidates, not confirmed conclusions",
-                "evidence_confidence=not_established",
+                "Adopted report sections are missing current output",
+                f"sections={state['missing_section_keys']}",
             )
         )
-    if state["hypothesis_execution_step_count"] == 0:
+    if state["stale_section_keys"]:
         findings.append(
             ValidationFinding(
                 "publication_readiness",
                 "error",
-                "No hypothesis do/check execution receipt exists; investigation is incomplete",
-                f"plan_steps={state['plan_step_count']}",
+                "Adopted report sections have stale output",
+                f"sections={state['stale_section_keys']}",
             )
         )
-    if state["draft_sections"]:
+    if state["invalid_reference_sections"]:
         findings.append(
             ValidationFinding(
                 "publication_readiness",
                 "error",
-                "Draft report sections cannot be published without an explicit needs_review warning",
-                f"sections={state['draft_sections']}",
+                "Adopted report sections contain unresolved evidence references",
+                f"sections={state['invalid_reference_sections']}",
+            )
+        )
+    if not state["required_section_keys"]:
+        findings.append(
+            ValidationFinding(
+                "publication_readiness",
+                "error",
+                "No adopted report sections are available",
             )
         )
     return findings
@@ -348,7 +416,7 @@ def check_failure_markers(content: str) -> list[ValidationFinding]:
     """Detect section block failure markers shipped in the final report body.
 
     Markers are the shared vocabulary from
-    ``_schema/report_validation_vocab.yaml`` (see quality_gates.failure_markers);
+    ``data/schema/report_validation_vocab.yaml`` (see quality_gates.failure_markers);
     they indicate that a block error was rendered as report prose instead of
     being handled gracefully.
     """
@@ -378,7 +446,8 @@ _FINDING_ID_PATTERN = re.compile(
     r"\b[A-Za-z0-9_./-]*?(?:finding|find-|ext-)[A-Za-z0-9_./-]*\b", re.IGNORECASE
 )
 _HYPOTHESIS_ID_PATTERN = re.compile(
-    r"\b[A-Za-z0-9_./-]*?(?:hypothesis|hyp-|hyp_)[A-Za-z0-9_./-]*\b", re.IGNORECASE
+    r"\b(?:H-[A-Za-z0-9][A-Za-z0-9_-]*|hyp(?:othesis)?[_-][A-Za-z0-9][A-Za-z0-9_-]*|gap-[0-9a-f]{10})\b",
+    re.IGNORECASE,
 )
 _CREDENTIAL_SPECULATION_TERMS = (
     "credential compromise",
@@ -394,27 +463,316 @@ _CREDENTIAL_SPECULATION_TERMS = (
 )
 
 
-def _extract_claim_paragraphs(content: str) -> list[str]:
-    """Split report body into claim paragraphs, skipping headings and gaps."""
+def _table_block_hashes(content: str) -> dict[tuple[str, str], str]:
+    blocks: dict[tuple[str, str], str] = {}
+    section = ""
+    heading = ""
+    lines: list[str] = []
+
+    def save() -> None:
+        if section and heading and lines:
+            body = "\n".join(lines).strip()
+            blocks[(section, heading)] = hashlib.sha256(
+                body.encode("utf-8")
+            ).hexdigest()
+
+    for line in str(content or "").splitlines():
+        match = re.match(r"^(#{1,6})\s+(.+?)\s*$", line)
+        if match:
+            save()
+            level, title = len(match.group(1)), match.group(2).strip()
+            if level == 1:
+                section, heading, lines = title, "", []
+            elif level == 2:
+                heading, lines = title, [line]
+            else:
+                lines.append(line)
+            continue
+        if heading:
+            lines.append(line)
+    save()
+    return blocks
+
+
+def _trusted_table_blocks(db: Any | None, content: str) -> set[tuple[str, str]]:
+    if db is None:
+        return set()
+    present_hashes = _table_block_hashes(content)
+    projections = db.execute(
+        """
+        SELECT section_key, payload FROM section_runs
+        WHERE phase = 'projection'
+        ORDER BY created_at DESC, run_id DESC
+        """
+    ).fetchall()
+    latest_projection: dict[str, dict[str, Any]] = {}
+    for section_key, serialized in projections:
+        key = str(section_key or "")
+        if key in latest_projection:
+            continue
+        try:
+            payload = json.loads(str(serialized))
+        except TypeError, ValueError:
+            continue
+        if isinstance(payload, dict):
+            latest_projection[key] = payload
+
+    try:
+        from forensia.report.answers.table_registry import (
+            TABLE_BLOCKS,
+            source_receipt_metadata,
+        )
+    except Exception:
+        return set()
+
+    trusted: set[tuple[str, str]] = set()
+    rows = db.execute(
+        """
+        SELECT section.section_key, section.title, section.stale,
+               receipt.block_heading, receipt.payload
+        FROM section_runs AS receipt
+        JOIN report_sections AS section USING (section_key)
+        WHERE receipt.phase = 'query'
+          AND json_extract_string(receipt.payload, '$.source_kind') = 'deterministic_table'
+        """
+    ).fetchall()
+    for section_key, title, stale, block_heading, serialized in rows:
+        key = (str(title or "").strip(), str(block_heading or "").strip())
+        if not key[0] or not key[1] or bool(stale):
+            continue
+        payload = latest_projection.get(str(section_key or ""), {})
+        try:
+            receipt = json.loads(str(serialized))
+        except TypeError, ValueError:
+            continue
+        block_hash = str(receipt.get("block_body_sha256") or "")
+        if not block_hash or present_hashes.get(key) != block_hash:
+            continue
+        source_signature = str(receipt.get("source_state_signature") or "")
+        if not source_signature:
+            continue
+        builder = str(receipt.get("query_ref") or "")
+        table_spec = TABLE_BLOCKS.get(builder)
+        if table_spec is None:
+            continue
+        try:
+            table_rows = table_spec.builder(db)
+            source_metadata = source_receipt_metadata(db, table_spec)
+        except Exception:
+            continue
+        if any(
+            receipt.get(key) != value
+            for key, value in source_metadata.items()
+            if key
+            in {
+                "source_tables",
+                "source_families",
+                "query_description",
+            }
+        ):
+            continue
+        rows_hash = hashlib.sha256(
+            json.dumps(
+                table_rows,
+                ensure_ascii=False,
+                sort_keys=True,
+                default=str,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        if rows_hash != str(receipt.get("table_rows_sha256") or ""):
+            continue
+        if source_metadata["source_ids"] != receipt.get("source_ids"):
+            continue
+        if source_metadata["source_receipt_sha256"] != receipt.get(
+            "source_receipt_sha256"
+        ):
+            continue
+        projection_receipts = payload.get("query_receipts") or []
+        if not any(
+            item.get("source_kind") == "deterministic_table"
+            and item.get("block_heading") == key[1]
+            and item.get("query_ref") == builder
+            and item.get("block_body_sha256") == block_hash
+            and item.get("table_rows_sha256") == rows_hash
+            and item.get("source_receipt_sha256")
+            == source_metadata["source_receipt_sha256"]
+            and item.get("source_state_signature") == source_signature
+            and all(
+                item.get(field) == source_metadata[field]
+                for field in (
+                    "source_tables",
+                    "source_families",
+                    "query_description",
+                    "source_ids",
+                )
+            )
+            for item in projection_receipts
+            if isinstance(item, dict)
+        ):
+            continue
+        trusted.add(key)
+    # Keypoint blocks require current resolver replay and an exact body receipt.
+    try:
+        from forensia.report.answers.keypoint_catalog import (
+            REPORT_KEYPOINT_ALIASES,
+            REPORT_KEYPOINT_METADATA,
+        )
+        from forensia.report.sections.section_exec import _execute_keypoint
+        from forensia.report.sections.section_refresher import (
+            _canonical_hash,
+            _case_evidence_signature,
+            _evidence_ids,
+        )
+
+        current_signature = _case_evidence_signature(db)
+        section_rows = db.execute(
+            "SELECT section_key, title, stale FROM report_sections"
+        ).fetchall()
+        section_info = {
+            str(section_key): (str(title or "").strip(), bool(stale))
+            for section_key, title, stale in section_rows
+        }
+        query_rows = db.execute(
+            """
+            SELECT section_key, block_heading, payload
+            FROM section_runs
+            WHERE phase = 'query'
+              AND json_extract_string(payload, '$.source_kind') = 'keypoint'
+            ORDER BY created_at DESC, run_id DESC
+            """
+        ).fetchall()
+        latest: dict[tuple[str, str, str], dict[str, Any]] = {}
+        for section_key, block_heading, serialized in query_rows:
+            try:
+                receipt = json.loads(str(serialized))
+            except TypeError, ValueError:
+                continue
+            if not isinstance(receipt, dict):
+                continue
+            identity = (
+                str(section_key or ""),
+                str(block_heading or ""),
+                str(receipt.get("query_ref") or ""),
+            )
+            latest.setdefault(identity, receipt)
+
+        projection_receipts: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        for section_key, payload in latest_projection.items():
+            for receipt in payload.get("query_receipts") or []:
+                if (
+                    isinstance(receipt, dict)
+                    and receipt.get("source_kind") == "keypoint"
+                ):
+                    key = (section_key, str(receipt.get("block_heading") or ""))
+                    projection_receipts.setdefault(key, []).append(receipt)
+
+        expected: dict[tuple[str, str], set[str]] = {}
+        valid: dict[tuple[str, str], set[str]] = {}
+        for (section_key, block_heading, query_ref), receipt in latest.items():
+            title, stale = section_info.get(section_key, ("", True))
+            key = (title, block_heading)
+            expected.setdefault(key, set()).add(query_ref)
+            block_hash = str(receipt.get("block_body_sha256") or "")
+            result_hash = str(receipt.get("keypoint_result_sha256") or "")
+            if (
+                not title
+                or not block_heading
+                or stale
+                or not block_hash
+                or present_hashes.get(key) != block_hash
+                or not result_hash
+                or receipt.get("source_state_signature") != current_signature
+            ):
+                continue
+            try:
+                _source_ref, result = _execute_keypoint(
+                    getattr(db, "case", None), db, query_ref
+                )
+                result["source_ref"] = query_ref
+                result["block_heading"] = block_heading
+                result["case_refs"] = sorted(
+                    {
+                        str(value)
+                        for value in result.get("hypothesis_ids") or []
+                        if str(value).strip()
+                    }
+                )
+                result["source_state_signature"] = current_signature
+                if _canonical_hash(result) != result_hash:
+                    continue
+            except Exception:
+                continue
+            evidence_count = int(
+                (receipt.get("result") or {}).get("evidence_count") or 0
+            )
+            evidence_ids = _evidence_ids([result])
+            case_refs = receipt.get("case_refs") or []
+            metadata_name = REPORT_KEYPOINT_ALIASES.get(query_ref, query_ref)
+            is_coverage = (
+                REPORT_KEYPOINT_METADATA.get(metadata_name) is not None
+                and REPORT_KEYPOINT_METADATA[metadata_name].purpose == "coverage"
+            )
+            if (
+                evidence_count != len(evidence_ids)
+                or (receipt.get("result") or {}).get("evidence_ids") != evidence_ids
+                or case_refs != result.get("case_refs", [])
+                or (not evidence_ids and not case_refs and not is_coverage)
+            ):
+                continue
+            matched = any(
+                item.get("query_ref") == query_ref
+                and item.get("keypoint_result_sha256") == result_hash
+                and item.get("block_body_sha256") == block_hash
+                and item.get("source_state_signature") == current_signature
+                and item.get("case_refs") == case_refs
+                and item.get("evidence_count") == len(evidence_ids)
+                for item in projection_receipts.get((section_key, block_heading), [])
+            )
+            if matched:
+                valid.setdefault(key, set()).add(query_ref)
+
+        for key, query_refs in expected.items():
+            if query_refs and valid.get(key) == query_refs:
+                trusted.add(key)
+    except Exception:
+        pass
+    return trusted
+
+
+def _extract_claim_paragraphs(
+    content: str, *, trusted_table_blocks: set[tuple[str, str]] | None = None
+) -> list[str]:
+    """Split prose and blocks without a matching deterministic receipt."""
     paragraphs: list[str] = []
+    section_title = ""
+    block_heading = ""
     for paragraph in re.split(r"\n\s*\n", str(content or "")):
         text = paragraph.strip()
+        if not text:
+            continue
+        heading = re.match(r"^#{1,6}\s+(.+)$", text)
+        if heading:
+            level = len(text) - len(text.lstrip("#"))
+            if level == 1:
+                section_title = heading.group(1).strip()
+                block_heading = ""
+            elif level == 2:
+                block_heading = heading.group(1).strip()
+            continue
         if (
-            not text
-            or text.startswith("#")
-            or text.startswith("**Status:**")
-            or text.startswith("**ID:**")
-            or text.startswith("### ")
+            trusted_table_blocks
+            and (section_title, block_heading) in trusted_table_blocks
         ):
+            continue
+        if text.startswith(("**Status:**", "**ID:**")):
             continue
         paragraphs.append(text)
     return paragraphs
 
 
 def _has_machine_ref(text: str) -> bool:
-    return bool(
-        EVIDENCE_ID_PATTERN.search(text) or _FINDING_ID_PATTERN.search(text)
-    )
+    return bool(EVIDENCE_ID_PATTERN.search(text) or _FINDING_ID_PATTERN.search(text))
 
 
 # Tokens that indicate a paragraph is making a forensic/evidence claim (rather
@@ -432,7 +790,9 @@ def _is_evidence_claim(text: str) -> bool:
     return bool(_EVIDENCE_ADJACENT_PATTERN.search(text))
 
 
-def check_claim_traceability(content: str) -> list[ValidationFinding]:
+def check_claim_traceability(
+    content: str, db: Any | None = None
+) -> list[ValidationFinding]:
     """Reject claims that cannot be traced to machine-detectable evidence/finding refs.
 
     A report must not publish bare hypothesis IDs or unsupported credential
@@ -441,17 +801,16 @@ def check_claim_traceability(content: str) -> list[ValidationFinding]:
     contains claim prose but zero references fails traceability outright.
     """
     findings: list[ValidationFinding] = []
-    paragraphs = _extract_claim_paragraphs(content)
+    paragraphs = _extract_claim_paragraphs(
+        content, trusted_table_blocks=_trusted_table_blocks(db, content)
+    )
     if not paragraphs:
         return findings
 
     for paragraph in paragraphs:
         is_evidence_claim = _is_evidence_claim(paragraph)
         # Bare hypothesis reference without a machine-detectable ref.
-        if (
-            _HYPOTHESIS_ID_PATTERN.search(paragraph)
-            and not _has_machine_ref(paragraph)
-        ):
+        if _HYPOTHESIS_ID_PATTERN.search(paragraph) and not _has_machine_ref(paragraph):
             findings.append(
                 ValidationFinding(
                     "claim_traceability",
@@ -489,10 +848,8 @@ def check_persisted_section_failures(db: Any) -> list[ValidationFinding]:
     """Report invalid persisted sections even when writer omits their prose."""
     findings: list[ValidationFinding] = []
     try:
-        rows = db.execute(
-            "SELECT section_key, body FROM report_sections ORDER BY section_key"
-        ).fetchall()
-        for section_key, body in rows:
+        for row in fetch_report_sections(db):
+            section_key, body = row["section_key"], row["body"]
             if has_failure_marker(str(body or "")):
                 findings.append(
                     ValidationFinding(
@@ -658,16 +1015,17 @@ def check_coverage_lineage(
             )
 
         # Check for sentinel timestamps in coverage
+        time_policy = configured_timestamp_policy()
+        start_eligible = timestamp_year_range_sql("start_time", time_policy)
+        end_eligible = timestamp_year_range_sql("end_time", time_policy)
         rows = db.execute(
-            """
+            f"""
             SELECT capability, source_family, start_time, end_time
             FROM evidence_coverage
             WHERE state IN ('available', 'partial')
               AND (
-                EXTRACT(year FROM start_time) < 1980
-                OR EXTRACT(year FROM start_time) > 2200
-                OR EXTRACT(year FROM end_time) < 1980
-                OR EXTRACT(year FROM end_time) > 2200
+                NOT ({start_eligible})
+                OR NOT ({end_eligible})
               )
             """
         ).fetchall()
@@ -896,7 +1254,10 @@ def _validation_plan(
                 ("local_path_leak", lambda: check_local_path_leak(report_body)),
                 ("fallback_stub", lambda: check_fallback_stub(report_body)),
                 ("failure_marker", lambda: check_failure_markers(report_body)),
-                ("claim_traceability", lambda: check_claim_traceability(report_body)),
+                (
+                    "claim_traceability",
+                    lambda: check_claim_traceability(report_body, db),
+                ),
             ]
         )
         if expected_language:
@@ -917,12 +1278,15 @@ def validation_check_names(
     db: Any | None = None,
 ) -> list[str]:
     """Names of the checks validate_report would execute with these inputs."""
-    return [name for name, _ in _validation_plan(
-        report_brief,
-        report_body=report_body,
-        expected_language=expected_language,
-        db=db,
-    )]
+    return [
+        name
+        for name, _ in _validation_plan(
+            report_brief,
+            report_body=report_body,
+            expected_language=expected_language,
+            db=db,
+        )
+    ]
 
 
 def validate_report(
@@ -935,7 +1299,7 @@ def validate_report(
     """Run all validation checks on a generated report.
 
     Args:
-        report_brief: The report brief dict (from report_brief.json).
+        report_brief: The report brief projection built from CaseDB.
         report_body: Optional full report markdown body for path leak checks.
 
     Returns:

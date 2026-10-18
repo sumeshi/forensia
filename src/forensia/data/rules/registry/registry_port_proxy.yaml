@@ -1,0 +1,16 @@
+id: registry-port-proxy
+title: "Port-proxy configuration observed"
+severity: medium
+confidence: 0.6
+required_fields:
+- key_path
+- value_name
+- hive
+tags:
+- registry
+- network-configuration
+- port-proxy
+query: "SELECT\n    artifact_id AS evidence_id,\n    key_path,\n    value_name,\n    hive,\n    timestamp,\n    json_extract_string(raw_json, '$.reg2es.custom.proto') AS proto\nFROM registry_artifacts\nWHERE plugin = 'portproxy'\n"
+finding:
+  title: "Port-proxy configuration: {value_name}"
+  summary: "The Registry parser reported a {proto} port-proxy value {value_name} under {key_path}. This records a forwarding configuration; it does not establish that the rule was active or used."

@@ -31,7 +31,7 @@ class ArtifactAdapter(Protocol):
         self,
         case: Case,
         path: Path,
-        source_sha: str | None = None,
+        source_sha: str,
         progress_callback: Callable[[str], None] | None = None,
     ) -> IngestResult: ...
 
@@ -53,7 +53,7 @@ class EvtxArtifactAdapter:
         self,
         case: Case,
         path: Path,
-        source_sha: str | None = None,
+        source_sha: str,
         progress_callback: Callable[[str], None] | None = None,
     ) -> IngestResult:
         from forensia.evidence.evtx import ingest_evtx_file
@@ -90,12 +90,12 @@ class MftArtifactAdapter:
         self,
         case: Case,
         path: Path,
-        source_sha: str | None = None,
+        source_sha: str,
         progress_callback: Callable[[str], None] | None = None,
     ) -> IngestResult:
         from forensia.evidence.mft import ingest_mft_file
 
-        entries_path, _timeline_path = ingest_mft_file(
+        entries_path = ingest_mft_file(
             case, path, source_sha=source_sha, progress_callback=progress_callback
         )
         return IngestResult(
@@ -127,12 +127,12 @@ class PrefetchArtifactAdapter:
         self,
         case: Case,
         path: Path,
-        source_sha: str | None = None,
+        source_sha: str,
         progress_callback: Callable[[str], None] | None = None,
     ) -> IngestResult:
         from forensia.evidence.prefetch import ingest_prefetch_file
 
-        entries_path, _timeline_path = ingest_prefetch_file(
+        entries_path = ingest_prefetch_file(
             case, path, source_sha=source_sha, progress_callback=progress_callback
         )
         return IngestResult(

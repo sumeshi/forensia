@@ -1,113 +1,145 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import threading
+import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from unittest.mock import patch
 
-from forensia.ai.checking.check_apply import (
-    apply_check_result,
-    insert_investigation_finding,
-)
-from forensia.ai.checking.check_normalize import CheckResult
-from forensia.ai.hypotheses.hypothesis_manager import merge_active_hypotheses
-from forensia.ai.hypotheses.hypothesis_store import load_persisted_hypotheses
-from forensia.ai.investigation.investigation_session import append_hypothesis_reasoning
-from forensia.ai.investigation.investigator import final_summary
-from forensia.ai.report_gap import (
-    classify_gap_kind,
-    inject_gap_hypotheses,
-    report_cycle_progress,
-)
-from forensia.config import (
-    reload_settings,
-    resolve_llm_config,
-)
+import duckdb
+
+from forensia.config import load_settings, settings_scope
 from forensia.core.case import Case
-from forensia.core.memory import MemoryManager
 from forensia.core.session import Hypothesis, PlannedQuery, SessionState
 from forensia.core.verification import VerificationSpec
 from forensia.db.database import CaseDB
+from forensia.investigation.hypotheses.hypothesis_manager import merge_active_hypotheses
+from forensia.investigation.hypotheses.hypothesis_store import load_persisted_hypotheses
+from forensia.investigation.investigation_session import (
+    _save_step,
+    append_hypothesis_reasoning,
+)
+from forensia.investigation.investigator import final_summary
+from forensia.investigation.report_gap import (
+    classify_gap_kind,
+    evaluation_snapshot,
+    inject_gap_hypotheses,
+    report_cycle_progress,
+)
+from forensia.investigation.verification.check_apply import (
+    apply_check_result,
+    insert_investigation_finding,
+)
+from forensia.investigation.verification.check_normalize import CheckResult
 from forensia.report.sections.section_quality import collect_gaps, section_confidence
-from forensia.report.sections.section_store import extract_claim_texts
-
-
-def _agent_plan_router(*_args, **kwargs):
-    """Route section_agent.request_llm_json by which messages were sent.
-
-    Plan messages → "write" short-circuit (no SQL).
-    Check messages → "sufficient" so the loop exits cleanly.
-    Used to avoid hitting a real LLM in unit tests.
-    """
-    messages = kwargs.get("messages")
-    if messages is None and _args:
-        messages = _args[0]
-    system_content = ""
-    if messages:
-        system_content = str(messages[0].get("content", "")).lower()
-    if "section-check" in system_content:
-        return {"verdict": "sufficient", "fact_updates": []}
-    return {"action": "write", "enough_to_write": True}
-
-
-async def _async_agent_plan_router(*args, **kwargs):
-    return _agent_plan_router(*args, **kwargs)
 
 
 class PersistenceTests(unittest.TestCase):
     """Investigation-state persistence: reasoning rows, hypothesis merge/gap injection."""
 
-    @staticmethod
-    def _llm_base_url() -> str:
-        return resolve_llm_config()[0] or "http://test-llm.invalid"
+    def test_sql_now_is_utc_on_root_thread_cursor_and_reopen(self) -> None:
+        if not hasattr(time, "tzset"):
+            self.skipTest("changing the process timezone is not supported here")
+        old_tz = os.environ.get("TZ")
+        try:
+            os.environ["TZ"] = "Asia/Tokyo"
+            time.tzset()
+            with tempfile.TemporaryDirectory() as tmpdir:
+                case = Case.init(tmpdir)
+                with CaseDB(case) as db:
+                    db.execute(
+                        "CREATE TABLE utc_check (source VARCHAR, value TIMESTAMP)"
+                    )
+                    db.execute("INSERT INTO utc_check VALUES ('main', now())")
 
-    def test_case_connections_for_one_case_are_serialized(self) -> None:
-        """Parallel Web reads must not concurrently ATTACH the same trace DB."""
+                    def insert_from_thread() -> None:
+                        db.execute("INSERT INTO utc_check VALUES ('thread', now())")
+
+                    with ThreadPoolExecutor(max_workers=1) as pool:
+                        pool.submit(insert_from_thread).result(timeout=5)
+                    stored = db.execute(
+                        "SELECT source, value FROM utc_check ORDER BY source"
+                    ).fetchall()
+                with CaseDB(case, read_only=True) as db:
+                    reopened = db.execute(
+                        "SELECT source, value FROM utc_check ORDER BY source"
+                    ).fetchall()
+
+            expected = datetime.now(UTC).replace(tzinfo=None)
+            for _source, value in reopened:
+                self.assertLess(abs((value - expected).total_seconds()), 10)
+            self.assertEqual(stored, reopened)
+        finally:
+            if old_tz is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = old_tz
+            time.tzset()
+
+    def test_runtime_threads_keep_results_and_transactions_isolated(self) -> None:
+        """IPC reads keep their cursor and cannot observe an uncommitted update."""
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
-            first_open = threading.Event()
-            release_first = threading.Event()
-            second_open = threading.Event()
+            barrier = threading.Barrier(2)
+            reading = threading.Event()
+            with CaseDB(case) as db, ThreadPoolExecutor(max_workers=2) as pool:
 
-            def hold_first() -> None:
-                with CaseDB(case):
-                    first_open.set()
-                    release_first.wait(timeout=2)
+                def fetch(value):
+                    result = db.execute("SELECT ?", [value])
+                    barrier.wait(timeout=2)
+                    return result.fetchone()[0]
 
-            def open_second() -> None:
-                first_open.wait(timeout=2)
-                with CaseDB(case):
-                    second_open.set()
+                results = [pool.submit(fetch, value) for value in (1, 2)]
+                self.assertEqual([1, 2], [r.result(timeout=2) for r in results])
+                db.execute("CREATE TABLE concurrency_check (value INTEGER)")
+                db.execute("INSERT INTO concurrency_check VALUES (1)")
 
-            with ThreadPoolExecutor(max_workers=2) as pool:
-                first = pool.submit(hold_first)
-                second = pool.submit(open_second)
-                self.assertTrue(first_open.wait(timeout=2))
-                self.assertFalse(second_open.wait(timeout=0.1))
-                release_first.set()
-                first.result(timeout=2)
-                second.result(timeout=2)
-                self.assertTrue(second_open.is_set())
+                def snapshot_count():
+                    reading.set()
+                    with db.read_snapshot():
+                        return db.execute(
+                            "SELECT COUNT(*) FROM concurrency_check"
+                        ).fetchone()[0]
 
-    def setUp(self) -> None:
-        # llm_gateway is the single seam for LLM JSON calls; patch here.
-        llm_json_patch = patch(
-            "forensia.ai.llm.llm_gateway.request_llm_json",
-            side_effect=_agent_plan_router,
-        )
-        llm_json_patch.start()
-        self.addCleanup(llm_json_patch.stop)
-        # The async report-refresh path uses async_request_llm_json; mock it too
-        # so async tests don't hit the real LLM.
-        self._async_llm_json_patch = patch(
-            "forensia.ai.llm.llm_gateway.async_request_llm_json",
-            side_effect=_async_agent_plan_router,
-        )
-        self._async_llm_json_patch.start()
-        self.addCleanup(self._async_llm_json_patch.stop)
+                with self.assertRaisesRegex(RuntimeError, "rollback"), db.transaction():
+                    db.execute("INSERT INTO concurrency_check VALUES (2)")
+                    reader = pool.submit(snapshot_count)
+                    self.assertTrue(reading.wait(timeout=2))
+                    self.assertEqual(1, reader.result(timeout=2))
+                    raise RuntimeError("rollback")
+                self.assertEqual(1, reader.result(timeout=2))
+
+                with db.read_snapshot():
+                    self.assertEqual(
+                        1,
+                        db.execute("SELECT COUNT(*) FROM concurrency_check").fetchone()[
+                            0
+                        ],
+                    )
+                    pool.submit(
+                        db.execute, "INSERT INTO concurrency_check VALUES (3)"
+                    ).result(timeout=2)
+                    self.assertEqual(
+                        1,
+                        db.execute("SELECT COUNT(*) FROM concurrency_check").fetchone()[
+                            0
+                        ],
+                    )
+                self.assertEqual(
+                    2,
+                    db.execute("SELECT COUNT(*) FROM concurrency_check").fetchone()[0],
+                )
+
+                with self.assertRaises(duckdb.TransactionException), db.read_snapshot():
+                    db.execute("INSERT INTO concurrency_check VALUES (4)")
+                self.assertEqual(
+                    2,
+                    db.execute("SELECT COUNT(*) FROM concurrency_check").fetchone()[0],
+                )
 
     def test_collect_gaps_supports_english_and_japanese_placeholders(self) -> None:
         self.assertEqual(
@@ -130,17 +162,11 @@ class PersistenceTests(unittest.TestCase):
             ),
         )
 
-    def testsection_confidence_and_claim_extraction_respect_english_gap_placeholder(
+    def test_section_confidence_respects_english_gap_placeholder(
         self,
     ) -> None:
         self.assertEqual(1.0, section_confidence("no gaps here"))
         self.assertLess(section_confidence("[INSUFFICIENT EVIDENCE: x]"), 1.0)
-        self.assertEqual(
-            [], extract_claim_texts("[INSUFFICIENT EVIDENCE: missing evidence]")
-        )
-        self.assertEqual(
-            ["same claim"], extract_claim_texts("same claim\n\nsame claim")
-        )
 
     def test_append_hypothesis_reasoning_is_idempotent_per_query_phase(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -165,11 +191,90 @@ class PersistenceTests(unittest.TestCase):
                     body="look for 4625 burst",
                 )
                 count = db.execute(
-                    "SELECT COUNT(*) FROM hypothesis_reasoning WHERE hypothesis_id = 'H-1'"
+                    "SELECT COUNT(*) FROM trace.hypothesis_reasoning WHERE hypothesis_id = 'H-1'"
                 ).fetchone()[0]
 
             self.assertEqual(first, second)
             self.assertEqual(1, count)
+
+    def test_trace_identity_keeps_hypotheses_and_sessions_separate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                for hypothesis_id, output in (("H-1", "one"), ("H-2", "two")):
+                    _save_step(
+                        db,
+                        "S-1",
+                        1,
+                        "sufficiency",
+                        hypothesis_id,
+                        {"query_index": 1},
+                        {"result": output},
+                        suffix="1",
+                    )
+                _save_step(
+                    db,
+                    "S-1",
+                    1,
+                    "sufficiency",
+                    "H-1",
+                    {"query_index": 1, "revision": 2},
+                    {"result": "one-updated"},
+                    suffix="1",
+                )
+                for session_id in ("S-1", "S-2"):
+                    append_hypothesis_reasoning(
+                        db,
+                        "H-1",
+                        session_id,
+                        1,
+                        "plan",
+                        "same query",
+                        query_id="q-1",
+                    )
+                steps = db.execute(
+                    "SELECT hypothesis_id, input_json, output_json "
+                    "FROM trace.investigation_steps "
+                    "WHERE phase = 'sufficiency' ORDER BY hypothesis_id"
+                ).fetchall()
+                reasoning_sessions = db.execute(
+                    "SELECT DISTINCT session_id FROM trace.hypothesis_reasoning "
+                    "ORDER BY session_id"
+                ).fetchall()
+
+            self.assertEqual(
+                [
+                    (
+                        "H-1",
+                        '{"query_index": 1, "revision": 2}',
+                        '{"result": "one-updated"}',
+                    ),
+                    ("H-2", '{"query_index": 1}', '{"result": "two"}'),
+                ],
+                steps,
+            )
+            self.assertEqual([("S-1",), ("S-2",)], reasoning_sessions)
+
+    def test_step_identity_keeps_execution_attempts_separate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                for attempt_ref in ("receipt-1", "receipt-2"):
+                    _save_step(
+                        db,
+                        "S-1",
+                        1,
+                        "do",
+                        "H-1",
+                        {"planned_query": "same"},
+                        {"attempt": {"attempt_ref": attempt_ref}},
+                        suffix="Q-1-01",
+                    )
+                count = db.execute(
+                    "SELECT COUNT(*) FROM trace.investigation_steps WHERE phase = 'do'"
+                ).fetchone()[0]
+
+            self.assertEqual(2, count)
 
     def test_load_persisted_hypotheses_restores_resolved_rows(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -180,8 +285,9 @@ class PersistenceTests(unittest.TestCase):
                     """
                     INSERT INTO hypotheses (
                         hypothesis_id, description, status, verdict, summary, origin,
-                        created_session, resolved_session, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        created_session, resolved_session, created_at, updated_at,
+                        verification_spec
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         "H-1",
@@ -194,6 +300,7 @@ class PersistenceTests(unittest.TestCase):
                         "session-old",
                         now,
                         now,
+                        '{"spec_version": "1"}',
                     ),
                 )
                 active, resolved = load_persisted_hypotheses(db)
@@ -203,9 +310,11 @@ class PersistenceTests(unittest.TestCase):
             self.assertEqual("H-1", resolved[0].id)
             self.assertEqual("confirmed", resolved[0].status)
 
-    def test_verification_spec_round_trips_legacy_conditions(self) -> None:
-        """The canonical spec and all three legacy projections survive reload."""
-        from forensia.ai.hypotheses.hypothesis_store import _upsert_hypothesis
+    def test_verification_spec_round_trips_canonical_conditions(self) -> None:
+        """The canonical spec is the only stored condition representation."""
+        from forensia.investigation.hypotheses.hypothesis_store import (
+            _upsert_hypothesis,
+        )
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -214,18 +323,14 @@ class PersistenceTests(unittest.TestCase):
                 description="registry persistence hypothesis",
                 required_entities=["host", "user"],
                 confirm_when={"co_observed_event_ids": [4624], "same_host": True},
-                refute_when={"zero_rows": True, "scope": {"host": "WS-01"}},
+                refute_when={"zero_rows": True},
                 evidence_requirements={"minimum_independent_groups": 2},
                 verification_spec=VerificationSpec(
                     support_conditions={
                         "co_observed_event_ids": [4624],
                         "same_host": True,
                     },
-                    refute_conditions={
-                        "zero_rows": True,
-                        "scope": {"host": "WS-01"},
-                    },
-                    required_entities=["host", "user"],
+                    refute_conditions={"zero_rows": True},
                     evidence_requirements={"minimum_independent_groups": 2},
                     required_capabilities=["windows.security.logon"],
                     scope={"host": "WS-01"},
@@ -234,17 +339,28 @@ class PersistenceTests(unittest.TestCase):
             with CaseDB(case) as db:
                 _upsert_hypothesis(db, original, origin="test", session_id="S-1")
                 active, resolved = load_persisted_hypotheses(db)
-                row = db.execute(
-                    "SELECT verification_spec, refute_when FROM hypotheses WHERE hypothesis_id = 'H-SPEC'"
-                ).fetchone()
+                columns = {
+                    row[0]
+                    for row in db.execute(
+                        "SELECT column_name FROM information_schema.columns "
+                        "WHERE table_name = 'hypotheses'"
+                    ).fetchall()
+                }
 
             self.assertEqual([], resolved)
             self.assertEqual(1, len(active))
             restored = active[0]
-            self.assertEqual(original.confirm_when, restored.confirm_when)
-            self.assertEqual(original.refute_when, restored.refute_when)
             self.assertEqual(
-                original.evidence_requirements, restored.evidence_requirements
+                original.verification_spec.support_conditions,
+                restored.verification_spec.support_conditions,
+            )
+            self.assertEqual(
+                original.verification_spec.refute_conditions,
+                restored.verification_spec.refute_conditions,
+            )
+            self.assertEqual(
+                original.verification_spec.evidence_requirements,
+                restored.verification_spec.evidence_requirements,
             )
             self.assertEqual("1", restored.verification_spec.spec_version)
             self.assertEqual(
@@ -252,68 +368,96 @@ class PersistenceTests(unittest.TestCase):
                 restored.verification_spec.required_capabilities,
             )
             self.assertEqual({"host": "WS-01"}, restored.verification_spec.scope)
+            # Declaration-shaped columns no longer exist: the canonical spec
+            # column is the only stored condition representation.
+            self.assertFalse(
+                columns & {"confirm_when", "refute_when", "evidence_requirements"}
+            )
+            self.assertIn("verification_spec", columns)
             with self.assertRaises(ValueError):
                 VerificationSpec.model_validate({"spec_version": "2"})
             with self.assertRaises(ValueError):
                 VerificationSpec.model_validate({"unknown_policy": True})
-            self.assertIsNotNone(row[0])
-            self.assertIn('"zero_rows": true', str(row[1]))
 
-    def test_verification_spec_migration_backfills_legacy_row_idempotently(
-        self,
-    ) -> None:
-        """Opening a pre-spec case preserves rows and rerunning init is harmless."""
+    def test_upsert_persists_canonical_spec_not_declaration_projection(self) -> None:
+        """Changing canonical support conditions survives upsert (4624→4688)."""
+        from forensia.investigation.hypotheses.hypothesis_store import (
+            _upsert_hypothesis,
+        )
+
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
-            now = datetime.now(UTC).replace(tzinfo=None)
+            hypothesis = Hypothesis(
+                id="H-CANON",
+                description="successful logon hypothesis",
+                confirm_when={"co_observed_event_ids": [4624]},
+            )
             with CaseDB(case) as db:
+                _upsert_hypothesis(db, hypothesis, origin="test", session_id="S-1")
+                hypothesis.verification_spec.support_conditions = {
+                    "co_observed_event_ids": [4688]
+                }
+                _upsert_hypothesis(db, hypothesis, origin="test", session_id="S-1")
+                active, _resolved = load_persisted_hypotheses(db)
+                row = db.execute(
+                    "SELECT verification_spec FROM hypotheses "
+                    "WHERE hypothesis_id = 'H-CANON'"
+                ).fetchone()
+
+            restored = active[0]
+            self.assertEqual(
+                {"co_observed_event_ids": [4688]},
+                restored.verification_spec.support_conditions,
+            )
+            self.assertIn("4688", row[0])
+            self.assertNotIn("4624", row[0])
+
+    def test_broken_or_missing_spec_is_an_explicit_load_failure(self) -> None:
+        """A stored spec that fails validation is rejected, never reinterpreted."""
+        from forensia.investigation.hypotheses.hypothesis_store import (
+            load_persisted_hypotheses,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                # No canonical spec at all.
                 db.execute(
                     """
                     INSERT INTO hypotheses (
-                        hypothesis_id, description, status, verdict, summary,
-                        origin, created_session, created_at, updated_at,
-                        required_entities, confirm_when, refute_when, evidence_requirements
-                    ) VALUES (?, ?, 'active', NULL, '', 'legacy', 'S-old', ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        "H-LEGACY-SPEC",
-                        "legacy hypothesis",
-                        now,
-                        now,
-                        '["host"]',
-                        '{"same_host": true}',
-                        '{"zero_rows": true}',
-                        '{"minimum_independent_groups": 1}',
-                    ),
+                        hypothesis_id, description, status, origin,
+                        created_session, resolved_session, created_at, updated_at
+                    ) VALUES ('H-BAD', 'missing spec', 'confirmed', 'test',
+                              'S-1', 'S-1', now(), now())
+                    """
                 )
-                # Simulate a legacy row created before the migration: remove
-                # only this migration marker and its canonical payload while
-                # retaining the legacy columns/state.
-                db.execute(
-                    "DELETE FROM schema_migrations WHERE migration_key = ?",
-                    ("hypotheses_verification_spec_v1",),
-                )
-                db.execute(
-                    "UPDATE hypotheses SET verification_spec = NULL WHERE hypothesis_id = ?",
-                    ("H-LEGACY-SPEC",),
-                )
-                before = db.execute(
-                    "SELECT verification_spec FROM hypotheses WHERE hypothesis_id = 'H-LEGACY-SPEC'"
-                ).fetchone()[0]
-                self.assertIsNone(before)
-                db.init_schema()
-                second, _ = load_persisted_hypotheses(db)
-                after = db.execute(
-                    "SELECT verification_spec FROM hypotheses WHERE hypothesis_id = 'H-LEGACY-SPEC'"
-                ).fetchone()[0]
-                db.init_schema()
-                after_repeat = db.execute(
-                    "SELECT verification_spec FROM hypotheses WHERE hypothesis_id = 'H-LEGACY-SPEC'"
-                ).fetchone()[0]
+                with self.assertRaises(ValueError):
+                    load_persisted_hypotheses(db)
 
-            self.assertIsNotNone(after)
-            self.assertEqual(after, after_repeat)
-            self.assertEqual(second[0].refute_when, {"zero_rows": True})
+                # Valid Spec does not excuse corruption of other durable fields.
+                db.execute(
+                    "UPDATE hypotheses SET verification_spec = ? WHERE hypothesis_id = 'H-BAD'",
+                    ('{"spec_version": "1"}',),
+                )
+                for column in ("required_entities", "source_rule_ids"):
+                    for broken in ("{}", "[1]", '[""]'):
+                        db.execute(
+                            f"UPDATE hypotheses SET {column} = ? WHERE hypothesis_id = 'H-BAD'",
+                            (broken,),
+                        )
+                        with self.assertRaisesRegex(ValueError, column):
+                            load_persisted_hypotheses(db)
+                    db.execute(
+                        f"UPDATE hypotheses SET {column} = '[]' WHERE hypothesis_id = 'H-BAD'"
+                    )
+                # Valid JSON in an unsupported spec format.
+                db.execute(
+                    "UPDATE hypotheses SET verification_spec = ? "
+                    "WHERE hypothesis_id = 'H-BAD'",
+                    ('{"spec_version": "2"}',),
+                )
+                with self.assertRaises(ValueError):
+                    load_persisted_hypotheses(db)
 
     def test_merge_active_hypotheses_assigns_sequential_ids_and_dedupes_description(
         self,
@@ -326,10 +470,10 @@ class PersistenceTests(unittest.TestCase):
                     INSERT INTO hypotheses (
                         hypothesis_id, description, status, verdict, summary, origin,
                         created_session, resolved_session, created_at, updated_at,
-                        source_rule_ids, required_entities, confirm_when
+                        source_rule_ids, required_entities
                     ) VALUES
-                        ('H-001', 'existing active hypothesis', 'active', NULL, '', 'broad_plan', 'S-1', NULL, now(), now(), '["rule-1"]', '["host"]', NULL),
-                        ('H-002', 'resolved reference hypothesis', 'confirmed', 'confirmed', 'done', 'broad_plan', 'S-1', 'S-2', now(), now(), '["rule-2"]', '["user"]', NULL)
+                        ('H-001', 'existing active hypothesis', 'active', NULL, '', 'broad_plan', 'S-1', NULL, now(), now(), '["rule-1"]', '["host"]'),
+                        ('H-002', 'resolved reference hypothesis', 'confirmed', 'confirmed', 'done', 'broad_plan', 'S-1', 'S-2', now(), now(), '["rule-2"]', '["user"]')
                     """
                 )
                 current = [
@@ -405,9 +549,9 @@ class PersistenceTests(unittest.TestCase):
                     INSERT INTO hypotheses (
                         hypothesis_id, description, status, verdict, summary, origin,
                         created_session, resolved_session, created_at, updated_at,
-                        source_rule_ids, required_entities, confirm_when
+                        source_rule_ids, required_entities
                     ) VALUES
-                        ('H-010', 'RDP lateral movement to deploy service', 'active', NULL, '', 'broad_plan', 'S-1', NULL, now(), now(), '["rule-1"]', '["host"]', NULL)
+                        ('H-010', 'RDP lateral movement to deploy service', 'active', NULL, '', 'broad_plan', 'S-1', NULL, now(), now(), '["rule-1"]', '["host"]')
                     """
                 )
                 merged = merge_active_hypotheses(
@@ -441,25 +585,108 @@ class PersistenceTests(unittest.TestCase):
                 self.assertEqual("H-010", merged[0].id)
                 self.assertIn("rule-2", str(rows[0][2]))
 
-    def test_report_cycle_progress_can_be_true_from_gap_reduction_alone(self) -> None:
-        self.assertTrue(
-            report_cycle_progress(
-                {"total_gaps": 3, "total_body_chars": 120},
-                {"total_gaps": 2, "total_body_chars": 120},
+    def test_report_cycle_progress_reads_evaluation_snapshots(self) -> None:
+        """R06: progress compares durable semantic state, never prose.
+
+        New unresolved work is progress; prose growth is not; a Coverage or
+        source change triggers re-evaluation; a same-root refetch does not.
+        """
+        with self.subTest("new open work ref"):
+            self.assertTrue(
+                report_cycle_progress(
+                    {"open_work": ()},
+                    {"open_work": ((("H-1",), (), ()),)},
+                )
             )
-        )
-        self.assertFalse(
-            report_cycle_progress(
-                {"total_gaps": 2, "total_body_chars": 120},
-                {"total_gaps": 2, "total_body_chars": 240},
+        with self.subTest("prose totals are irrelevant"):
+            self.assertFalse(
+                report_cycle_progress(
+                    {"open_work": ((("H-1",), (), ()),), "observations": ("row:1",)},
+                    {
+                        "open_work": ((("H-1",), (), ()),),
+                        "observations": ("row:1",),
+                        "total_gaps": 99,
+                        "total_body_chars": 99,
+                    },
+                )
             )
-        )
-        self.assertTrue(
-            report_cycle_progress(
-                {"semantic_state": {"gap_lifecycle": 0}},
-                {"semantic_state": {"gap_lifecycle": 1}},
+        with self.subTest("source replacement triggers re-evaluation"):
+            self.assertTrue(
+                report_cycle_progress(
+                    {"identity": "aaaa", "open_work": (), "observations": ()},
+                    {"identity": "bbbb", "open_work": (), "observations": ()},
+                )
             )
-        )
+        with self.subTest("attaching a stop Task and Gap is not new work"):
+            self.assertFalse(
+                report_cycle_progress(
+                    {"open_work": ((("H-1",), (), ()),)},
+                    {"open_work": ((("H-1",), ("GAP-STOP-1",), ("TASK-STOP-1",)),)},
+                )
+            )
+            self.assertTrue(
+                report_cycle_progress(
+                    {"open_work": ((("H-1",), (), ()),)},
+                    {"open_work": ((("H-1",), ("G-required",), ("T-required",)),)},
+                )
+            )
+        with self.subTest("parser revision is new source context"):
+            with tempfile.TemporaryDirectory() as tmpdir:
+                with CaseDB(Case.init(tmpdir)) as db:
+                    db.execute(
+                        "INSERT INTO evidence_sources (source_id, artifact_family, ingest_status, parser_version) VALUES ('source-a', 'evtx', 'normalized', '1')"
+                    )
+                    before = evaluation_snapshot(db)
+                    db.execute(
+                        "UPDATE evidence_sources SET parser_version = '2' WHERE source_id = 'source-a'"
+                    )
+                    self.assertTrue(
+                        report_cycle_progress(before, evaluation_snapshot(db))
+                    )
+        with self.subTest("unchanged state round-trip"):
+            self.assertFalse(
+                report_cycle_progress(
+                    {
+                        "identity": "aaaa",
+                        "open_work": ((("H-1",), (), ()),),
+                        "observations": ("row:1",),
+                        "contradictions": ("row:2",),
+                    },
+                    {
+                        "identity": "aaaa",
+                        "open_work": ((("H-1",), (), ()),),
+                        "observations": ("row:1",),
+                        "contradictions": ("row:2",),
+                    },
+                )
+            )
+
+        with self.subTest("assessment is specific to its hypothesis and role"):
+            with tempfile.TemporaryDirectory() as tmpdir:
+                with CaseDB(Case.init(tmpdir)) as db:
+
+                    def link(link_id: str, hypothesis_id: str, role: str) -> None:
+                        db.execute(
+                            "INSERT INTO hypothesis_evidence "
+                            "(link_id, hypothesis_id, evidence_id, assessment_id, role) "
+                            "VALUES (?, ?, 'shared-root', 'assessment', ?)",
+                            [link_id, hypothesis_id, role],
+                        )
+
+                    link("L1", "H1", "supporting")
+                    first = evaluation_snapshot(db)
+                    link("L2", "H1", "supporting")
+                    repeated = evaluation_snapshot(db)
+                    self.assertFalse(report_cycle_progress(first, repeated))
+                    link("L3", "H2", "supporting")
+                    second_hypothesis = evaluation_snapshot(db)
+                    self.assertTrue(report_cycle_progress(repeated, second_hypothesis))
+                    link("L4", "H2", "contradictory")
+                    self.assertTrue(
+                        report_cycle_progress(
+                            second_hypothesis, evaluation_snapshot(db)
+                        )
+                    )
 
     def test_non_testable_report_gap_stays_a_review_gap(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -488,10 +715,9 @@ class PersistenceTests(unittest.TestCase):
                 gap_rows,
             )
 
-    def test_external_or_human_gaps_do_not_become_hypotheses(self) -> None:
+    def test_external_or_human_gaps_remain_case_tasks(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
-            memory = MemoryManager(case)
             with CaseDB(case) as db:
                 state = SessionState(session_id="session-test")
                 added = inject_gap_hypotheses(
@@ -499,7 +725,6 @@ class PersistenceTests(unittest.TestCase):
                     state,
                     ["Check src_ip ownership", "Manager interview needed"],
                     session_id="session-test",
-                    memory=memory,
                 )
                 row_count = db.execute("SELECT COUNT(*) FROM hypotheses").fetchone()[0]
 
@@ -511,10 +736,6 @@ class PersistenceTests(unittest.TestCase):
             )
             self.assertEqual(0, added)
             self.assertEqual(0, row_count)
-            self.assertIn(
-                "ownership",
-                memory.tasks_memory_path.read_text(encoding="utf-8").lower(),
-            )
 
     def test_gap_classification_supports_english_external_and_human_keywords(
         self,
@@ -534,12 +755,11 @@ class PersistenceTests(unittest.TestCase):
 
     def test_final_summary_fallback_follows_output_language(self) -> None:
         with patch.dict("os.environ", {"FORENSIA_OUTPUT_LANGUAGE": "en"}):
-            reload_settings()
-            self.assertEqual(
-                "No additional progress was made during this investigation.",
-                final_summary(SessionState(session_id="S-1")),
-            )
-            reload_settings()
+            with settings_scope(load_settings()):
+                self.assertEqual(
+                    "No additional progress was made during this investigation.",
+                    final_summary(SessionState(session_id="S-1")),
+                )
 
     def test_investigation_finding_title_prefix_follows_output_language(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -551,20 +771,20 @@ class PersistenceTests(unittest.TestCase):
                 sql="SELECT 1",
             )
             with patch.dict("os.environ", {"FORENSIA_OUTPUT_LANGUAGE": "ja"}):
-                reload_settings()
-                with CaseDB(case) as db:
-                    finding_id = insert_investigation_finding(
-                        db=db,
-                        session_id="S-1",
-                        planned_query=planned_query,
-                        result_summary={"sample_rows": [{"evidence_id": "ev-1"}]},
-                        report_text="body",
-                    )
-                    title = db.execute(
-                        "SELECT title FROM findings WHERE finding_id = ?", (finding_id,)
-                    ).fetchone()[0]
+                with settings_scope(load_settings()):
+                    with CaseDB(case) as db:
+                        finding_id = insert_investigation_finding(
+                            db=db,
+                            session_id="S-1",
+                            planned_query=planned_query,
+                            result_summary={"sample_rows": [{"evidence_id": "ev-1"}]},
+                            report_text="body",
+                        )
+                        title = db.execute(
+                            "SELECT title FROM findings WHERE finding_id = ?",
+                            (finding_id,),
+                        ).fetchone()[0]
             self.assertEqual("Investigation: host triage", title)
-            reload_settings()
 
     def test_investigation_finding_is_skipped_without_result_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -608,10 +828,7 @@ class PersistenceTests(unittest.TestCase):
                 finding_updates=[],
                 suspicious_evidence=[],
                 new_hypotheses=[],
-                memory_updates={},
                 report_text="confirmed",
-                new_leads=0,
-                progress=False,
                 raw_response={
                     "extracted_findings": [
                         {

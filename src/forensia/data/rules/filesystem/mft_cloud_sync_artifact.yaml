@@ -1,0 +1,14 @@
+id: "filesystem-mft-cloud-sync-artifact"
+title: "Cloud-sync-related filesystem artifact observed"
+severity: medium
+confidence: 0.6
+required_fields:
+- file_path
+query: "SELECT\n    evidence_id,\n    file_name,\n    file_path,\n    si_created,\n    si_modified\nFROM mft_entries\nWHERE\n    LOWER(file_path) LIKE '%googledrivesync%' OR\n    LOWER(file_path) LIKE '%/google drive/%' OR\n    LOWER(file_path) LIKE '%/onedrive/%' OR\n    LOWER(file_path) LIKE '%/icloud%' OR\n    LOWER(file_path) LIKE '%dropbox%'\n"
+finding:
+  title: "Cloud-sync-related filesystem artifact: {file_name}"
+  summary: "A path associated with a cloud-sync client or directory was recorded at {file_path}. This identifies a filesystem artifact; it does not establish synchronization or transfer activity."
+tags:
+- filesystem
+- mft
+- cloud-sync

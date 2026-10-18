@@ -1,0 +1,16 @@
+id: registry-remote-access-tools
+title: "Remote-access tool configuration observed"
+severity: medium
+confidence: 0.6
+required_fields:
+- key_path
+- hive
+- plugin
+tags:
+- registry
+- remote-access
+- configuration
+query: "SELECT\n    artifact_id AS evidence_id,\n    key_path,\n    hive,\n    plugin,\n    timestamp,\n    json_extract_string(raw_json, '$.reg2es.custom.host') AS remote_host\nFROM registry_artifacts\nWHERE plugin IN ('teamviewer', 'putty')\n"
+finding:
+  title: "Remote-access configuration: {plugin}"
+  summary: "The Registry parser reported {plugin} configuration under {key_path} ({hive}){remote_host}. This records local configuration and does not establish a remote connection."

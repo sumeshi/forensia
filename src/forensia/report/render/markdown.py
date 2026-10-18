@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo
 
 from forensia.core.case import Case
 from forensia.db.query import normalize_value
+from forensia.report.evidence_refs import EVIDENCE_ID_PATTERN
 
 # ====================================================================
 # Markdown table sorting
@@ -199,9 +200,7 @@ def _strip_hidden_report_columns_from_markdown_tables(body: str) -> str:
 # ====================================================================
 
 
-_HUMAN_REPORT_HIDDEN_COLUMNS = frozenset(
-    {"evidence_id", "evidence_ids", "reference", "references", "source_file"}
-)
+_HUMAN_REPORT_HIDDEN_COLUMNS = frozenset({"source_file"})
 
 
 def _is_human_report_hidden_column(column: Any) -> bool:
@@ -227,7 +226,7 @@ def _compact_cell(value: Any, max_chars: int = 110) -> str:
         text = str(value if value is not None else "")
     text = " ".join(text.replace("\n", " ").split())
     text = text.replace("|", "\\|")
-    if len(text) > max_chars:
+    if len(text) > max_chars and not EVIDENCE_ID_PATTERN.search(text):
         return text[: max_chars - 3].rstrip() + "..."
     return text or "-"
 

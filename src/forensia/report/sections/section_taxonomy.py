@@ -7,6 +7,8 @@ lazy imports (e.g. from keypoints) are done inside functions.
 
 from __future__ import annotations
 
+import re
+
 # ---------------------------------------------------------------------------
 # Canonical section key list (template order)
 # ---------------------------------------------------------------------------
@@ -39,21 +41,27 @@ def section_family(section_key: str) -> str:
     return _SECTION_FAMILY_MAP.get(section_key, section_key)
 
 
-# ---------------------------------------------------------------------------
-# Section key → playbook section name
-# ---------------------------------------------------------------------------
+def report_slug_family(key: str) -> str | None:
+    """Known canonical family for a positional report key (``NN_<slug>``).
 
-SECTION_KEY_PLAYBOOK_MAP: dict[str, str] = {
-    "events": "event_ids",
-    "priority": "event_ids",
-    "logon": "logon_types",
-    "fp": "fp_guidance",
-    "schema": "schema",
-    "extractor": "schema",
-    "app": "app_catalog",
-    "artifact": "artifact_inference",
-    "ioc": "ioc_catalog",
-}
+    Matches a canonical family word (``overview``/``timeline``/``technical``/
+    ``gaps``/``recommendations``/``appendix``) when the slug part equals it or
+    ends with ``_`` + word. Also resolves canonical keys themselves
+    (``1_overview`` → ``overview``). Purely derived from the key string;
+    returns None for anything else.
+    """
+    match = re.match(r"^\d+_(.+)$", str(key or "").strip())
+    slug = match.group(1) if match else str(key or "").strip()
+    if not slug:
+        return None
+    words = set(_SECTION_FAMILY_MAP.values())
+    if slug in words:
+        return slug
+    for word in sorted(words):
+        if slug.endswith("_" + word):
+            return word
+    return None
+
 
 # ---------------------------------------------------------------------------
 # Keypoint → section keys (which sections include a given keypoint)

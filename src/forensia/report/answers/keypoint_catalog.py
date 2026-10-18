@@ -7,7 +7,6 @@ from typing import Any, Literal
 
 import yaml
 
-from forensia.core.case import Case
 from forensia.db.database import CaseDB
 from forensia.knowledge.catalog import (
     expand_catalog_sql_placeholders,
@@ -129,9 +128,7 @@ def register_report_keypoint(
     REPORT_KEYPOINTS[normalized] = (str(description).strip(), resolver)
     prior_metadata = REPORT_KEYPOINT_METADATA.get(normalized)
     REPORT_KEYPOINT_METADATA[normalized] = (
-        metadata
-        or prior_metadata
-        or ReportKeypointMetadata(purpose="evidence")
+        metadata or prior_metadata or ReportKeypointMetadata(purpose="evidence")
     )
     for alias in aliases:
         alias_name = str(alias).strip()
@@ -303,23 +300,31 @@ def _default_keypoints_for_section(
         "5": ("recommendations_findings", "recommendations_recent_reviews"),
         "6": ("appendix_findings_catalog", "appendix_claims_needing_review"),
     }
-    return mapping.get(family, ("overview_top_findings",))
+    keypoints = mapping.get(family)
+    if keypoints is None:
+        # Positional REPORT.md keys (e.g. '02_overview') carry no canonical
+        # family digit; resolve the family word from the section key slug.
+        from forensia.report.sections.section_taxonomy import report_slug_family
+
+        family_word = report_slug_family(section_key)
+        if family_word is not None:
+            keypoints = mapping[_FAMILY_WORD_DIGITS[family_word]]
+    if keypoints is None:
+        keypoints = ("overview_top_findings",)
+    return keypoints
+
+
+_FAMILY_WORD_DIGITS: dict[str, str] = {
+    "overview": "1",
+    "timeline": "2",
+    "technical": "3",
+    "gaps": "4",
+    "recommendations": "5",
+    "appendix": "6",
+}
 
 
 # ── Keypoint cards ──
-
-
-def _load_keypoint_cards(
-    case: Case, max_cards: int = 8, max_chars: int = 1200
-) -> list[dict[str, str]]:
-    """Load keypoint card markdown files from the case memory directory."""
-    cards: list[dict[str, str]] = []
-    for path in sorted(case.memory_dir.glob("keypoints/KP-*.md"))[:max_cards]:
-        text = path.read_text(encoding="utf-8").strip()
-        if len(text) > max_chars:
-            text = text[:max_chars].rstrip() + "\n..."
-        cards.append({"card_id": path.stem, "content": text})
-    return cards
 
 
 # ── Evidence resolver ──
@@ -355,7 +360,6 @@ def _question_spec_keypoint_rows(
 
 
 def _resolve_evidence_results(
-    case: Case,
     db: CaseDB,
     *,
     keypoints: list[str] | None = None,
@@ -368,23 +372,6 @@ def _resolve_evidence_results(
         if not normalized or normalized in seen_keypoints:
             continue
         seen_keypoints.add(normalized)
-        if normalized in {"top_keypoints", "memory_keypoint_cards"}:
-            cards = _load_keypoint_cards(case)
-            results.append(
-                {
-                    "keypoint": normalized,
-                    "description": "Current memory keypoint cards derived from findings.",
-                    "kind": "rows",
-                    "source_kind": "keypoint",
-                    "source_ref": normalized,
-                    "row_count": len(cards),
-                    "evidence_ids": [],
-                    "finding_ids": [],
-                    "hypothesis_ids": [],
-                    "sample_rows": cards,
-                }
-            )
-            continue
         resolved_name = REPORT_KEYPOINT_ALIASES.get(normalized, normalized)
         resolver_entry = REPORT_KEYPOINTS.get(resolved_name)
         if resolver_entry is None:

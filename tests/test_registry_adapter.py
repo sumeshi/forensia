@@ -3,12 +3,16 @@ import sys
 from pathlib import Path
 from types import ModuleType
 
-from forensia.ai.prompts.sql_schema import get_allowed_tables
+import pytest
+
+from forensia.context.sql_schema import get_allowed_tables
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
 from forensia.db.evidence_lookup import fetch_evidence_records
 from forensia.db.evidence_sources import register_evidence_source
 from forensia.evidence.registry import (
+    REG2ES_VERSION,
+    RegistryArtifactAdapter,
     _dataset_id,
     _iter_reg2es_records,
     admit_registry_datasets,
@@ -110,6 +114,74 @@ def test_reg2es_chunk_generator_is_flattened_and_closed(
     assert closed == [True]
 
 
+def test_reg2es_export_keeps_strict_errors_and_native_jsonl(
+    monkeypatch, tmp_path: Path
+) -> None:
+    primary = tmp_path / "SYSTEM"
+    primary.write_bytes(b"regf")
+    log = tmp_path / "SYSTEM.LOG1"
+    log.write_bytes(b"transaction")
+    case = Case.init(tmp_path / "case")
+    dataset = admit_registry_datasets([primary, log])[0]
+    source_ids = {primary: "a" * 64, log: "b" * 64}
+    expected_record = {
+        "reg2es": {
+            "plugin": {"name": "services"},
+            "recovery": {"applied": True, "logs": [str(log.resolve())]},
+        }
+    }
+
+    class FakeReg2es:
+        def __init__(self, **kwargs):
+            assert kwargs == {
+                "input_paths": [str(primary)],
+                "chunk_size": 100,
+                "error_policy": "raise",
+            }
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return None
+
+        def gen_records(self):
+            yield [expected_record]
+            raise RuntimeError("plugin failed")
+
+    reg2es_module = ModuleType("reg2es")
+    models_module = ModuleType("reg2es.models")
+    model_module = ModuleType("reg2es.models.Reg2es")
+    model_module.Reg2es = FakeReg2es
+    monkeypatch.setitem(sys.modules, "reg2es", reg2es_module)
+    monkeypatch.setitem(sys.modules, "reg2es.models", models_module)
+    monkeypatch.setitem(sys.modules, "reg2es.models.Reg2es", model_module)
+
+    assert REG2ES_VERSION == "2.4.1"
+    with pytest.raises(RuntimeError, match="plugin failed"):
+        RegistryArtifactAdapter().ingest_dataset(case, dataset, source_ids=source_ids)
+
+    digest = _dataset_id(dataset, source_ids)
+    raw_path = case.raw_dir / f"registry-{digest}.jsonl"
+    assert len(digest) == 64
+    assert not raw_path.exists()
+    assert not raw_path.with_suffix(".jsonl.tmp").exists()
+
+    class SuccessfulReg2es(FakeReg2es):
+        def gen_records(self):
+            yield [expected_record]
+
+    model_module.Reg2es = SuccessfulReg2es
+    result = RegistryArtifactAdapter().ingest_dataset(
+        case, dataset, source_ids=source_ids
+    )
+    assert result.raw_path == raw_path
+    assert (
+        raw_path.read_text(encoding="utf-8")
+        == json.dumps(expected_record, ensure_ascii=False, separators=(",", ":")) + "\n"
+    )
+
+
 def test_registry_raw_records_and_parser_timestamps_are_traceable(
     tmp_path: Path,
 ) -> None:
@@ -140,7 +212,7 @@ def test_registry_raw_records_and_parser_timestamps_are_traceable(
                 display_path=member.name,
                 ingest_status="parsed",
                 parser_name="reg2es",
-                parser_version="2.0.0",
+                parser_version=REG2ES_VERSION,
             )
         register_registry_dataset(
             db,
@@ -265,7 +337,7 @@ def test_unattributed_source_replacement_supersedes_same_member_path(
             [new_source, str(primary.resolve())],
         )
 
-        assert normalize_registry(case, db, source_keys=[new_source[:12]]) == 1
+        assert normalize_registry(case, db, source_keys=[new_source]) == 1
         assert db.execute("SELECT COUNT(*) FROM registry_datasets").fetchone()[0] == 1
         assert (
             db.execute("SELECT dataset_id FROM registry_datasets").fetchone()[0]

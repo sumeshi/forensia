@@ -107,17 +107,40 @@ class TestCanonicalReportMetrics(unittest.TestCase):
                 db.execute(
                     "INSERT INTO evtx_events (evidence_id, event_id, computer) VALUES ('evtx-4624', 4624, 'informant-PC')"
                 )
-                db.execute("INSERT INTO mft_entries (evidence_id) VALUES ('mft-1'), ('mft-2')")
-                db.execute("INSERT INTO prefetch_executions (evidence_id) VALUES ('pf-1')")
+                db.execute(
+                    "INSERT INTO mft_entries (evidence_id) VALUES ('mft-1'), ('mft-2')"
+                )
+                db.execute(
+                    "INSERT INTO prefetch_executions (evidence_id) VALUES ('pf-1')"
+                )
+                db.execute(
+                    "INSERT INTO registry_artifacts (artifact_id) VALUES ('registry-1')"
+                )
+                db.execute(
+                    "INSERT INTO evidence_sources "
+                    "(source_id, artifact_family, ingest_status, row_count) "
+                    "VALUES ('registry-source', 'registry', 'normalized', 1)"
+                )
 
                 metrics = query_case_metrics(db)
                 count_rows = _count_table(db)
 
         self.assertEqual(15, metrics["semantic_event_counts"]["4648"])
         self.assertEqual(2, metrics["normalized_host_count"])
-        self.assertEqual({"evtx": 16, "mft": 2, "prefetch": 1}, metrics["artifact_row_counts"])
+        self.assertEqual(
+            {"evtx": 16, "mft": 2, "prefetch": 1, "registry": 1},
+            metrics["artifact_row_counts"],
+        )
         self.assertEqual(15, metrics["event_counts"]["4648"])
-        self.assertEqual(2, next(row["value"] for row in count_rows if row["metric"] == "Hosts"))
+        self.assertEqual(
+            2, next(row["value"] for row in count_rows if row["metric"] == "Hosts")
+        )
+        registry = next(
+            row for row in count_rows if row["metric"] == "Registry artifacts"
+        )
+        self.assertEqual(1, registry["value"])
+        self.assertIn("registry_artifacts", registry["scope"])
+        self.assertIn("source rows=1", registry["scope"])
         informant = next(
             row for row in metrics["hosts"] if row["canonical"] == "INFORMANT-PC"
         )
@@ -129,11 +152,15 @@ class TestCanonicalReportMetrics(unittest.TestCase):
             with CaseDB(case) as db:
                 db.execute(
                     "INSERT INTO evtx_events (evidence_id, event_id, channel, raw_json) VALUES ('security-4648', 4648, 'Security', ?)",
-                    ('{"winlog":{"channel":"Security","provider":{"name":"Microsoft-Windows-Security-Auditing"}}}',),
+                    (
+                        '{"winlog":{"channel":"Security","provider":{"name":"Microsoft-Windows-Security-Auditing"}}}',
+                    ),
                 )
                 db.execute(
                     "INSERT INTO evtx_events (evidence_id, event_id, channel, raw_json) VALUES ('other-4648', 4648, 'Application', ?)",
-                    ('{"winlog":{"channel":"Application","provider":{"name":"Other-Provider"}}}',),
+                    (
+                        '{"winlog":{"channel":"Application","provider":{"name":"Other-Provider"}}}',
+                    ),
                 )
                 metrics = query_case_metrics(db)
 
@@ -217,7 +244,7 @@ class TestActionPlanIsClientFacing(unittest.TestCase):
                     finding_id="windows-security-4648-logon-explicit-creds-0001",
                     rule_id="windows-security-4648-logon-explicit-creds",
                     title="Logon attempt with explicit credentials (4648): HOST-A$ -> HOST-A$",
-                    tags=["benign-context:loopback-local-auth"],
+                    tags=["benign-context:loopback-source"],
                     evidence=[{"evidence_id": "evtx-1", "computer": "HOST-A"}],
                 )
                 rows = build_recommendations_table(db)
@@ -355,6 +382,16 @@ class TestLocalMachineAccount4648Demotion(unittest.TestCase):
                                 "subject_user": "HOST-A$",
                                 "src_ip": "127.0.0.1",
                                 "event_id": "4648",
+                                "channel": "Security",
+                                "raw_json": json.dumps(
+                                    {
+                                        "winlog": {
+                                            "provider": {
+                                                "name": "Microsoft-Windows-Security-Auditing"
+                                            }
+                                        }
+                                    }
+                                ),
                                 "target_user": "informant",
                             }
                         ],
@@ -374,6 +411,16 @@ class TestLocalMachineAccount4648Demotion(unittest.TestCase):
                             "target_user": "informant",
                             "src_ip": "10.0.0.5",
                             "event_id": "4648",
+                            "channel": "Security",
+                            "raw_json": json.dumps(
+                                {
+                                    "winlog": {
+                                        "provider": {
+                                            "name": "Microsoft-Windows-Security-Auditing"
+                                        }
+                                    }
+                                }
+                            ),
                         }
                     ],
                 )
@@ -404,12 +451,8 @@ class TestLocalMachineAccount4648Demotion(unittest.TestCase):
             1,
         )
 
-    def test_benign_4648_demoted_when_evidence_lacks_event_id(self) -> None:
-        """H-1: the 2026-07-05 run's failure — 4648 rule queries filter on
-        event_id but do not SELECT it, so finding evidence carries no
-        event_id. The benign predicate must still fire (using the finding's
-        auth-scoped rule_id/title) and demote the loopback finding below a
-        genuine non-benign high finding."""
+    def test_missing_event_context_does_not_demote_from_finding_title(self) -> None:
+        """A finding title cannot establish a known event meaning without context."""
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
             with CaseDB(case) as db:
@@ -448,11 +491,7 @@ class TestLocalMachineAccount4648Demotion(unittest.TestCase):
         titles = [item["title"] for item in top_findings]
         eraser_idx = titles.index("Anti-forensic tool detected: ERASER.EXE")
         benign_idx = next(i for i, t in enumerate(titles) if "INFORMANT-PC$" in t)
-        self.assertLess(
-            eraser_idx,
-            benign_idx,
-            "anti-forensic finding must rank above benign loopback 4648",
-        )
+        self.assertLess(benign_idx, eraser_idx)
 
 
 class TestTopFindingsRankingIsCaseAgnostic(unittest.TestCase):

@@ -1,6 +1,0 @@
-name: windows-basic
-rulepacks:
-  - windows
-  - registry
-  - prefetch
-  - filesystem

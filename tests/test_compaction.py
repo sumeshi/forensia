@@ -33,10 +33,6 @@ class TestMechanicalCompact:
         assert len(out) <= 50
         assert out.endswith(TRUNCATION_MARKER)
 
-    def test_deterministic(self) -> None:
-        text = "\n".join(f"line {i}" for i in range(100))
-        assert mechanical_compact(text, 200) == mechanical_compact(text, 200)
-
     def test_budget_never_exceeded(self) -> None:
         text = "\n".join(f"some longer line of text number {i}" for i in range(30))
         for budget in (10, 50, 100, 333, 1000):

@@ -60,7 +60,10 @@ def query_case_metrics(db: CaseDB) -> dict[str, Any]:
             WITH contextual AS (
               SELECT event_id,
                      LOWER(COALESCE(channel, json_extract_string(raw_json, '$.winlog.channel'), '')) AS channel,
-                     LOWER(COALESCE(json_extract_string(raw_json, '$.winlog.provider.name'), '')) AS provider
+                     LOWER(CAST(
+                       json_extract_string(raw_json, '$.winlog.provider.name')
+                       AS VARCHAR
+                     )) AS provider
               FROM evtx_events
               WHERE event_id IN ({placeholders})
             )
@@ -127,26 +130,23 @@ def query_case_metrics(db: CaseDB) -> dict[str, Any]:
         ("evtx", "evtx_events"),
         ("mft", "mft_entries"),
         ("prefetch", "prefetch_executions"),
+        ("registry", "registry_artifacts"),
     ):
         row = db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
         artifact_counts[family] = int(row[0] or 0) if row else 0
 
+    source_rows = fetch_records(
+        db,
+        """
+        SELECT artifact_family, COUNT(*) AS source_count,
+               SUM(COALESCE(row_count, 0)) AS source_rows,
+               STRING_AGG(DISTINCT COALESCE(ingest_status, 'unknown'), ', ' ORDER BY COALESCE(ingest_status, 'unknown')) AS statuses
+        FROM evidence_sources
+        GROUP BY artifact_family
+        ORDER BY artifact_family
+        """,
+    )
     source_coverage: list[dict[str, Any]] = []
-    try:
-        source_rows = fetch_records(
-            db,
-            """
-            SELECT artifact_family, COUNT(*) AS source_count,
-                   SUM(COALESCE(row_count, 0)) AS source_rows,
-                   STRING_AGG(DISTINCT COALESCE(ingest_status, 'unknown'), ', ' ORDER BY COALESCE(ingest_status, 'unknown')) AS statuses
-            FROM evidence_sources
-            GROUP BY artifact_family
-            ORDER BY artifact_family
-            """,
-        )
-    except Exception:
-        # Older in-memory test databases may only contain normalized tables.
-        source_rows = []
     for row in source_rows:
         source_coverage.append(
             {

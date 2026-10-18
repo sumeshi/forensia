@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import re
-from datetime import datetime
 from functools import lru_cache
 from typing import Any
 
@@ -18,7 +16,6 @@ from forensia.knowledge.catalog import (
 )
 from forensia.report.answers.answer_store import (
     _catalog_path_patterns,
-    _dedupe_dict_rows,
     _like_sql,
     _lower_blob,
     _structured_answer,
@@ -48,7 +45,12 @@ def _browser_name_for_row(row: dict[str, Any]) -> str:
 
 
 def _build_browser_usage(
-    case: Case, db: CaseDB, answer_id: str, section_key: str, block_heading: str
+    case: Case,
+    db: CaseDB,
+    answer_id: str,
+    section_key: str,
+    block_heading: str,
+    question_text: str,
 ) -> dict[str, Any]:
     browser_exe_sql = exe_glob_sql(
         "executable_name", catalog_exe_globs("browser_artifacts")
@@ -191,139 +193,20 @@ def _build_browser_usage(
     )
 
 
-def _recent_lnk_base_name(file_name: Any) -> str:
-    text = _text(file_name)
-    if text.lower().endswith(".lnk"):
-        text = text[:-4]
-    return text.strip()
-
-
-def _recent_lnk_tokens(file_name: Any) -> set[str]:
-    base = _recent_lnk_base_name(file_name).lower()
-    base = re.sub(r"\.[a-z0-9]{1,8}$", "", base)
-    tokens = {token for token in re.split(r"[^a-z0-9]+", base) if len(token) >= 3}
-    return tokens - {"lnk", "desktop", "templates", "drive"}
-
-
-def _row_time_text(row: dict[str, Any]) -> str:
-    for key in ("fn_created", "si_created", "fn_modified", "si_modified"):
-        value = _text(row.get(key))
-        if value:
-            return value
-    return ""
-
-
-def _parse_iso_datetime(value: Any) -> datetime | None:
-    text = _text(value)
-    if not text:
-        return None
-    try:
-        return datetime.fromisoformat(text.replace("Z", "+00:00")).replace(tzinfo=None)
-    except ValueError:
-        return None
-
-
-def _infer_recent_lnk_rename_candidates(
-    rows: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    candidates: list[dict[str, Any]] = []
-    for left_index, left in enumerate(rows):
-        left_tokens = _recent_lnk_tokens(left.get("file_name"))
-        left_time = _parse_iso_datetime(_row_time_text(left))
-        if not left_tokens or left_time is None:
-            continue
-        for right in rows[left_index + 1 :]:
-            right_tokens = _recent_lnk_tokens(right.get("file_name"))
-            right_time = _parse_iso_datetime(_row_time_text(right))
-            if not right_tokens or right_time is None:
-                continue
-            delta_s = abs((right_time - left_time).total_seconds())
-            if delta_s > 120:
-                continue
-            # Recent-file aliases do not necessarily retain a common token or
-            # preserve the source filename's length. Temporal proximity alone
-            # is sufficient to retain a candidate; the result remains
-            # candidate_only and is never presented as authoritative.
-            shorter, longer = left, right
-            candidates.append(
-                {
-                    "original_name": _recent_lnk_base_name(shorter.get("file_name")),
-                    "new_name": _recent_lnk_base_name(longer.get("file_name")),
-                    "timestamp": max(_row_time_text(left), _row_time_text(right)),
-                    "basis": "Windows Recent LNK files created/modified within 120 seconds with overlapping filename tokens",
-                    "source_paths": [
-                        _text(shorter.get("file_path")),
-                        _text(longer.get("file_path")),
-                    ],
-                    "evidence_ids": [
-                        _text(shorter.get("evidence_id")),
-                        _text(longer.get("evidence_id")),
-                    ],
-                }
-            )
-    deduped = _dedupe_dict_rows(candidates, ("original_name", "new_name", "timestamp"))
-    return sorted(
-        deduped, key=lambda row: str(row.get("timestamp") or ""), reverse=True
-    )[:50]
-
-
 def _build_desktop_rename_candidates(
-    case: Case, db: CaseDB, answer_id: str, section_key: str, block_heading: str
+    case: Case,
+    db: CaseDB,
+    answer_id: str,
+    section_key: str,
+    block_heading: str,
+    question_text: str,
 ) -> dict[str, Any]:
-    rows = _structured_rows(
-        db,
-        """
-        SELECT
-            json_extract_string(raw_json, '$.fn_filename') AS original_name,
-            file_name AS new_name,
-            file_path,
-            si_modified,
-            fn_modified,
-            evidence_id
-        FROM mft_entries
-        WHERE (
-            LOWER(COALESCE(file_path, '')) LIKE '%/desktop/%'
-            OR LOWER(COALESCE(file_path, '')) LIKE '%\\desktop\\%'
-        )
-          AND json_extract_string(raw_json, '$.fn_filename') IS NOT NULL
-          AND json_extract_string(raw_json, '$.fn_filename') != file_name
-        ORDER BY COALESCE(fn_modified, si_modified) DESC NULLS LAST, file_path
-        LIMIT 100
-        """,
-    )
-    queries_run = ["structured:desktop_rename_candidates:mft_filename_pairs"]
-    if not rows:
-        recent_rows = _structured_rows(
-            db,
-            """
-            SELECT
-                file_name,
-                file_path,
-                si_created,
-                si_modified,
-                fn_created,
-                fn_modified,
-                evidence_id
-            FROM mft_entries
-            WHERE (
-                LOWER(COALESCE(file_path, '')) LIKE '%/windows/recent/%'
-                OR LOWER(COALESCE(file_path, '')) LIKE '%\\windows\\recent\\%'
-            )
-              AND LOWER(COALESCE(file_name, '')) LIKE '%.lnk'
-            ORDER BY COALESCE(fn_created, si_created, fn_modified, si_modified) DESC NULLS LAST, file_name
-            LIMIT 500
-            """,
-        )
-        rows = _infer_recent_lnk_rename_candidates(recent_rows)
-        queries_run.append(
-            "structured:desktop_rename_candidates:recent_lnk_temporal_alias_pairs"
-        )
     return _structured_answer(
         case,
         answer_id=answer_id,
         section_key=section_key,
         block_heading=block_heading,
-        rows=rows,
+        rows=[],
         columns=[
             "original_name",
             "new_name",
@@ -332,20 +215,10 @@ def _build_desktop_rename_candidates(
             "source_paths",
             "evidence_ids",
         ],
-        queries_run=queries_run,
-        # R7-07: Recent LNK temporal proximity is not actual rename evidence.
-        # Mark as candidate_only to distinguish from confirmed renames.
-        status="candidate_only"
-        if rows
-        and "structured:desktop_rename_candidates:recent_lnk_temporal_alias_pairs"
-        in queries_run
-        else ("partial" if rows else "not_found"),
-        missing_reason=[]
-        if not rows
-        else [
-            "MFT filename-pair evidence was not available; returned Recent LNK temporal alias candidates. "
-            "These are candidate associations based on temporal proximity, not confirmed renames."
-        ],
+        queries_run=[],
+        status="unobservable",
+        missing_reason=["No authoritative file rename evidence source is available."],
+        source="structured",
     )
 
 
@@ -361,7 +234,12 @@ def _cloud_markers() -> dict[str, tuple[str, ...]]:
 
 
 def _build_cloud_service_traces(
-    case: Case, db: CaseDB, answer_id: str, section_key: str, block_heading: str
+    case: Case,
+    db: CaseDB,
+    answer_id: str,
+    section_key: str,
+    block_heading: str,
+    question_text: str,
 ) -> dict[str, Any]:
     cloud_path_sql = _like_sql(
         "file_path", _catalog_path_patterns("cloud_sync_artifacts")
@@ -478,7 +356,12 @@ def _build_cloud_service_traces(
 
 
 def _build_antiforensic_activity(
-    case: Case, db: CaseDB, answer_id: str, section_key: str, block_heading: str
+    case: Case,
+    db: CaseDB,
+    answer_id: str,
+    section_key: str,
+    block_heading: str,
+    question_text: str,
 ) -> dict[str, Any]:
     tool_globs = catalog_exe_globs("antiforensic_tools")
     tool_exe_sql = exe_glob_sql("executable_name", tool_globs)

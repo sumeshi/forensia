@@ -1,4 +1,0 @@
-id: filesystem
-title: Filesystem (MFT) suspicious path and timeline detection
-applies_when:
-  artifact_families: [mft_filesystem]

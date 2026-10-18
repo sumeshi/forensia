@@ -1,0 +1,15 @@
+id: prefetch-offensive-tool
+title: "Prefetch execution record for a listed dual-use utility"
+severity: "medium"
+confidence: 0.7
+required_fields:
+- executable_name
+- last_exec_time
+tags:
+- prefetch
+- execution
+- dual-use-tool
+finding:
+  title: "Prefetch execution record: {executable_name}"
+  summary: "Prefetch records execution history for {executable_name} (last run: {last_exec_time}, count: {exec_count}). The utility appears in an offensive or dual-use tool list; this record does not establish how it was used."
+query: "SELECT\n    evidence_id,\n    executable_name,\n    exec_count,\n    last_exec_time,\n    source_file\nFROM prefetch_executions\nWHERE ({{catalog_exe_sql:offensive_tools:executable_name}})\nORDER BY last_exec_time DESC\n"

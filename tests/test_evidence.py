@@ -1,50 +1,32 @@
-"""Contract tests for stable evidence identifier formats."""
+"""Prefetch evidence identifiers bind a record key to its complete source hash."""
 
 from __future__ import annotations
 
 import unittest
 
-from forensia.core.evidence import (
-    make_evtx_evidence_id,
-    make_mft_evidence_id,
-    make_prefetch_evidence_id,
-)
+from forensia.core.evidence import make_prefetch_evidence_id
+
+SOURCE_A = "a" * 64
+SOURCE_B = "b" * 64
 
 
 class EvidenceIdTests(unittest.TestCase):
-    def test_evtx_ids_normalize_channels_and_pad_records(self) -> None:
-        cases = (
-            (("Security", 12345), "evtx-security-000000012345"),
-            (("Windows PowerShell", 1), "evtx-windows-powershell-000000000001"),
-            (("AppLocker/EXE", 999), "evtx-applocker-exe-000000000999"),
-            (("café", 7), "evtx-café-000000000007"),
-            (("System", 0), "evtx-system-000000000000"),
-            (("Security", 999999999999), "evtx-security-999999999999"),
+    def test_prefetch_identity_uses_full_source_and_normalized_record_key(self) -> None:
+        first = make_prefetch_evidence_id(SOURCE_A, "CMD.EXE", "A1B2C3D4")
+        self.assertEqual(f"prefetch-{SOURCE_A}-cmd-exe-a1b2c3d4", first)
+        self.assertEqual(
+            first, make_prefetch_evidence_id(SOURCE_A, "cmd.exe", "a1b2c3d4")
         )
-        for args, expected in cases:
-            with self.subTest(args=args):
-                self.assertEqual(expected, make_evtx_evidence_id(*args))
+        self.assertNotEqual(
+            first, make_prefetch_evidence_id(SOURCE_B, "CMD.EXE", "A1B2C3D4")
+        )
 
-    def test_mft_ids_pad_record_and_sequence_components(self) -> None:
-        cases = (
-            ((12345, 3), "mft-000000012345-03"),
-            ((0, 0), "mft-000000000000-00"),
-            ((999999999999, 99), "mft-999999999999-99"),
-            ((1, 5), "mft-000000000001-05"),
-            ((1, 100), "mft-000000000001-100"),
-        )
-        for args, expected in cases:
-            with self.subTest(args=args):
-                self.assertEqual(expected, make_mft_evidence_id(*args))
+    def test_source_identity_must_be_a_full_sha256(self) -> None:
+        for invalid in ("a" * 12, "z" * 64, ""):
+            with self.subTest(invalid=invalid):
+                with self.assertRaises(ValueError):
+                    make_prefetch_evidence_id(invalid, "app.exe", "abc123")
 
-    def test_prefetch_ids_normalize_names_and_hash_case(self) -> None:
-        cases = (
-            (("CMD.EXE", "A1B2C3D4"), "prefetch-cmd-exe-a1b2c3d4"),
-            (("my app.exe", "DEADBEEF"), "prefetch-my-app-exe-deadbeef"),
-            (("setup(v1).exe", "1234"), "prefetch-setup-v1--exe-1234"),
-            (("foo.exe", "abcd1234"), "prefetch-foo-exe-abcd1234"),
-            (("", "hash"), "prefetch--hash"),
-        )
-        for args, expected in cases:
-            with self.subTest(args=args):
-                self.assertEqual(expected, make_prefetch_evidence_id(*args))
+
+if __name__ == "__main__":
+    unittest.main()

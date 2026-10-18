@@ -10,19 +10,19 @@ from __future__ import annotations
 from importlib.resources import files
 from pathlib import Path
 
-_REPORT_ROOT = files("forensia.report")
+_DATA_ROOT = files("forensia").joinpath("data")
 
 
 def report_templates_dir() -> Path:
     """Directory containing the packaged Markdown section templates."""
-    return Path(_REPORT_ROOT.joinpath("templates"))
+    return Path(_DATA_ROOT.joinpath("report"))
 
 
 def report_formats_path() -> Path:
     """Packaged report wording/format policy (`_formats/report.yaml`)."""
-    return Path(_REPORT_ROOT.joinpath("templates", "_formats", "report.yaml"))
+    return Path(_DATA_ROOT.joinpath("report", "_formats", "report.yaml"))
 
 
 def render_templates_dir() -> Path:
     """Directory containing the Jinja templates for the HTML report page."""
-    return Path(_REPORT_ROOT.joinpath("render", "templates"))
+    return Path(_DATA_ROOT.joinpath("render"))

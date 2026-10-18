@@ -9,14 +9,21 @@ from __future__ import annotations
 import json
 import logging
 import re
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
+from decimal import Decimal, InvalidOperation
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 import yaml
 
+from forensia.core.verification import VerificationSpec
 from forensia.db.database import CaseDB
-from forensia.evidence.timestamp_policy import TimestampPolicy
+from forensia.evidence.timestamp_policy import (
+    TimestampPolicy,
+    load_artifact_capabilities_config,
+    timestamp_year_range_sql,
+)
 from forensia.knowledge.resources import schema_dir
 
 logger = logging.getLogger(__name__)
@@ -27,20 +34,6 @@ _TIMESTAMP_TABLES = {
     "mft": ("mft_timeline", "timestamp"),
     "prefetch": ("prefetch_timeline", "exec_time"),
 }
-
-
-def _source_file_values(db: CaseDB, source_ids: list[str]) -> list[str]:
-    """Return current stable IDs plus paths used by legacy normalized rows."""
-    if not source_ids:
-        return []
-    placeholders = ", ".join("?" for _ in source_ids)
-    legacy_paths = db.execute(
-        f"SELECT path FROM ingested_files WHERE sha256 IN ({placeholders})",
-        source_ids,
-    ).fetchall()
-    return list(
-        dict.fromkeys([*source_ids, *(str(row[0]) for row in legacy_paths if row[0])])
-    )
 
 
 def _case_evidence_window(
@@ -80,18 +73,14 @@ def _timestamp_stats(
     if table_spec is None or not source_ids:
         return None, None, {}
     table, column = table_spec
-    source_values = _source_file_values(db, source_ids)
-    placeholders = ", ".join("?" for _ in source_values)
+    placeholders = ", ".join("?" for _ in source_ids)
 
-    absolute = (
-        f"EXTRACT(year FROM {column}) BETWEEN "
-        f"{policy.minimum_year} AND {policy.maximum_year}"
-    )
+    absolute = timestamp_year_range_sql(column, policy)
     eligible = absolute
     select_params: list[Any] = []
     outside_expression = "0"
     if evidence_window is not None:
-        margin = timedelta(days=policy.case_window_margin_days)
+        margin = policy.case_window_margin
         lower = evidence_window[0] - margin
         upper = evidence_window[1] + margin
         eligible = f"({absolute}) AND {column} BETWEEN ? AND ?"
@@ -123,7 +112,7 @@ def _timestamp_stats(
         FROM {table}
         WHERE source_file IN ({placeholders})
         """,
-        [*select_params, *source_values],
+        [*select_params, *source_ids],
     ).fetchone()
     if row is None:
         return None, None, {}
@@ -143,22 +132,318 @@ def _timestamp_stats(
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
-    """Load a YAML file and return its contents."""
+    """Load a required YAML mapping and report its path on contract errors."""
+    if not path.is_file():
+        raise FileNotFoundError(f"required policy file is missing: {path}")
     with open(path, encoding="utf-8") as f:
-        return yaml.safe_load(f) or {}
+        value = yaml.safe_load(f)
+    if not isinstance(value, dict):
+        actual_type = "null" if value is None else type(value).__name__
+        raise TypeError(
+            f"required policy file must contain a YAML mapping: {path} "
+            f"(got {actual_type})"
+        )
+    return value
 
 
 def load_artifact_capabilities() -> dict[str, Any]:
-    """Load artifact capability declarations from _schema/artifact_capabilities.yaml."""
-    path = schema_dir() / "artifact_capabilities.yaml"
-    if not path.exists():
-        logger.warning("artifact_capabilities.yaml not found at %s", path)
-        return {}
-    return _load_yaml(path)
+    """Load artifact capability declarations from data/schema/artifact_capabilities.yaml."""
+    return load_artifact_capabilities_config()
+
+
+@lru_cache(maxsize=1)
+def _declared_boolean_fields() -> dict[str, frozenset[str]]:
+    """Read Boolean columns from the same authoritative DDL as declared_schema."""
+    import duckdb
+
+    from forensia.db.schema import CORE_SCHEMA_SQL
+
+    with duckdb.connect() as conn:
+        conn.execute(CORE_SCHEMA_SQL)
+        rows = conn.execute(
+            "SELECT table_name, column_name FROM information_schema.columns "
+            "WHERE table_schema = 'main' AND data_type = 'BOOLEAN'"
+        ).fetchall()
+    result: dict[str, set[str]] = {}
+    for table, column in rows:
+        result.setdefault(str(table), set()).add(str(column))
+    return {table: frozenset(columns) for table, columns in result.items()}
+
+
+def observation_catalog() -> dict[str, dict[str, list[str]]]:
+    """Return artifact families, capabilities, and normalized observation fields.
+
+    Capability declarations come from the artifact catalog, while fields come
+    only from each family's authoritative record table used by evidence lookup.
+    """
+    from forensia.db.evidence_lookup import canonical_record_table
+    from forensia.db.schema import declared_schema
+
+    catalog = load_artifact_capabilities().get("families", {})
+    schema = declared_schema()
+    boolean_fields = _declared_boolean_fields()
+    metadata_fields = {
+        "artifact_id",
+        "created_at",
+        "dataset_id",
+        "evidence_id",
+        "raw_json",
+        "severity",
+        "source_file",
+        "source_ids",
+        "tags",
+        "timeline_id",
+    }
+    result: dict[str, dict[str, list[str]]] = {}
+    for family, config in sorted(catalog.items()):
+        table = canonical_record_table(str(family))
+        if table is None:
+            continue
+        columns = {
+            column for column in schema.get(table, ()) if column not in metadata_fields
+        }
+        if not columns:
+            continue
+        result[str(family)] = {
+            "capabilities": sorted(
+                str(name) for name in (config.get("capabilities") or {})
+            ),
+            "fields": sorted(columns),
+            "boolean_fields": sorted(columns & boolean_fields.get(table, frozenset())),
+        }
+    return result
+
+
+def observation_condition_error(condition: Any) -> str | None:
+    """Return the admission/evaluation error for one typed observation spec."""
+    if not isinstance(condition, dict) or "observation" not in condition:
+        return "invalid-observation-condition"
+    if set(condition) not in ({"observation"}, {"observation", "min_count"}):
+        return "mixed-verification-condition-kinds"
+    min_count = condition.get("min_count", 1)
+    if not isinstance(min_count, int) or isinstance(min_count, bool) or min_count < 1:
+        return "observation-min-count-invalid"
+    observation = condition["observation"]
+    required = {
+        "family",
+        "capability",
+        "field",
+        "operator",
+        "value",
+    }
+    if not isinstance(observation, dict) or set(observation) not in (
+        required,
+        required | {"evidence_ids"},
+    ):
+        return "invalid-observation-condition"
+    if "evidence_ids" in observation:
+        targets = observation["evidence_ids"]
+        if (
+            not isinstance(targets, list)
+            or not targets
+            or any(not isinstance(value, str) or not value.strip() for value in targets)
+        ):
+            return "observation-target-invalid"
+
+    family, capability, field, operator = (
+        observation.get(key) for key in ("family", "capability", "field", "operator")
+    )
+    if any(
+        not isinstance(value, str) or not value.strip()
+        for value in (family, capability, field, operator)
+    ):
+        return "invalid-observation-condition"
+    family = family.strip().lower()
+    capability = capability.strip()
+    field = field.strip()
+    operator = operator.strip()
+
+    catalog = observation_catalog()
+    if family not in catalog:
+        return "observation-family-unsupported"
+    if capability not in catalog[family]["capabilities"]:
+        return "observation-capability-unsupported"
+    if field not in catalog[family]["fields"]:
+        return "observation-field-unsupported"
+    if operator not in {"equals", "contains", "greater_than"}:
+        return "observation-operator-unsupported"
+
+    expected = observation.get("value")
+    if field in catalog[family]["boolean_fields"]:
+        if operator != "equals":
+            return "observation-operator-value-invalid"
+        if not isinstance(expected, bool):
+            return "observation-value-invalid"
+    elif (
+        expected is None
+        or isinstance(expected, bool)
+        or not isinstance(expected, (str, int, float))
+        or isinstance(expected, str)
+        and not expected.strip()
+        or isinstance(expected, float)
+        and not _finite_observation_decimal(expected)
+    ):
+        return "observation-value-invalid"
+    if operator == "equals" and isinstance(expected, str):
+        try:
+            numeric_text = Decimal(expected)
+        except InvalidOperation:
+            numeric_text = None
+        if numeric_text is not None and not numeric_text.is_finite():
+            return "observation-value-invalid"
+    if operator == "contains" and not isinstance(expected, str):
+        return "observation-operator-value-invalid"
+    if operator == "greater_than":
+        numeric = _finite_observation_decimal(expected)
+        if not numeric:
+            from datetime import datetime
+
+            try:
+                datetime.fromisoformat(str(expected).replace("Z", "+00:00"))
+            except ValueError:
+                return "observation-operator-value-invalid"
+    return None
+
+
+def _finite_observation_decimal(value: Any) -> bool:
+    """Test numeric observation operands without float precision or range loss."""
+    try:
+        return Decimal(str(value)).is_finite()
+    except InvalidOperation:
+        return False
+
+
+def canonical_observation_claim(spec: VerificationSpec | dict[str, Any]) -> str | None:
+    """Render only the narrow observation admitted by the shared catalog."""
+    if isinstance(spec, VerificationSpec):
+        conditions = spec.support_conditions
+    elif isinstance(spec, dict):
+        conditions = spec.get("support_conditions") or {}
+    else:
+        return None
+    if observation_condition_error(conditions):
+        return None
+    observation = conditions["observation"]
+    count = conditions.get("min_count", 1)
+    operator_text = {
+        "equals": "equals",
+        "contains": "contains",
+        "greater_than": "greater than",
+    }[observation["operator"].strip()]
+    try:
+        value = json.dumps(observation["value"], ensure_ascii=False, allow_nan=False)
+    except TypeError, ValueError:
+        return None
+    record = "observation" if count == 1 else "observations"
+    verb = "has" if count == 1 else "have"
+    targets = observation.get("evidence_ids")
+    target_text = (
+        " among " + json.dumps(sorted(set(targets)), ensure_ascii=False)
+        if targets
+        else ""
+    )
+    return (
+        f"At least {count} {observation['family'].strip().lower()} {record}{target_text} {verb} "
+        f"{observation['field'].strip()} {operator_text} {value}."
+    )
+
+
+def observation_claim_scope_error(
+    description: str, spec: VerificationSpec
+) -> str | None:
+    """Validate the derived display and evaluable scope of a typed claim."""
+    if "observation" not in spec.support_conditions:
+        return None
+    error = observation_condition_error(spec.support_conditions)
+    if error:
+        return error
+    if spec.scope or spec.correlation:
+        return "unsupported-observation-scope"
+    if description.strip() != canonical_observation_claim(spec):
+        return "observation-claim-scope-unproven"
+    return None
+
+
+def verification_feasibility_error(
+    db: CaseDB,
+    condition: dict[str, Any],
+    required_entities: list[str] | None = None,
+    family_counts: dict[str, int] | None = None,
+) -> tuple[str, str] | None:
+    """Report verification limits provable from the current canonical rows.
+
+    Typed observations name their artifact family directly. Event-based specs
+    name EVTX through ``co_observed_event_ids`` or ``event_constraints``; their
+    required entities must therefore exist on canonical EVTX records.
+    """
+    observation = condition.get("observation")
+    event_ids = condition.get("co_observed_event_ids") or []
+    event_constraints = condition.get("event_constraints") or {}
+    has_event_query = (
+        isinstance(event_ids, list)
+        and any(str(event_id).strip().isdigit() for event_id in event_ids)
+    ) or (
+        isinstance(event_constraints, dict)
+        and any(str(event_id).strip().isdigit() for event_id in event_constraints)
+    )
+    if isinstance(observation, dict) and not observation_condition_error(condition):
+        family = observation["family"].strip().lower()
+    elif has_event_query:
+        family = "evtx"
+    else:
+        return None
+    from forensia.db.evidence_lookup import canonical_record_table
+
+    table = canonical_record_table(family)
+    if table is None:
+        return None
+    from forensia.db.schema import declared_schema
+
+    family_entities = set(declared_schema()[table])
+    unavailable_entities = sorted(
+        {
+            str(entity).strip()
+            for entity in (required_entities or [])
+            if str(entity).strip() and str(entity).strip() not in family_entities
+        }
+    )
+    if unavailable_entities:
+        return (
+            "required_entity_unobservable",
+            "required entity columns absent from canonical query-family schema: "
+            + ",".join(unavailable_entities),
+        )
+
+    if not isinstance(observation, dict) or observation_condition_error(condition):
+        return None
+
+    id_column = "artifact_id" if family == "registry" else "evidence_id"
+    if family_counts is not None and family in family_counts:
+        available = family_counts[family]
+    else:
+        row = db.execute(f"SELECT COUNT(DISTINCT {id_column}) FROM {table}").fetchone()
+        if row is None or row[0] is None:
+            return None
+        available = int(row[0])
+        if family_counts is not None:
+            family_counts[family] = available
+    required = condition.get("min_count", 1)
+    targets = observation.get("evidence_ids")
+    if targets and required > len(set(targets)):
+        return (
+            "observation_min_count_exceeds_target_count",
+            f"target-count:{len(set(targets))}",
+        )
+    if required > available:
+        return (
+            "observation_min_count_exceeds_current_family_count",
+            f"current-family-count:{available}",
+        )
+    return None
 
 
 def load_evidence_sufficiency_policy() -> dict[str, Any]:
-    """Load evidence sufficiency policy from _schema/evidence_sufficiency.yaml."""
+    """Load evidence sufficiency policy from data/schema/evidence_sufficiency.yaml."""
     path = schema_dir() / "evidence_sufficiency.yaml"
     if not path.exists():
         logger.warning("evidence_sufficiency.yaml not found at %s", path)
@@ -188,13 +473,12 @@ def _check_row_count_invariant(
         for source in sources:
             if source["ingest_status"] not in {"normalized", "empty", "parsed"}:
                 continue
-            # New normalized rows carry the stable SHA source identity.  The
-            # path subquery is retained for legacy case databases.
+            # Normalized rows carry the ingested SHA-256 as their durable
+            # source identity, matching the source_id recorded here.
             try:
                 actual = db.execute(
-                    f"SELECT COUNT(*) FROM {table} WHERE source_file = ? OR source_file IN "
-                    "(SELECT path FROM ingested_files WHERE sha256 = ?)",
-                    [source["source_id"], source["source_id"]],
+                    f"SELECT COUNT(*) FROM {table} WHERE source_file = ?",
+                    [source["source_id"]],
                 ).fetchone()
                 actual_count = int(actual[0] or 0) if actual else 0
                 expected_count = int(source["row_count"] or 0)
@@ -313,9 +597,7 @@ def compute_evidence_coverage(db: CaseDB) -> list[dict[str, Any]]:
                 if s["ingest_status"] in ("normalized", "parsed")
             ]
             failed = [
-                s
-                for s in scoped_sources
-                if s["ingest_status"] in {"failed", "partial"}
+                s for s in scoped_sources if s["ingest_status"] in {"failed", "partial"}
             ]
             empty = [s for s in scoped_sources if s["ingest_status"] == "empty"]
 
@@ -356,16 +638,14 @@ def compute_evidence_coverage(db: CaseDB) -> list[dict[str, Any]]:
             event_ids = [int(item) for item in cap_config.get("event_ids", [])]
             if family == "evtx" and normalized and event_ids and not channel_reason:
                 event_placeholders = ", ".join("?" for _ in event_ids)
-                source_values = _source_file_values(
-                    db, [str(source["source_id"]) for source in normalized]
-                )
-                source_placeholders = ", ".join("?" for _ in source_values)
+                source_ids = [str(source["source_id"]) for source in normalized]
+                source_placeholders = ", ".join("?" for _ in source_ids)
                 event_count = int(
                     db.execute(
                         f"SELECT COUNT(*) FROM evtx_events WHERE lower(channel) = lower(?) "
                         f"AND event_id IN ({event_placeholders}) "
                         f"AND source_file IN ({source_placeholders})",
-                        [required_channel, *event_ids, *source_values],
+                        [required_channel, *event_ids, *source_ids],
                     ).fetchone()[0]
                 )
                 if event_count == 0:
@@ -478,15 +758,136 @@ def get_coverage_summary(db: CaseDB) -> dict[str, Any]:
     return summary
 
 
-def get_capability_for_table(table_name: str) -> list[str]:
-    """Return capability names that use the given table."""
-    capabilities = load_artifact_capabilities()
-    result = []
-    for family_config in capabilities.get("families", {}).values():
-        if table_name in family_config.get("tables", []):
-            for cap_name in family_config.get("capabilities", {}):
-                result.append(cap_name)
-    return result
+def relevant_coverage_states(
+    coverage: dict[str, Any],
+    required_capabilities: list[str] | None,
+    *,
+    source_families: list[str] | None = None,
+) -> dict[str, list[str]] | None:
+    """Return coverage states restricted to the required capabilities.
+
+    Maps "family:capability" summary keys (as produced by
+    ``get_coverage_summary``) back to capability names and collects every
+    matching state, because one capability can be covered by several
+    families.  Capabilities with no matching coverage row map to
+    ``["unknown"]``.
+
+    Returns ``None`` when no required capability was declared: the coverage
+    projection then cannot represent the queried scope at all, and callers
+    must treat the absence as not observable instead of guessing from
+    unrelated families.
+    """
+    capabilities = {
+        str(item).strip() for item in (required_capabilities or []) if str(item).strip()
+    }
+    if not capabilities:
+        return None
+    states: dict[str, list[str]] = {capability: [] for capability in capabilities}
+    for key, value in coverage.items():
+        if (
+            source_families is not None
+            and str(key).split(":", 1)[0] not in source_families
+        ):
+            continue
+        capability = str(key).split(":", 1)[-1]
+        if capability not in states:
+            continue
+        state = value.get("state") if isinstance(value, dict) else None
+        states[capability].append(str(state or "unknown"))
+    for capability, matched in states.items():
+        if not matched:
+            states[capability] = ["unknown"]
+    return states
+
+
+def derive_required_capabilities(
+    required_capabilities: list[str] | None = None,
+    support_conditions: dict[str, Any] | None = None,
+) -> list[str]:
+    """Derive the capabilities a hypothesis needs, with one shared priority.
+
+    This is the single derivation owner for the direct ``hypotheses`` row
+    readers (candidate selection, work state) and sufficiency, so the
+    required capability list cannot diverge between call sites that
+    re-derive it with different inputs.
+
+    Priority: a non-empty declared ``required_capabilities`` list from the
+    canonical VerificationSpec wins outright.  Otherwise the declared support
+    event IDs map through the existing artifact capability catalog.  Only the
+    spec's structured conditions are interpreted; there is no prose
+    fallback that would re-derive different requirements from a description.
+    """
+    declared = sorted(
+        {
+            str(item).strip()
+            for item in (required_capabilities or [])
+            if str(item).strip()
+        }
+    )
+    if declared:
+        return declared
+    inferred: set[str] = set()
+    conditions = support_conditions or {}
+    if conditions:
+        observation = conditions.get("observation")
+        if isinstance(observation, dict):
+            family = str(observation.get("family") or "").strip().lower()
+            capability = str(observation.get("capability") or "").strip()
+            family_config = (
+                load_artifact_capabilities().get("families", {}).get(family, {})
+            )
+            if capability in (family_config.get("capabilities") or {}):
+                return [capability]
+        # Structured event requirements do not need a table-name keyword in
+        # their JSON to identify the capabilities declared for those events.
+        event_ids = {
+            int(value)
+            for value in conditions.get("co_observed_event_ids") or []
+            if str(value).strip().isdigit()
+        }
+        evtx_caps = (
+            load_artifact_capabilities()
+            .get("families", {})
+            .get("evtx", {})
+            .get("capabilities", {})
+        )
+        inferred.update(
+            name
+            for name, config in evtx_caps.items()
+            if event_ids & set(config.get("event_ids") or [])
+        )
+        inferred.update(
+            infer_capabilities(json.dumps(conditions, ensure_ascii=False).lower())
+        )
+    return sorted(inferred)
+
+
+def derive_search_families(
+    required_capabilities: list[str] | None = None,
+    support_conditions: dict[str, Any] | None = None,
+) -> tuple[str, ...]:
+    """Derive bounded artifact families from declared capabilities and typed scope.
+
+    An explicit co-observed event-ID condition identifies the EVTX search family
+    even when the catalog has no capability classification for those IDs.
+    """
+    families: set[str] = set()
+    declarations = load_artifact_capabilities().get("families", {})
+    for capability in required_capabilities or []:
+        for family, config in declarations.items():
+            if capability in (config.get("capabilities") or {}):
+                families.add(str(family))
+    conditions = support_conditions or {}
+    observation = conditions.get("observation")
+    if isinstance(observation, dict):
+        family = str(observation.get("family") or "").strip().lower()
+        if family in declarations:
+            families.add(family)
+    event_ids = conditions.get("co_observed_event_ids") or []
+    if any(str(value).strip().isdigit() for value in event_ids):
+        if "evtx" in declarations:
+            families.add("evtx")
+    return tuple(sorted(families))
 
 
 def infer_capabilities(text: str) -> list[str]:
@@ -514,3 +915,66 @@ def infer_capabilities(text: str) -> list[str]:
         }
         inferred.update(event_matches or capabilities.keys())
     return sorted(inferred)
+
+
+def capability_disclosure_tables(
+    capabilities: list[str] | None,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """VerificationSpec/Coverage ↔ schema/recipe correspondence (V2-08, §10.2).
+
+    The artifact capability catalog (``artifact_capabilities.yaml``) — the same
+    declaration file the Coverage projection and the work judgment read — is
+    the correspondence owner: every capability belongs to one family and each
+    family declares its artifact tables in order.  Selection, stop, and
+    disclosure therefore cannot diverge.
+
+    Returns ``(tables, primary_tables)`` where ``tables`` lists every declared
+    table of the families owning *capabilities*, and ``primary_tables`` keeps
+    the first declared table per involved family (the schema-card selection
+    order).  A capability no family owns contributes nothing — its absence of
+    correspondence stays observable in the disclosure telemetry instead of
+    being silently widened.
+    """
+    declarations = load_artifact_capabilities().get("families", {})
+    tables: dict[str, None] = {}
+    primary_tables: dict[str, None] = {}
+    for capability in capabilities or []:
+        for family_config in declarations.values():
+            if capability not in (family_config.get("capabilities") or {}):
+                continue
+            family_tables = [str(table) for table in family_config.get("tables") or []]
+            for table in family_tables:
+                tables.setdefault(table, None)
+            if family_tables:
+                primary_tables.setdefault(family_tables[0], None)
+    return tuple(tables), tuple(primary_tables)
+
+
+def disclosure_tables_for_spec(spec: Any) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """One Spec (JSON row or ``VerificationSpec`` object) → disclosure tables.
+
+    Unifies the two callers that hold Specs in different shapes (Case State
+    rows and in-session hypothesis objects) through the shared derivation
+    owner, so plan and check prompts disclose from the same correspondence.
+    """
+    if isinstance(spec, dict):
+        conditions = spec.get("support_conditions") or {}
+        declared = spec.get("required_capabilities") or []
+    elif spec is not None and hasattr(spec, "support_conditions"):
+        conditions = spec.support_conditions
+        declared = spec.required_capabilities
+    else:
+        return (), ()
+    capabilities = derive_required_capabilities(list(declared), conditions)
+    tables, primary = capability_disclosure_tables(capabilities)
+    declarations = load_artifact_capabilities().get("families", {})
+    for family in derive_search_families(capabilities, conditions):
+        family_tables = tuple(
+            str(table) for table in declarations[family].get("tables") or []
+        )
+        for table in family_tables:
+            if table not in tables:
+                tables += (table,)
+        if family_tables and family_tables[0] not in primary:
+            primary += (family_tables[0],)
+    return tables, primary

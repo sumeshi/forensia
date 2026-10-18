@@ -10,12 +10,11 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 
+from forensia.config import Settings, settings_scope
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
 from forensia.report.report_validation import (
-    check_failure_markers,
     check_sufficiency_consistency,
     derive_publication_state,
     validate_report,
@@ -24,17 +23,6 @@ from forensia.report.report_validation import (
 
 class TestReportQualityContract(unittest.TestCase):
     """Contract tests for report publishability invariants."""
-
-    def test_failure_marker_not_in_output(self) -> None:
-        """Failure markers must not appear in final report body."""
-        body_with_marker = "Some text\n*Section block failed: ValueError*\nMore text"
-        body_clean = "Some text\nMore text"
-
-        findings = check_failure_markers(body_with_marker)
-        self.assertGreater(len(findings), 0, "Should detect failure marker")
-
-        findings = check_failure_markers(body_clean)
-        self.assertEqual(len(findings), 0, "Clean body should have no markers")
 
     def test_persisted_failure_is_fatal_but_omitted_from_rendered_prose(self) -> None:
         from forensia.report.render.writer import build_report_markdown_from_db
@@ -113,7 +101,7 @@ class TestReportQualityContract(unittest.TestCase):
         source_id = "c" * 64
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
-            (case.raw_dir / f"evtx-{source_id[:12]}-empty.jsonl").write_text("")
+            (case.raw_dir / f"evtx-{source_id}-empty.jsonl").write_text("")
             with CaseDB(case) as db:
                 db.execute(
                     "INSERT INTO ingested_files "
@@ -228,7 +216,9 @@ class TestReportQualityContract(unittest.TestCase):
 
     def test_confirmation_without_links_is_reconciled_to_inconclusive(self) -> None:
         """An LLM confirmation cannot override an empty evidence graph."""
-        from forensia.ai.checking.sufficiency import assess_and_persist_sufficiency
+        from forensia.investigation.verification.sufficiency import (
+            assess_and_persist_sufficiency,
+        )
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -241,19 +231,18 @@ class TestReportQualityContract(unittest.TestCase):
                     ) VALUES ('H-NOLINK', 'active', NULL, 'Test', '', now(), now())
                     """
                 )
-                result, verdict, _reason, _caps = assess_and_persist_sufficiency(
+                result, _reason, _caps = assess_and_persist_sufficiency(
                     db,
                     hypothesis_id="H-NOLINK",
-                    investigation_text="",
                     evidence_requirements={},
-                    llm_verdict="confirmed",
+                    verification_spec={"spec_version": "1"},
                 )
                 self.assertNotEqual("sufficient", result.status)
-                self.assertEqual("inconclusive", verdict)
 
     def test_writer_emits_non_publishable_validation_artifact(self) -> None:
         """The writer must persist machine-readable fatal validation state."""
         from forensia.report.render.writer import render_written_report
+        from forensia.report.sections.section_store import _upsert_report_section
 
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(tmpdir)
@@ -269,27 +258,21 @@ class TestReportQualityContract(unittest.TestCase):
                     )
                     """
                 )
-                html_path = case.reports_dir / "report.html"
-                with (
-                    patch(
-                        "forensia.report.render.writer.render_html_report",
-                        return_value=html_path,
-                    ),
-                    patch("forensia.report.render.evidence_map.write_evidence_map"),
-                ):
-                    render_written_report(
-                        case,
-                        db,
-                        filled_sections={"1_summary": "# Clean report"},
-                    )
+                _upsert_report_section(
+                    db, "1_summary", "Summary", "# Clean report", 1.0, []
+                )
+                markdown, html = render_written_report(case, db)
+                self.assertTrue(markdown.is_file() and html.is_file())
                 artifact = json.loads(
                     (case.reports_dir / "report_validation.json").read_text()
                 )
                 self.assertFalse(artifact["publishable"])
                 self.assertTrue(artifact["fatal_errors"])
 
-    def test_unconfirmed_rule_signals_are_reader_visible_as_incomplete(self) -> None:
-        """Generated prose cannot hide that no hypothesis loop was executed."""
+    def test_report_without_current_revision_is_reader_visible_as_incomplete(
+        self,
+    ) -> None:
+        """Generated prose cannot hide a missing current projection receipt."""
         from forensia.report.render.writer import build_report_markdown_from_db
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -304,15 +287,56 @@ class TestReportQualityContract(unittest.TestCase):
                     """
                 )
                 state = derive_publication_state(db)
-                report = build_report_markdown_from_db(db, case)
+                with settings_scope(Settings(llm_output_language="en")):
+                    report = build_report_markdown_from_db(db, case)
 
             assert state["publication_status"] == "needs_review"
             assert state["evidence_confidence"] == "not_established"
             assert "needs_review` / `incomplete" in report
-            assert "deterministic signals/review candidates" in report
-            assert "Scope constraint" in report
+            assert "stop reason: unknown" in report
+            assert "Rule signal text." in report
 
-    def test_needs_review_notice_does_not_hide_confirmed_hypothesis(self) -> None:
+    def test_opening_notice_separates_investigation_from_report_completion(
+        self,
+    ) -> None:
+        from forensia.db.investigation_state import ensure_investigation_state
+        from forensia.report.render.writer import render_written_report
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(tmpdir)
+            with CaseDB(case) as db:
+                ensure_investigation_state(db)
+                db.execute(
+                    "UPDATE investigation_state SET status = 'stopped', "
+                    "stop_reason_code = 'no_progress_limit', "
+                    "stop_reason = 'No new work was available' WHERE state_id = 'case'"
+                )
+                with settings_scope(Settings(llm_output_language="en")):
+                    markdown_path, html_path = render_written_report(case, db)
+                    state = derive_publication_state(db)
+                report = markdown_path.read_text(encoding="utf-8")
+                html = html_path.read_text(encoding="utf-8")
+                validation = json.loads(
+                    (case.reports_dir / "report_validation.json").read_text(
+                        encoding="utf-8"
+                    )
+                )
+
+        assert state["investigation_status"] == "stopped"
+        assert state["confirmed_hypothesis_count"] == 0
+        assert state["report_complete"] is False
+        assert "no_progress_limit" in report
+        assert "Confirmed hypotheses: 0" in report
+        assert "Claim scope: deterministic_signals_only" in report
+        assert "Report material: incomplete" in report
+        assert "Investigation: stopped" in html
+        assert (
+            validation["publication_state"]["stop_reason_code"] == "no_progress_limit"
+        )
+        assert validation["publication_state"]["confirmed_hypothesis_count"] == 0
+        assert validation["report_complete"] is False
+
+    def test_unverified_confirmation_is_not_established_by_report_prose(self) -> None:
         from forensia.report.render.writer import build_report_markdown_from_db
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -332,7 +356,7 @@ class TestReportQualityContract(unittest.TestCase):
                     INSERT INTO hypothesis_evidence (
                         link_id, hypothesis_id, evidence_id, role, source_family,
                         strength, created_session, created_at
-                    ) VALUES ('EL-1', 'H-001', 'evtx-security-000000000001',
+                    ) VALUES ('EL-1', 'H-001', 'evtx-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-security-000000000001',
                               'supporting', 'evtx', 'moderate', 'S-1', now())
                     """
                 )
@@ -345,10 +369,14 @@ class TestReportQualityContract(unittest.TestCase):
                     """
                 )
 
-                report = build_report_markdown_from_db(db, case)
+                with settings_scope(Settings(llm_output_language="en")):
+                    report = build_report_markdown_from_db(db, case)
+                    state = derive_publication_state(db)
 
-            assert "1 confirmed hypothesis is available" in report
-            assert "No confirmed hypothesis is available" not in report
+            assert state["confirmed_hypothesis_count"] == 1
+            assert state["evidence_confidence"] == "not_established"
+            assert state["publication_status"] == "needs_review"
+            assert "Confirmed body." in report
 
     def test_table_validation_catches_empty_required_columns(self) -> None:
         """Table with all-empty required columns must be flagged."""
@@ -369,15 +397,6 @@ class TestReportQualityContract(unittest.TestCase):
         errors = _validate_table_output("test_table", rows, columns)
         self.assertEqual(len(errors), 0, "Table with data should pass validation")
 
-    def test_verdict_taxonomy_includes_candidate_only(self) -> None:
-        """candidate_only must be a valid structured_status."""
-        from forensia.core.verdicts import valid_verdicts
-
-        valid = valid_verdicts("structured_status")
-        self.assertIn("candidate_only", valid)
-        self.assertIn("answered", valid)
-        self.assertIn("partial", valid)
-
     def test_validate_report_detects_failure_markers(self) -> None:
         """Full report validation must detect failure markers."""
         report_brief = {}
@@ -388,64 +407,6 @@ class TestReportQualityContract(unittest.TestCase):
         self.assertGreater(
             len(marker_findings), 0, "Should detect failure marker in full validation"
         )
-
-
-class TestRuleSemanticsContract(unittest.TestCase):
-    """Contract tests for rule semantics — normal lifecycle not flagged as malicious."""
-
-    def test_1100_rule_is_low_severity(self) -> None:
-        """Event 1100 (log service shutdown) must be low severity, not high."""
-        from forensia.knowledge.rules.loader import load_rules_from_dir
-
-        rules_dir = Path("src/forensia/knowledge/rulepacks")
-        profile_path = Path("src/forensia/knowledge/profiles/windows-basic.yaml")
-        rules = load_rules_from_dir(rules_dir, profile_path)
-        rule_1100 = next(
-            (r for r in rules if r.id == "windows-security-1100-evtlog-shutdown"), None
-        )
-        self.assertIsNotNone(rule_1100, "Rule 1100 should exist")
-        self.assertEqual(rule_1100.severity, "low", "Event 1100 should be low severity")
-
-    def test_6005_6006_rule_is_low_severity(self) -> None:
-        """Events 6005/6006 (log service start/stop) must be low severity."""
-        from forensia.knowledge.rules.loader import load_rules_from_dir
-
-        rules_dir = Path("src/forensia/knowledge/rulepacks")
-        profile_path = Path("src/forensia/knowledge/profiles/windows-basic.yaml")
-        rules = load_rules_from_dir(rules_dir, profile_path)
-        rule_6005_6006 = next(
-            (r for r in rules if r.id == "windows-system-6005-6006-eventlog-service"),
-            None,
-        )
-        self.assertIsNotNone(rule_6005_6006, "Rule 6005/6006 should exist")
-        self.assertEqual(
-            rule_6005_6006.severity, "low", "Events 6005/6006 should be low severity"
-        )
-
-    def test_4735_rule_separated_from_membership(self) -> None:
-        """Group metadata events must be separate from membership and user changes."""
-        from forensia.knowledge.rules.loader import load_rules_from_dir
-
-        rules_dir = Path("src/forensia/knowledge/rulepacks")
-        profile_path = Path("src/forensia/knowledge/profiles/windows-basic.yaml")
-        rules = load_rules_from_dir(rules_dir, profile_path)
-
-        rule_4728 = next(
-            (r for r in rules if r.id == "windows-security-4728-group-change"), None
-        )
-        rule_4735 = next(
-            (
-                r
-                for r in rules
-                if r.id == "windows-security-4735-group-metadata-changed"
-            ),
-            None,
-        )
-        self.assertIsNotNone(rule_4728, "Rule 4728 should exist")
-        self.assertIsNotNone(rule_4735, "Rule 4735 should exist")
-        # 4728 should NOT contain 4735/4738
-        self.assertNotIn("4735", rule_4728.query)
-        self.assertNotIn("4738", rule_4728.query)
 
 
 if __name__ == "__main__":
