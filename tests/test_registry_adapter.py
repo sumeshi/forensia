@@ -114,7 +114,7 @@ def test_reg2es_chunk_generator_is_flattened_and_closed(
     assert closed == [True]
 
 
-def test_reg2es_230_export_keeps_strict_errors_and_native_jsonl(
+def test_reg2es_export_keeps_strict_errors_and_native_jsonl(
     monkeypatch, tmp_path: Path
 ) -> None:
     primary = tmp_path / "SYSTEM"
@@ -157,7 +157,7 @@ def test_reg2es_230_export_keeps_strict_errors_and_native_jsonl(
     monkeypatch.setitem(sys.modules, "reg2es.models", models_module)
     monkeypatch.setitem(sys.modules, "reg2es.models.Reg2es", model_module)
 
-    assert REG2ES_VERSION == "2.3.0"
+    assert REG2ES_VERSION == "2.4.1"
     with pytest.raises(RuntimeError, match="plugin failed"):
         RegistryArtifactAdapter().ingest_dataset(case, dataset, source_ids=source_ids)
 

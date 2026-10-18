@@ -23,12 +23,12 @@ classifiers = [
 ]
 dependencies = [
     "duckdb==1.5.3",
-    "evtx2es==1.12.0",
+    "evtx2es==1.13.0",
     "httpx==0.28.1",
     "jinja2==3.1.6",
-    "mft2es==1.10.0",
-    "prefetch2es==2.6.0",
-    "reg2es==2.3.0",
+    "mft2es==1.11.0",
+    "prefetch2es==2.7.1",
+    "reg2es==2.4.1",
     "pydantic==2.13.4",
     "python-dotenv==1.2.2",
     "pyyaml==6.0.3",

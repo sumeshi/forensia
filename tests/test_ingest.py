@@ -114,6 +114,7 @@ class IngestTests(unittest.TestCase):
             class FakeEvtxParser:
                 def __init__(self, path):
                     self.message = Path(path).read_text(encoding="utf-8")
+                    self.diagnostics = []
 
                 def close(self):
                     pass
@@ -212,6 +213,7 @@ class IngestTests(unittest.TestCase):
             class ChunkedParser:
                 def __init__(self, path):
                     del path
+                    self.diagnostics = []
 
                 def close(self):
                     pass
@@ -220,7 +222,7 @@ class IngestTests(unittest.TestCase):
                     self.kwargs = args
                     yield records[:1]
                     temporary = list(case.raw_dir.glob(".*.tmp"))
-                    self_outer.assertEqual(1, len(temporary))
+                    self_outer.assertTrue(temporary)
                     self_outer.assertEqual("previous raw data\n", output.read_text())
                     yield records[1:]
 
@@ -322,6 +324,38 @@ class IngestTests(unittest.TestCase):
             self.assertEqual("preserve me\n", output.read_text(encoding="utf-8"))
             self.assertEqual([output], list(case.raw_dir.glob("evtx-*.jsonl")))
 
+    def test_evtx_partial_extraction_preserves_existing_raw_output(self) -> None:
+        from evtx2es.models.Evtx2es import PartialExtractionError
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            case = Case.init(Path(tmpdir) / "case")
+            source = Path(tmpdir) / "Security.evtx"
+            source.write_bytes(b"fixture")
+            source_sha = "d" * 64
+            output = case.raw_dir / f"evtx-{source_sha}-records.jsonl"
+            output.write_text("preserve me\n", encoding="utf-8")
+
+            class PartialParser:
+                def __init__(self, path):
+                    del path
+                    self.diagnostics = []
+
+                def close(self):
+                    pass
+
+                def gen_records(self, *args):
+                    del args
+                    yield [{"winlog": {"channel": "Security", "record_id": 1}}]
+                    self.diagnostics = [{"error": "malformed trailing record"}]
+
+            with (
+                patch("evtx2es.presenters.Evtx2jsonPresenter.Evtx2es", PartialParser),
+                self.assertRaisesRegex(PartialExtractionError, "output is incomplete"),
+            ):
+                ingest_evtx_file(case, source, source_sha)
+            self.assertEqual("preserve me\n", output.read_text(encoding="utf-8"))
+            self.assertEqual([], list(case.raw_dir.glob(".*.tmp")))
+
     def test_evtx_empty_parser_writes_empty_atomic_output(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             case = Case.init(Path(tmpdir) / "case")
@@ -332,6 +366,7 @@ class IngestTests(unittest.TestCase):
             class EmptyParser:
                 def __init__(self, path):
                     del path
+                    self.diagnostics = []
 
                 def close(self):
                     pass

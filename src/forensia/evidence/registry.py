@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from forensia.db.database import CaseDB
     from forensia.evidence.artifacts import IngestResult
 
-REG2ES_VERSION = "2.3.0"
+REG2ES_VERSION = "2.4.1"
 _PARSER_CONFIG = {"error_policy": "raise", "primary_only_inputs": True}
 
 
