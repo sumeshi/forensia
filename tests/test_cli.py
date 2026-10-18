@@ -5,6 +5,8 @@ from dataclasses import asdict
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+from rich.text import Text
 from typer.testing import CliRunner
 
 from forensia.cli.app import app
@@ -12,9 +14,10 @@ from forensia.config import Settings
 from forensia.core.case import Case
 
 
-def test_public_cli_includes_rule_setup() -> None:
-    runner = CliRunner()
-    help_text = runner.invoke(app, ["--help"]).output
+@pytest.mark.parametrize("force_color", [None, "1"])
+def test_public_cli_includes_rule_setup(force_color: str | None) -> None:
+    runner = CliRunner(env={"FORCE_COLOR": force_color})
+    help_text = Text.from_ansi(runner.invoke(app, ["--help"]).output).plain
     assert "investigate" in help_text
     assert "attach" in help_text
     assert "setup" in help_text
@@ -22,7 +25,9 @@ def test_public_cli_includes_rule_setup() -> None:
     assert "report" not in help_text
     assert "templates-export" not in help_text
 
-    investigate_help = runner.invoke(app, ["investigate", "--help"]).output
+    investigate_help = Text.from_ansi(
+        runner.invoke(app, ["investigate", "--help"]).output
+    ).plain
     for option in (
         "--out",
         "--background",
