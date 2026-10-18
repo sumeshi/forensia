@@ -210,6 +210,8 @@ $ uv run forensia investigate ./input --out ./CASE001-WINDESKTOP-FOOBAR
 
 See `--help` for other options.
 
+Example [investigation policies](examples/investigation/FORENSIA.md) and [report specifications](examples/investigation/REPORT.md) are included. Pass them with `--system-prompt` and `--template`, respectively.
+
 `setup` downloads a pinned SigmaHQ revision, converts and validates it, and stores the rules locally. The first investigation also runs setup if needed. To use local Sigma YAML instead, pass `--rules ./rules` (a file or directory); `setup --rules ./rules` installs it as the default. Once installed, rule loading needs no network access. Each case retains its adopted rules for subsequent runs.
 
 To start over in the same output location for testing, use `--overwrite`. This deletes the entire case directory and reingests the original artifacts. Keep originals and any configuration documents you want to reuse outside the case directory, and stop the investigation before using it.

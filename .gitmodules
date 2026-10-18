@@ -1,3 +1,0 @@
-[submodule "sigmahq"]
-	path = knowledge/sigmahq
-	url = https://github.com/SigmaHQ/sigma.git

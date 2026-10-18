@@ -51,4 +51,13 @@ memory/
 .serena
 GOAL.md
 GOAL.png
-examples/
+/knowledge/sigmahq/
+
+# Share only the reviewed example inputs; keep local experiments private.
+/examples/**
+!/examples/investigation/
+!/examples/cfreds/
+!/examples/investigation/FORENSIA.md
+!/examples/investigation/REPORT.md
+!/examples/cfreds/FORENSIA.md
+!/examples/cfreds/REPORT.md

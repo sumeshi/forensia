@@ -237,7 +237,7 @@ instructions: 証拠参照を示し、観測と解釈を区別する。
 <!-- mode: table; builder: gaps_unresolved -->
 ```
 
-節のkeyは見出しの順序と文字列から決まります。正規化後に重複する見出しや最初の節より前の本文は受け入れません。利用できるhintは[template_parsing.py](src/forensia/report/sections/template_parsing.py)、実例は[同梱テンプレート](src/forensia/data/report/)を参照してください。`examples/`はGit管理外のローカル入力用ディレクトリで、チェックアウトには含まれません。
+節のkeyは見出しの順序と文字列から決まります。正規化後に重複する見出しや最初の節より前の本文は受け入れません。利用できるhintは[template_parsing.py](src/forensia/report/sections/template_parsing.py)、実例は[同梱テンプレート](src/forensia/data/report/)と[汎用の調査入力例](examples/investigation/)を参照してください。[CFReDS用の入力例](examples/cfreds/)は汎用雛形に評価用の質問を追記したもので、参照解答は含めません。
 
 方針と報告書仕様は、採用した内容とrevisionをTraceへ保存します。明示指定なしの再開では保存済みの内容を使うため、元ファイルを編集しただけで実行中の調査は変わりません。明示的な再採用やsteeringも既存の受付を通し、変更していない方針の節や未解決作業を保持します。詳細は[case_policy.py](src/forensia/investigation/case_policy.py)と[report_input.py](src/forensia/report/sections/report_input.py)が管理します。
 
@@ -305,7 +305,7 @@ uv run forensia investigate ./input --out ./case001 --rules ./local-rules
 
 テストで確認するのは、証拠の保存、検索の制限、判定の一貫性、終了状態などのソフトウェアの契約です。調査が役に立ったかは、実際の証拠と問いを使って別に評価します。狭い観測のconfirmed件数や、構造化回答の`answered`件数を、そのまま正答数としません。
 
-[BENCHMARK.md](BENCHMARK.md)にCFReDSの問いと参照回答を置きます。参照回答や後続の判定を、調査側の方針、Knowledge、報告書入力に混ぜません。比較では入力証拠、コード・モデル・設定、指示、予算を揃え、有用な追加検索、根拠のある結論、見落とし、誤確定、未解決事項とコストを照合します。
+[評価資料](scripts/eval/BENCHMARK.md)にCFReDSの問いと参照回答を置きます。参照回答や後続の判定を、調査側の方針、Knowledge、報告書入力に混ぜません。比較では入力証拠、コード・モデル・設定、指示、予算を揃え、有用な追加検索、根拠のある結論、見落とし、誤確定、未解決事項とコストを照合します。
 
 実行中のケースや元の評価結果を直接変更せず、終了状態を確認して凍結したコピーを使います。[scripts/eval/run.py](scripts/eval/run.py)はCase/Traceを読取り専用で集計します。出力はケース外へ保存してください。
 
