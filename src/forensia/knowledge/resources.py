@@ -6,6 +6,7 @@ of Path(__file__) arithmetic, so the physical layout can change in one place.
 
 from __future__ import annotations
 
+import os
 from importlib.resources import files
 from pathlib import Path
 
@@ -28,10 +29,8 @@ def playbook_dir() -> Path:
 
 
 def sigma_bundle_path() -> Path:
-    """Path to the generated, admitted Sigma executable bundle."""
-    return Path(_DATA_ROOT.joinpath("sigma", "sigma_bundle.json"))
+    """User-installed Sigma rules, separate from the Python distribution."""
+    from importlib.metadata import version
 
-
-def sigma_license_path() -> Path:
-    """Path to the bundled SigmaHQ license and attribution notice."""
-    return Path(_DATA_ROOT.joinpath("sigma", "SIGMA_LICENSE.txt"))
+    root = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share"))
+    return root / "forensia" / "sigma" / version("forensia") / "sigma_bundle.json"

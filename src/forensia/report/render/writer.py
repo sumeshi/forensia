@@ -102,6 +102,35 @@ def _investigation_notice(state: dict[str, object]) -> str:
     )
 
 
+def _rule_attribution(db: CaseDB) -> str:
+    """Keep supplied authors visible even when finding summaries are abbreviated."""
+    rows = db.execute("""
+        SELECT DISTINCT rule_id, title,
+            json_extract_string(evidence, '$[0].sigma_author') AS author,
+            json_extract_string(evidence, '$[0].sigma_source') AS source
+        FROM findings
+        WHERE json_extract_string(evidence, '$[0].sigma_author') IS NOT NULL
+        ORDER BY rule_id, author, source
+    """).fetchall()
+    if not rows:
+        return ""
+    japanese = get_settings().llm_output_language == "ja"
+    heading = "検出ルールの著者・出典" if japanese else "Detection Rule Attribution"
+    columns = "ルール | 著者 | 出典" if japanese else "Rule | Author | Source"
+
+    def cell(value: object) -> str:
+        return (
+            str(value or "—").replace("|", "\\|").replace("\r", " ").replace("\n", " ")
+        )
+
+    lines = [f"## {heading}", "", f"| {columns} |", "| --- | --- | --- |"]
+    lines.extend(
+        f"| {cell(title)} ({cell(rule_id)}) | {cell(author)} | {cell(source)} |"
+        for rule_id, title, author, source in rows
+    )
+    return "\n".join(lines)
+
+
 def build_report_markdown_from_db(db: CaseDB, case: Case | None = None) -> str:
     from forensia.report.report_validation import (
         derive_publication_state,
@@ -120,6 +149,8 @@ def build_report_markdown_from_db(db: CaseDB, case: Case | None = None) -> str:
         rendered = _strip_narrative_status_lines(body)
         ordered.append(rendered)
     notice = _investigation_notice(publication_state)
+    if attribution := _rule_attribution(db):
+        ordered.append(attribution)
     if not ordered:
         if publication_state.get("publication_status") == "needs_review":
             return notice + "\n\n" + _publication_notice(publication_state) + "\n"

@@ -181,6 +181,7 @@ FORENSIAの利用には、取得済みのWindowsアーティファクトと、Op
 $ git clone https://github.com/sumeshi/forensia
 $ cd forensia
 $ uv sync --locked
+$ uv run forensia setup
 $ cp .env.example .env
 ```
 
@@ -204,6 +205,8 @@ $ uv run forensia investigate ./input --out ./CASE001-WINDESKTOP-FOOBAR
 ```
 
 その他のオプションについては、`--help` を参照してください。
+
+`setup`は固定revisionのSigmaHQルールを取得・変換・検証してローカルに保存します。未導入なら初回調査の開始前にも実行します。手元のSigma YAMLを使う場合は`--rules ./rules`でファイルまたはディレクトリを指定し、既定値として導入する場合は`setup --rules ./rules`を使います。導入後のルール読み込みにネット接続は不要です。ケースには採用したルールを保存し、再開時も同じものを使います。
 
 検証のために同じ出力先で最初からやり直す場合は、`--overwrite`を指定します。ケースディレクトリ全体を削除して原本から再取込みするため、原本や再利用する設定文書はケース外へ置き、調査を停止してから実行してください。
 
@@ -252,4 +255,4 @@ FORENSIAは開発中のプロジェクトであり、アーキテクチャやイ
 ## ライセンス
 
 本ソフトウェアは[MIT License](LICENSE)ライセンスの元提供されています。
-同梱するSigma由来のルールには [Detection Rule License 1.1](src/forensia/data/sigma/SIGMA_LICENSE.txt) が適用されます。
+SigmaHQルールは[Detection Rule License 1.1](https://github.com/SigmaHQ/Detection-Rule-License)の条件で別途取得し、報告書には提供されたルールの著者・出典を保持します。`tests/fixtures/sigma/`の上流回帰データはPython配布物から除外し、元のライセンスを保持しています。

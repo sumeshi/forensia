@@ -20,10 +20,14 @@ def _expand_rule_query(rule: Rule) -> Rule:
 
 
 @cache
-def _get_rule_cache() -> dict[str, Rule]:
+def _cached_rule_map(build_id: str) -> dict[str, Rule]:
     """Build the cached mapping of rule ID to executable Rule."""
     rules = load_rules()
     return {rule.id: rule for rule in rules}
+
+
+def _get_rule_cache() -> dict[str, Rule]:
+    return _cached_rule_map(load_sigma_bundle()["build_id"])
 
 
 def load_rule_by_id(rule_id: str) -> Rule | None:
@@ -53,8 +57,7 @@ def load_rules() -> list[Rule]:
 def load_rules_from_dir(directory: str | Path) -> list[Rule]:
     """Load SQL rule declarations from a directory.
 
-    This generic loader remains available for extension directories. Packaged
-    Sigma rules are loaded only from the validated executable bundle.
+    This generic loader remains available for extension directories. Sigma rules are loaded only from the validated executable bundle.
     """
     directory = Path(directory)
     rules: list[Rule] = []

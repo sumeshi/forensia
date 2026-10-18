@@ -263,19 +263,21 @@ event ID、ツール名、証拠種別ごとの意味、編集可能な判定方
 
 SQLルールには`confirm_when`、`refute_when`、`evidence_requirements`を宣言でき、仮説の受付時に既存のVerificationSpecへ変換します。抑制はケースの`allowlist.yaml`でルールIDと証拠行を照合し、Findingや証拠を削除せず適用します。ルールを実行して0件だった状態と、対象telemetryがなく実行しなかった`not_observed`も区別します。
 
-### Sigmaを実行時の外部依存にしない
+### Sigmaを取得・変換してケースへ固定する
 
-SigmaHQの原本とfixtureは[submodule](knowledge/sigmahq/)のrevisionを固定し、開発時に変換・検証して[bundle](src/forensia/data/sigma/sigma_bundle.json)へ同梱します。調査時はこのbundleを使うため、Sigma原本、pySigma、ネットワークは不要です。
+Sigmaルールはwheel・sdistへ同梱しません。`setup`は[setup.py](src/forensia/knowledge/sigma/setup.py)のrevisionとSHA-256で固定したSigmaHQのアーカイブを取得し、既存の変換・検証契約でbundleを作ります。保存先は`$XDG_DATA_HOME/forensia/sigma/<version>/`（未指定時は`~/.local/share/forensia/sigma/<version>/`）です。`investigate`で未導入なら、Runtimeを起動する前に取得・変換を済ませます。失敗時は不完全なbundleを導入せず、ケースを上書きしません。
 
 ```bash
-git submodule update --init knowledge/sigmahq
 uv sync --locked
-uv run python scripts/sigma/build.py
+uv run forensia setup
+uv run forensia investigate ./input --out ./case001 --rules ./local-rules
 ```
 
 変換、SQLの実行検査、fixture検証は別々に記録します。変換できたことは検出の正しさを意味しません。fixtureがない`absent`や対象が異なる`not_applicable`も、fixtureで検証済みとは数えません。原本ルール数とtarget binding数を分け、失敗は理由付きで採用から除外します。
 
-対応付けは[schema.yaml](scripts/sigma/schema.yaml)、変換は[converter.py](scripts/sigma/converter.py)、検証は[validation.py](scripts/sigma/validation.py)を変更します。再生成・再配布では原本のauthor/source参照と[DRL 1.1](src/forensia/data/sigma/SIGMA_LICENSE.txt)を保持します。
+`--rules`はSigma YAMLファイル、ルールディレクトリ、SigmaHQのチェックアウトを受け付け、ネット接続なしで変換・検証します。調査ごとに指定したルールは既定のインストールを変更しません。`setup --rules <path>`はローカルのルールを既定値として導入します。Python APIも`run_investigation(..., rules=<path>)`で同じ入力を受けます。ケースが採用したbundle全体はDuckDBの`trace.investigation_steps`（phase=`sigma-rules`）へ保存し、再開・証拠追加・報告時に使います。キャッシュや元のYAMLの変更を再開へ反映しません。
+
+対応付けは[sigma.yaml](src/forensia/data/schema/sigma.yaml)、変換は[converter.py](src/forensia/knowledge/sigma/converter.py)、検証は[validation.py](src/forensia/knowledge/sigma/validation.py)を変更します。ライセンス通知と原本のauthor/source参照を保持し、報告書へ著者・出典を省略せず投影します。取得したSigmaHQルールには[DRL 1.1](https://github.com/SigmaHQ/Detection-Rule-License)が適用されます。テスト用の上流bundleとライセンスは`tests/fixtures/sigma/`に置き、sdist・wheelから除外します。
 
 ## 実装の配置
 

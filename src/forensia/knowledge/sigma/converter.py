@@ -7,12 +7,9 @@ import re
 from collections.abc import Iterable
 from copy import deepcopy
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 import yaml
-
-from forensia.knowledge.rules.models import FindingTemplate, Rule
 from sigma.conditions import (
     ConditionAND,
     ConditionFieldEqualsValueExpression,
@@ -38,6 +35,9 @@ from sigma.types import (
     SigmaString,
 )
 
+from forensia.knowledge.resources import schema_dir
+from forensia.knowledge.rules.models import FindingTemplate, Rule
+
 _RULE_FIELDS = {
     "title",
     "id",
@@ -60,7 +60,6 @@ _RULE_FIELDS = {
     "regression_tests_path",
     "simulation",
 }
-_SIGMAHQ_SOURCE_URL = "https://github.com/SigmaHQ/sigma"
 _SUPPORTED_MODIFIERS = {
     "SigmaContainsModifier",
     "SigmaStartswithModifier",
@@ -282,9 +281,7 @@ class DuckDBBackend(TextQueryBackend):
 
 
 def _mapping() -> dict[str, Any]:
-    return yaml.safe_load(
-        Path(__file__).with_name("schema.yaml").read_text(encoding="utf-8")
-    )
+    return yaml.safe_load((schema_dir() / "sigma.yaml").read_text(encoding="utf-8"))
 
 
 def _windows_pipelines() -> tuple[ProcessingPipeline, ProcessingPipeline]:
@@ -554,7 +551,11 @@ def _target_pipelines(
 
 
 def _compile_target(
-    data: dict[str, Any], target: dict[str, Any], mapping: dict[str, Any]
+    data: dict[str, Any],
+    target: dict[str, Any],
+    mapping: dict[str, Any],
+    *,
+    source_uri: str = "",
 ) -> SigmaTargetCompilation:
     sigma_id = str(data.get("id") or "")
     target_key = str(target.get("key") or target.get("service") or "windows")
@@ -701,14 +702,14 @@ def _compile_target(
                 "event_id IN (" + ", ".join(map(str, sorted(event_ids))) + ")"
             )
         description = sigma.description or sigma.title
-        author = str(sigma.author or "SigmaHQ contributors")
+        author = str(sigma.author or "not supplied")
         query = (
             "SELECT evidence_id, source_file, timestamp, channel, event_id, computer, "
             "target_user, subject_user, src_ip, process_name, command_line, service_name, "
             f"{_literal(sigma.title)} AS sigma_title, "
             f"{_literal(description)} AS sigma_description, "
             f"{_literal(author)} AS sigma_author, "
-            f"{_literal(_SIGMAHQ_SOURCE_URL)} AS sigma_source FROM evtx_events WHERE "
+            f"{_literal(source_uri)} AS sigma_source FROM evtx_events WHERE "
             + " AND ".join(filters)
             + f" AND ({predicates[0]}) ORDER BY timestamp NULLS LAST, evidence_id"
         )
@@ -724,7 +725,7 @@ def _compile_target(
                 title="{sigma_title}",
                 summary=(
                     "{sigma_description} Rule match is an investigative lead; validate intent and context. "
-                    "Author: {sigma_author}. SigmaHQ source: {sigma_source}."
+                    "Author: {sigma_author}. Source: {sigma_source}."
                 ),
             ),
             tags=[str(tag) for tag in sigma.tags],
@@ -770,7 +771,9 @@ def _compile_target(
         )
 
 
-def compile_sigma_targets(data: dict[str, Any]) -> list[SigmaTargetCompilation]:
+def compile_sigma_targets(
+    data: dict[str, Any], *, source_uri: str = ""
+) -> list[SigmaTargetCompilation]:
     """Compile every candidate telemetry target independently."""
     mapping = _mapping()
     try:
@@ -791,4 +794,7 @@ def compile_sigma_targets(data: dict[str, Any]) -> list[SigmaTargetCompilation]:
                 str(exc),
             )
         ]
-    return [_compile_target(data, target, mapping) for target in targets]
+    return [
+        _compile_target(data, target, mapping, source_uri=source_uri)
+        for target in targets
+    ]

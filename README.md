@@ -177,6 +177,7 @@ The development environment uses Python 3.14 or later and [uv](https://docs.astr
 $ git clone https://github.com/sumeshi/forensia
 $ cd forensia
 $ uv sync --locked
+$ uv run forensia setup
 $ cp .env.example .env
 ```
 
@@ -200,6 +201,8 @@ $ uv run forensia investigate ./input --out ./CASE001-WINDESKTOP-FOOBAR
 ```
 
 See `--help` for other options.
+
+`setup` downloads a pinned SigmaHQ revision, converts and validates it, and stores the rules locally. The first investigation also runs setup if needed. To use local Sigma YAML instead, pass `--rules ./rules` (a file or directory); `setup --rules ./rules` installs it as the default. Once installed, rule loading needs no network access. Each case retains its adopted rules for subsequent runs.
 
 To start over in the same output location for testing, use `--overwrite`. This deletes the entire case directory and reingests the original artifacts. Keep originals and any configuration documents you want to reuse outside the case directory, and stop the investigation before using it.
 
@@ -244,4 +247,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) (currently in Japanese) for the implement
 ## License
 
 The software is available under the [MIT License](LICENSE).
-Bundled rules derived from Sigma are covered by the [Detection Rule License 1.1](src/forensia/data/sigma/SIGMA_LICENSE.txt).
+SigmaHQ rules are acquired separately under the [Detection Rule License 1.1](https://github.com/SigmaHQ/Detection-Rule-License). Reports retain the supplied rule authors and sources. Upstream regression data in `tests/fixtures/sigma/` is excluded from Python distributions and retains its own license.

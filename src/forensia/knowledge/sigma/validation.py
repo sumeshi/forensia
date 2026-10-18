@@ -1,6 +1,6 @@
-"""Development-time validation for generated Sigma bindings.
+"""Setup-time validation for generated Sigma bindings.
 
-This module is intentionally outside runtime loading. It validates converter output
+Investigation loading does not run this validator. It validates converter output
 and regression fixtures while the bundle is built; it does not create a second rule
 catalog or a durable verification authority.
 """
@@ -17,13 +17,13 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from scripts.sigma.converter import compile_sigma_targets
 
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
 from forensia.evidence.evtx import ingest_evtx_file, normalize_evtx
 from forensia.knowledge.rules.engine import generate_findings, iter_rule_row_batches
 from forensia.knowledge.rules.models import Rule
+from forensia.knowledge.sigma.converter import compile_sigma_targets
 
 _SQL_TEMP_DIR: tempfile.TemporaryDirectory[str] | None = None
 _SQL_CASE_DB: CaseDB | None = None

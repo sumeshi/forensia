@@ -584,8 +584,7 @@ def load_event_class_definitions() -> dict[str, dict[str, Any]]:
 def validate_declarations() -> None:
     """Validate packaged contracts before an investigation changes Case State."""
     from forensia.knowledge.rules.loader import (
-        _get_rule_cache,
-        load_rules,
+        _cached_rule_map,
     )
 
     loaders = (
@@ -601,7 +600,7 @@ def validate_declarations() -> None:
     # Adopt bundled declarations at each run boundary, never stale process data.
     for loader in loaders:
         loader.cache_clear()
-    _get_rule_cache.cache_clear()
+    _cached_rule_map.cache_clear()
     for loader in loaders:
         loader()
     for name in (
@@ -610,7 +609,10 @@ def validate_declarations() -> None:
         "verdict_taxonomy.yaml",
     ):
         _load_yaml(name)
-    load_rules()
+    from forensia.knowledge.resources import rules_dir
+    from forensia.knowledge.rules.loader import load_rules_from_dir
+
+    load_rules_from_dir(rules_dir())
 
 
 # ── Cache management ───────────────────────────────────────────────────────

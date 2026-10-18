@@ -258,7 +258,7 @@ wheels = [
 
 [[package]]
 name = "forensia"
-version = "0.2.2"
+version = "0.2.3"
 source = { editable = "." }
 dependencies = [
     { name = "duckdb" },
@@ -268,6 +268,9 @@ dependencies = [
     { name = "mft2es" },
     { name = "prefetch2es" },
     { name = "pydantic" },
+    { name = "pysigma" },
+    { name = "pysigma-pipeline-sysmon" },
+    { name = "pysigma-pipeline-windows" },
     { name = "python-dotenv" },
     { name = "pyyaml" },
     { name = "reg2es" },
@@ -279,9 +282,6 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "pysigma" },
-    { name = "pysigma-pipeline-sysmon" },
-    { name = "pysigma-pipeline-windows" },
     { name = "pytest" },
     { name = "ruff" },
 ]
@@ -295,6 +295,9 @@ requires-dist = [
     { name = "mft2es", specifier = "==1.11.0" },
     { name = "prefetch2es", specifier = "==2.7.1" },
     { name = "pydantic", specifier = "==2.13.4" },
+    { name = "pysigma", specifier = "==1.5.1" },
+    { name = "pysigma-pipeline-sysmon", specifier = "==2.0.0" },
+    { name = "pysigma-pipeline-windows", specifier = "==2.0.1" },
     { name = "python-dotenv", specifier = "==1.2.2" },
     { name = "pyyaml", specifier = "==6.0.3" },
     { name = "reg2es", specifier = "==2.4.1" },
@@ -306,9 +309,6 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "pysigma", specifier = "==1.5.1" },
-    { name = "pysigma-pipeline-sysmon", specifier = "==2.0.0" },
-    { name = "pysigma-pipeline-windows", git = "https://github.com/SigmaHQ/pySigma-pipeline-windows?rev=5d7170663e3799e6cafaa2d0847ce30a5489827c" },
     { name = "pytest", specifier = ">=9.0.3" },
     { name = "ruff", specifier = ">=0.15" },
 ]
@@ -714,9 +714,13 @@ wheels = [
 [[package]]
 name = "pysigma-pipeline-windows"
 version = "2.0.1"
-source = { git = "https://github.com/SigmaHQ/pySigma-pipeline-windows?rev=5d7170663e3799e6cafaa2d0847ce30a5489827c#5d7170663e3799e6cafaa2d0847ce30a5489827c" }
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pysigma" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/df/f9/3974ee1e472c5202af4e9cdd26061b4b7fc878a5f791a14edcea663e0bb7/pysigma_pipeline_windows-2.0.1.tar.gz", hash = "sha256:3f72bed56a4006332dca664836d35e880d7df6cad49971deaa24710711faba46", size = 12066, upload-time = "2026-09-27T08:40:10.904Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c9/8a/c8e46d9b885b673f94b95bb5275c127d6e79d4a48a506307cec0665cae19/pysigma_pipeline_windows-2.0.1-py3-none-any.whl", hash = "sha256:f62d1d5be64379dcb1584ea89cf3765732a25470b249f7ffac1fb9e2e2e19d80", size = 13127, upload-time = "2026-09-27T08:40:09.611Z" },
 ]
 
 [[package]]

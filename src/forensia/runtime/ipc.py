@@ -202,6 +202,7 @@ def start_runtime(
     settings: dict[str, Any] | None = None,
     system_prompt: str | Path | None = None,
     template: str | Path | None = None,
+    rules: str | Path | None = None,
     cwd: str | Path | None = None,
     env: dict[str, str] | None = None,
     timeout: float = 20.0,
@@ -212,6 +213,12 @@ def start_runtime(
             "--overwrite cannot delete a symlinked case directory or junction"
         )
     case = requested_case.resolve()
+    if (
+        overwrite
+        and rules is not None
+        and Path(rules).expanduser().resolve().is_relative_to(case)
+    ):
+        raise ValueError("--rules must be outside the case being overwritten")
     if input_dir is not None and case.exists():
         if not case.is_dir():
             raise ValueError(f"Case output path must be a directory: {case}")
@@ -221,6 +228,13 @@ def start_runtime(
             raise ValueError(
                 f"Output directory already contains data and is not a case: {case}"
             )
+    # Acquisition and conversion can outlast the IPC startup deadline.
+    # Finish before spawning, and validate before any case overwrite.
+    rules_bundle = None
+    if input_dir is not None:
+        from forensia.knowledge.sigma.setup import prepare_rule_bundle
+
+        rules_bundle = prepare_rule_bundle(Path(rules) if rules is not None else None)
     if probe_runtime(case):
         if not overwrite:
             raise RuntimeError(f"Runtime is already active for {case}")
@@ -248,6 +262,7 @@ def start_runtime(
         ("input-dir", input_dir),
         ("system-prompt", system_prompt),
         ("template", template),
+        ("rules", rules_bundle),
     ):
         if value is not None:
             args.extend((f"--{name}", str(Path(value).expanduser().resolve())))

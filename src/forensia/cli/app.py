@@ -1,15 +1,19 @@
-"""Public commands for starting and attaching to a case Runtime."""
+"""Install detection rules and start or attach to a case Runtime."""
 
 from __future__ import annotations
 
+import tarfile
 from dataclasses import asdict
 from pathlib import Path
 
+import httpx
 import typer
 from rich import print
 
 from forensia.config import load_settings
 from forensia.core.case import Case
+from forensia.knowledge.sigma.setup import prepare_rule_bundle
+from forensia.knowledge.sigma_bundle import load_sigma_bundle
 from forensia.runtime import probe_runtime, start_runtime
 from forensia.tui import run_tui
 
@@ -33,6 +37,31 @@ def _input_file(value: Path | None, option: str) -> Path | None:
 
 
 @app.command()
+def setup(
+    rules: Path | None = typer.Option(
+        None,
+        "--rules",
+        help="Local Sigma YAML file or directory; omit to download SigmaHQ",
+    ),
+) -> None:
+    """Acquire, convert and validate detection rules for offline investigation."""
+    try:
+        path = prepare_rule_bundle(rules, install=True)
+    except (
+        OSError,
+        RuntimeError,
+        ValueError,
+        httpx.HTTPError,
+        tarfile.TarError,
+    ) as exc:
+        raise typer.BadParameter(str(exc)) from None
+    counts = load_sigma_bundle(path)["summary"]
+    print(
+        f"Rules ready: {counts['admitted_rules']}/{counts['total']} source rules admitted; {path}"
+    )
+
+
+@app.command()
 def investigate(
     input_dir: Path,
     case_dir: Path = typer.Option(..., "--out", help="Case directory"),
@@ -47,6 +76,9 @@ def investigate(
     ),
     template: Path | None = typer.Option(
         None, "--template", help="Report template Markdown"
+    ),
+    rules: Path | None = typer.Option(
+        None, "--rules", help="Local Sigma YAML file or directory"
     ),
 ) -> None:
     """Start a new investigation in INPUT_DIR and save it under --out CASE."""
@@ -84,8 +116,16 @@ def investigate(
             settings=asdict(settings),
             system_prompt=policy,
             template=report_template,
+            rules=rules,
         )
-    except (OSError, RuntimeError, TimeoutError, ValueError) as exc:
+    except (
+        OSError,
+        RuntimeError,
+        TimeoutError,
+        ValueError,
+        httpx.HTTPError,
+        tarfile.TarError,
+    ) as exc:
         raise typer.BadParameter(str(exc)) from None
     if background:
         print(f"Runtime started for {target}")

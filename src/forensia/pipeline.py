@@ -71,7 +71,7 @@ from forensia.investigation.investigator import investigate as investigate_loop
 from forensia.knowledge.catalog import validate_declarations
 from forensia.knowledge.coverage import refresh_evidence_coverage
 from forensia.knowledge.external import scan_knowledge_dir, set_knowledge_docs
-from forensia.knowledge.resources import rules_dir, schema_dir, sigma_bundle_path
+from forensia.knowledge.resources import rules_dir, schema_dir
 from forensia.knowledge.rules.engine import (
     clear_rule_findings_batch,
     feed_findings_to_timeline,
@@ -81,7 +81,12 @@ from forensia.knowledge.rules.engine import (
     save_findings,
 )
 from forensia.knowledge.rules.loader import load_rules
-from forensia.knowledge.sigma_bundle import binding_admitted, load_sigma_bundle
+from forensia.knowledge.sigma_bundle import (
+    binding_admitted,
+    canonical_json_bytes,
+    load_sigma_bundle,
+    sigma_bundle_scope,
+)
 from forensia.llm.llm_client import LLMServerUnavailableError
 from forensia.report.render.writer import render_written_report
 from forensia.report.sections.report_input import (
@@ -209,13 +214,16 @@ def _analysis_revision(case: Case) -> str:
             sigma_contract_file,
             pipeline_file,
             *runtime_catalog_files,
-            sigma_bundle_path(),
         ]
     )
     suppression = (
         case.allowlist_path.read_bytes() if case.allowlist_path.exists() else b""
     )
-    return hashlib.sha256(revision.encode("ascii") + suppression).hexdigest()
+    return hashlib.sha256(
+        revision.encode("ascii")
+        + suppression
+        + canonical_json_bytes(load_sigma_bundle())
+    ).hexdigest()
 
 
 def _stage_receipt(db: CaseDB, phase: str) -> tuple[str, str, str] | None:
@@ -430,6 +438,37 @@ def resolve_forensia_policy_input(
     return CasePolicyInput(body=body, source=source, source_path=str(path))
 
 
+def _recorded_case_rules(db: CaseDB) -> dict[str, Any] | None:
+    from forensia.knowledge.sigma_bundle import validate_bundle
+
+    row = db.execute(
+        "SELECT output_json FROM trace.investigation_steps WHERE phase = 'sigma-rules' "
+        "ORDER BY created_at DESC, step_id DESC LIMIT 1"
+    ).fetchone()
+    return validate_bundle(json.loads(row[0])) if row else None
+
+
+def _pin_case_rules(
+    db: CaseDB, selected: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """The adopted executable rules are case input, retained in DuckDB on resume."""
+    from forensia.investigation.investigation_session import _save_step
+    from forensia.knowledge.sigma_bundle import validate_bundle
+
+    recorded = _recorded_case_rules(db)
+    bundle = selected if selected is not None else recorded
+    if bundle is None:
+        from forensia.knowledge.sigma.setup import prepare_rule_bundle
+
+        bundle = load_sigma_bundle(prepare_rule_bundle())
+    validate_bundle(bundle)
+    if recorded is None or recorded["build_id"] != bundle["build_id"]:
+        _save_step(
+            db, f"rules-{uuid.uuid4().hex}", 0, "sigma-rules", None, None, bundle
+        )
+    return bundle
+
+
 def pin_investigation_inputs(
     case: Case,
     db: CaseDB,
@@ -437,6 +476,7 @@ def pin_investigation_inputs(
     forensia_md: str | Path | None = None,
     report_spec: str | Path | None = None,
     template_root: Path | None = None,
+    rules_bundle: dict[str, Any] | None = None,
 ) -> CasePolicyInput | None:
     """Persist adopted Markdown before ingestion or Runtime readiness."""
     from forensia.investigation.investigation_session import _save_step
@@ -452,6 +492,8 @@ def pin_investigation_inputs(
     )
     adoption_id = f"startup-{uuid.uuid4().hex}"
     with db.transaction():
+        if rules_bundle is not None:
+            _pin_case_rules(db, rules_bundle)
         if policy.record is not None:
             _save_step(
                 db,
@@ -958,7 +1000,7 @@ def _run_analyze_stage(
             "sigma_bundle": {
                 "build_id": bundle["build_id"],
                 "artifact_sha256": hashlib.sha256(
-                    sigma_bundle_path().read_bytes()
+                    canonical_json_bytes(bundle) + b"\n"
                 ).hexdigest(),
                 "source": {
                     "repository": bundle["source"]["repository"],
@@ -1238,6 +1280,7 @@ def run_investigation(
     template_dir: str | Path | None = None,
     report_spec: str | Path | None = None,
     knowledge_dir: str | Path | None = None,
+    rules: str | Path | None = None,
     forensia_md: str | Path | None = None,
     rerun: bool = False,
     overwrite: bool = False,
@@ -1289,6 +1332,17 @@ def run_investigation(
     )
     max_llm_calls = adopted.max_llm_calls if max_llm_calls is None else max_llm_calls
     validate_declarations()
+    selected_rules = None
+    if (
+        rules is not None
+        or not (Path(case_dir) / "manifest.yaml").is_file()
+        or overwrite
+    ):
+        from forensia.knowledge.sigma.setup import prepare_rule_bundle
+
+        selected_rules = load_sigma_bundle(
+            prepare_rule_bundle(Path(rules) if rules is not None else None)
+        )
     if report_spec and template_dir:
         raise UsageError(
             "report_spec and template_dir are alternative report inputs; pass one"
@@ -1310,6 +1364,7 @@ def run_investigation(
                 "report_spec": report_spec,
                 "knowledge_dir": knowledge_dir,
                 "forensia_md": forensia_md,
+                "rules": rules,
             },
             status,
         )
@@ -1335,6 +1390,7 @@ def run_investigation(
     with (
         nullcontext(db) if db is not None else CaseDB(case) as db,
         stop_scope(stop_requested),
+        sigma_bundle_scope(_pin_case_rules(db, selected_rules)),
     ):
         db.runtime_owned = True
         push_progress = progress_pusher(db)
@@ -1450,41 +1506,49 @@ def run_report(
         stop_scope(stop_requested),
     ):
         db.runtime_owned = True
-        push_progress = progress_pusher(db)
-        ensure_report_output_paths(
-            case,
-            (
-                case.reports_dir / "report.md",
-                html_output or case.reports_dir / "report.html",
-            ),
-            report_spec=report_spec,
-        )
-        if write:
-            template_root = resolve_template_dir(case, template_dir)
-            _show(status, "Writing report sections")
-
-            def discard_progress(*_args: Any, **_kwargs: Any) -> None:
-                return None
-
-            _run_investigate_stage(
+        recorded_rules = _recorded_case_rules(db)
+        with (
+            sigma_bundle_scope(recorded_rules)
+            if recorded_rules is not None
+            else nullcontext()
+        ):
+            push_progress = progress_pusher(db)
+            ensure_report_output_paths(
                 case,
-                db,
-                llm_base_url,
-                model,
-                template_root,
-                discard_progress,
-                None,
-                max_iter=1,
-                max_queries_per_hypothesis=0,
-                no_progress_limit=1,
-                report_every_n_cycles=3,
-                max_llm_calls=get_settings().max_llm_calls,
+                (
+                    case.reports_dir / "report.md",
+                    html_output or case.reports_dir / "report.html",
+                ),
                 report_spec=report_spec,
-                report_only=True,
             )
-        markdown_path = case.reports_dir / "report.md"
-        html_path = _run_report_stage(case, db, push_progress, html_output=html_output)
-        return markdown_path, html_path
+            if write:
+                template_root = resolve_template_dir(case, template_dir)
+                _show(status, "Writing report sections")
+
+                def discard_progress(*_args: Any, **_kwargs: Any) -> None:
+                    return None
+
+                _run_investigate_stage(
+                    case,
+                    db,
+                    llm_base_url,
+                    model,
+                    template_root,
+                    discard_progress,
+                    None,
+                    max_iter=1,
+                    max_queries_per_hypothesis=0,
+                    no_progress_limit=1,
+                    report_every_n_cycles=3,
+                    max_llm_calls=get_settings().max_llm_calls,
+                    report_spec=report_spec,
+                    report_only=True,
+                )
+            markdown_path = case.reports_dir / "report.md"
+            html_path = _run_report_stage(
+                case, db, push_progress, html_output=html_output
+            )
+            return markdown_path, html_path
 
 
 @_execution_entry
@@ -1500,6 +1564,7 @@ def run_add(
     with (
         nullcontext(db) if db is not None else CaseDB(case) as db,
         stop_scope(stop_requested),
+        sigma_bundle_scope(_pin_case_rules(db)),
     ):
         db.runtime_owned = True
         _invalidate_standard_report_exports(case)

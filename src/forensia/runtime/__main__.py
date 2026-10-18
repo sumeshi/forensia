@@ -18,6 +18,7 @@ def main() -> None:
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--system-prompt", type=Path)
     parser.add_argument("--template", type=Path)
+    parser.add_argument("--rules", type=Path)
     parser.add_argument("--startup-id", required=True)
     args = parser.parse_args()
 
@@ -33,6 +34,7 @@ def main() -> None:
             settings=settings,
             system_prompt=args.system_prompt,
             template=args.template,
+            rules=args.rules,
         )
         worker = threading.Thread(
             target=engine.run,
@@ -42,6 +44,7 @@ def main() -> None:
                 "settings": settings,
                 "system_prompt": args.system_prompt,
                 "template": args.template,
+                "rules": args.rules,
             },
             name="forensia-engine",
             daemon=False,

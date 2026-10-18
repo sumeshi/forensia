@@ -7,8 +7,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 import yaml
-from scripts.sigma.converter import compile_sigma_targets
-from scripts.sigma.validation import _sql_viability, validate_rule
+
+from forensia.knowledge.sigma.converter import compile_sigma_targets
+from forensia.knowledge.sigma.validation import _sql_viability, validate_rule
 
 
 class SigmaValidationBoundaryTests(unittest.TestCase):
@@ -110,7 +111,9 @@ class SigmaValidationBoundaryTests(unittest.TestCase):
             fixture = root / "regression/events.evtx"
             fixture.write_bytes(b"parser output is mocked for this boundary test")
             info_path = root / "regression/info.yml"
-            with patch("scripts.sigma.validation.ingest_evtx_file", fake_ingest):
+            with patch(
+                "forensia.knowledge.sigma.validation.ingest_evtx_file", fake_ingest
+            ):
                 results = {}
                 for expected_count in (1, 0):
                     info_path.write_text(
@@ -193,7 +196,9 @@ class SigmaValidationBoundaryTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            with patch("scripts.sigma.validation.ingest_evtx_file", fake_ingest):
+            with patch(
+                "forensia.knowledge.sigma.validation.ingest_evtx_file", fake_ingest
+            ):
                 result = validate_rule(
                     root,
                     rule_path,

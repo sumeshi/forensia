@@ -29,12 +29,14 @@ def _declarations() -> None:
 
 
 def _sigma_bundle() -> None:
-    from forensia.knowledge.resources import sigma_bundle_path, sigma_license_path
+    from forensia.knowledge.resources import sigma_bundle_path
     from forensia.knowledge.sigma_bundle import load_sigma_bundle
 
-    bundle = load_sigma_bundle(sigma_bundle_path())
-    if not sigma_license_path().is_file():
-        raise ValueError("Packaged Sigma license and attribution notice is missing")
+    path = sigma_bundle_path()
+    if not path.exists():
+        print("  Sigma rules not installed; run 'forensia setup' before offline use")
+        return
+    bundle = load_sigma_bundle(path)
     counts = bundle["summary"]
     print(
         "  Sigma bundle: "
@@ -104,7 +106,7 @@ def run_doctor() -> None:
     """Check installed declarations, packaged templates and disposable storage."""
     checks = [
         _check("Packaged declarations", _declarations),
-        _check("Packaged Sigma bundle", _sigma_bundle),
+        _check("User-installed Sigma rules", _sigma_bundle),
         _doctor_report_template_policy_check(),
         _check("Case/Trace storage", _case_storage),
     ]

@@ -220,7 +220,9 @@ def _split_table_row(line: str) -> list[str]:
         stripped = stripped[1:]
     if stripped.endswith("|"):
         stripped = stripped[:-1]
-    return [cell.strip() for cell in stripped.split("|")]
+    return [
+        cell.strip().replace(r"\|", "|") for cell in re.split(r"(?<!\\)\|", stripped)
+    ]
 
 
 def _is_table_separator(line: str) -> bool:

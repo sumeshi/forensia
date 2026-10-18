@@ -1,6 +1,6 @@
 """Shared artifact contract for generated Sigma rules.
 
-The source YAML is development input. Runtime consumers read the generated bundle,
+Setup converts source YAML. Investigations read the validated, adopted bundle,
 whose build ID binds each executable rule to its source and validation result.
 """
 
@@ -11,13 +11,17 @@ import json
 import os
 import re
 import tempfile
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
 from forensia.knowledge.rules.models import Rule
 
 SCHEMA_VERSION = 2
-EXPECTED_SOURCE_REPOSITORY = "https://github.com/SigmaHQ/sigma"
+_active_bundle: ContextVar[dict[str, Any] | None] = ContextVar(
+    "sigma_bundle", default=None
+)
 CONVERSION_STATUSES = frozenset({"converted", "unsupported", "failed"})
 FIXTURE_STATUSES = frozenset(
     {"passed", "mismatch", "error", "not_applicable", "absent"}
@@ -134,14 +138,17 @@ def validate_bundle(bundle: Any) -> dict[str, Any]:
     source = bundle.get("source")
     if (
         not isinstance(source, dict)
-        or source.get("repository") != EXPECTED_SOURCE_REPOSITORY
+        or not isinstance(source.get("repository"), str)
+        or not source["repository"]
     ):
-        raise ValueError("Sigma bundle source is not SigmaHQ")
-    if not _REVISION_SHA.fullmatch(str(source.get("commit", ""))):
+        raise ValueError("Sigma bundle source is missing")
+    if source.get("commit") is not None and not _REVISION_SHA.fullmatch(
+        str(source["commit"])
+    ):
         raise ValueError("Sigma bundle source commit must be a full Git SHA")
     if not _SHA256.fullmatch(str(source.get("tree_sha256", ""))):
         raise ValueError("Sigma bundle source tree hash is invalid")
-    if not isinstance(source.get("licenses"), list) or not source["licenses"]:
+    if not isinstance(source.get("licenses"), list):
         raise ValueError("Sigma bundle source license attribution is missing")
     environment = bundle.get("environment")
     if not isinstance(environment, dict) or not isinstance(
@@ -239,14 +246,28 @@ def validate_bundle(bundle: Any) -> dict[str, Any]:
 def load_sigma_bundle(path: Path | None = None) -> dict[str, Any]:
     """Load the artifact without importing development-only Sigma packages."""
     if path is None:
+        if (active := _active_bundle.get()) is not None:
+            return active
         from forensia.knowledge.resources import sigma_bundle_path
 
         path = sigma_bundle_path()
     try:
         bundle = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise ValueError(f"Cannot load required Sigma bundle {path}: {exc}") from exc
+        raise ValueError(
+            f"Cannot load Sigma rules {path}: {exc}. Run 'forensia setup' or specify --rules."
+        ) from exc
     return validate_bundle(bundle)
+
+
+@contextmanager
+def sigma_bundle_scope(bundle: dict[str, Any]):
+    """Use the case's recorded rules for analysis and hypothesis consumers."""
+    token = _active_bundle.set(validate_bundle(bundle))
+    try:
+        yield
+    finally:
+        _active_bundle.reset(token)
 
 
 def write_bundle_atomic(path: Path, bundle: dict[str, Any]) -> None:

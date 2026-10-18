@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "forensia"
-version = "0.2.2"
+version = "0.2.3"
 description = "Your local AI assistant for weekend forensic work."
 readme = "README.md"
 requires-python = ">=3.14"
@@ -30,6 +30,9 @@ dependencies = [
     "prefetch2es==2.7.1",
     "reg2es==2.4.1",
     "pydantic==2.13.4",
+    "pysigma==1.5.1",
+    "pysigma-pipeline-sysmon==2.0.0",
+    "pysigma-pipeline-windows==2.0.1",
     "python-dotenv==1.2.2",
     "pyyaml==6.0.3",
     "rich==15.0.0",
@@ -61,15 +64,10 @@ forensia = [
     "data/rules/*/*.yaml",
     "data/schema/*.yaml",
     "data/playbook/*.md",
-    "data/sigma/*.json",
-    "data/sigma/*.txt",
 ]
 
 [dependency-groups]
 dev = [
-    "pysigma==1.5.1",
-    "pysigma-pipeline-sysmon==2.0.0",
-    "pysigma-pipeline-windows==2.0.1",
     "pytest>=9.0.3",
     "ruff>=0.15",
 ]
@@ -89,6 +87,3 @@ select = ["F", "I", "UP"]
 [tool.ruff.lint.per-file-ignores]
 # scripts/ are standalone audit tools, not part of the package import graph.
 "scripts/*" = ["E402"]
-
-[tool.uv.sources]
-pysigma-pipeline-windows = { git = "https://github.com/SigmaHQ/pySigma-pipeline-windows", rev = "5d7170663e3799e6cafaa2d0847ce30a5489827c" }

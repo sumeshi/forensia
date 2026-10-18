@@ -70,6 +70,7 @@ class RuntimeEngine:
         settings: dict[str, Any] | None = None,
         system_prompt: str | Path | None = None,
         template: str | Path | None = None,
+        rules: str | Path | None = None,
     ) -> None:
         """Validate startup inputs and establish the case before IPC is ready."""
         if settings is not None and not isinstance(settings, dict):
@@ -125,6 +126,9 @@ class RuntimeEngine:
                 validate_policy_body(policy_body)
         if self._template is not None:
             sections_from_report_spec(self._template)
+        from forensia.knowledge.sigma_bundle import load_sigma_bundle
+
+        rules_bundle = load_sigma_bundle(Path(rules)) if rules is not None else None
 
         if overwrite:
             _overwrite_case(
@@ -135,6 +139,7 @@ class RuntimeEngine:
                     "report_spec": self._template,
                     "knowledge_dir": None,
                     "forensia_md": self._system_prompt,
+                    "rules": rules,
                 },
                 None,
             )
@@ -159,6 +164,7 @@ class RuntimeEngine:
                     db,
                     forensia_md=self._system_prompt,
                     report_spec=self._template,
+                    rules_bundle=rules_bundle,
                 )
             accepted = db.execute(
                 """
@@ -408,6 +414,7 @@ class RuntimeEngine:
         settings: dict[str, Any] | Settings | None = None,
         system_prompt: str | Path | None = None,
         template: str | Path | None = None,
+        rules: str | Path | None = None,
     ) -> None:
         self._runner_thread = threading.current_thread()
         if not self._prepared:
@@ -419,6 +426,7 @@ class RuntimeEngine:
                 else settings,
                 system_prompt=system_prompt,
                 template=template,
+                rules=rules,
             )
         initial = self._pending_initial
         self._pending_initial = None

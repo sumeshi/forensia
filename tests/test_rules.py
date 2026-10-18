@@ -59,7 +59,10 @@ class RuleDeclarationTests(unittest.TestCase):
             with (
                 patch("forensia.pipeline.rules_dir", return_value=rules),
                 patch("forensia.pipeline.schema_dir", return_value=schema),
-                patch("forensia.pipeline.sigma_bundle_path", return_value=bundle),
+                patch(
+                    "forensia.pipeline.load_sigma_bundle",
+                    side_effect=lambda: json.loads(bundle.read_text()),
+                ),
                 patch("forensia.pipeline.__file__", str(pipeline_code)),
             ):
                 original = _analysis_revision(case)
@@ -112,9 +115,15 @@ class RuleDeclarationTests(unittest.TestCase):
             case_path = Path(tmpdir) / "case"
             broken_bundle = Path(tmpdir) / "sigma_bundle.json"
             broken_bundle.write_text("{}", encoding="utf-8")
-            with patch(
-                "forensia.knowledge.resources.sigma_bundle_path",
-                return_value=broken_bundle,
+            with (
+                patch(
+                    "forensia.knowledge.resources.sigma_bundle_path",
+                    return_value=broken_bundle,
+                ),
+                patch(
+                    "forensia.knowledge.sigma.setup.sigma_bundle_path",
+                    return_value=broken_bundle,
+                ),
             ):
                 with self.assertRaisesRegex(ValueError, "schema"):
                     run_investigation(case_path)
@@ -456,10 +465,6 @@ class SigmaRuleBoundaryTests(unittest.TestCase):
                         "forensia.knowledge.resources.sigma_bundle_path",
                         return_value=test_bundle_path,
                     ),
-                    patch(
-                        "forensia.pipeline.sigma_bundle_path",
-                        return_value=test_bundle_path,
-                    ),
                 ):
                     updated_count = _run_analyze_stage(
                         case, db, False, False, progress, None, "test-run"
@@ -483,10 +488,6 @@ class SigmaRuleBoundaryTests(unittest.TestCase):
                 with (
                     patch(
                         "forensia.knowledge.resources.sigma_bundle_path",
-                        return_value=test_bundle_path,
-                    ),
-                    patch(
-                        "forensia.pipeline.sigma_bundle_path",
                         return_value=test_bundle_path,
                     ),
                 ):
@@ -569,7 +570,7 @@ class SigmaCompilerTests(unittest.TestCase):
         }
 
     def _converted(self, data: dict, target_key: str = "security"):
-        from scripts.sigma.converter import compile_sigma_targets
+        from forensia.knowledge.sigma.converter import compile_sigma_targets
 
         outcomes = compile_sigma_targets(data)
         return next(
@@ -608,7 +609,7 @@ class SigmaCompilerTests(unittest.TestCase):
         )
 
     def test_category_targets_preserve_security_and_sysmon_meaning(self) -> None:
-        from scripts.sigma.converter import compile_sigma_targets
+        from forensia.knowledge.sigma.converter import compile_sigma_targets
 
         data = self._rule(
             {
@@ -683,7 +684,7 @@ class SigmaCompilerTests(unittest.TestCase):
                 )
 
     def test_fieldless_keyword_semantics_are_explicitly_unsupported(self) -> None:
-        from scripts.sigma.converter import compile_sigma_targets
+        from forensia.knowledge.sigma.converter import compile_sigma_targets
 
         results = compile_sigma_targets(
             self._rule(

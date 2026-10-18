@@ -12,11 +12,12 @@ from forensia.config import Settings
 from forensia.core.case import Case
 
 
-def test_public_cli_is_limited_to_investigate_and_attach() -> None:
+def test_public_cli_includes_rule_setup() -> None:
     runner = CliRunner()
     help_text = runner.invoke(app, ["--help"]).output
     assert "investigate" in help_text
     assert "attach" in help_text
+    assert "setup" in help_text
     assert "add" not in help_text
     assert "report" not in help_text
     assert "templates-export" not in help_text
@@ -28,6 +29,7 @@ def test_public_cli_is_limited_to_investigate_and_attach() -> None:
         "--overwrite",
         "--system-prompt",
         "--template",
+        "--rules",
     ):
         assert option in investigate_help
     for removed in ("--model", "--llm-base-url", "--rerun", "--report-only"):
@@ -76,6 +78,7 @@ def test_investigate_starts_runtime_with_validated_settings_and_attaches_tui() -
             settings=asdict(settings),
             system_prompt=policy.resolve(),
             template=template.resolve(),
+            rules=None,
         )
         tui.assert_called_once_with(case_dir.resolve())
 

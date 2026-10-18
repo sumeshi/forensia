@@ -11,8 +11,6 @@ import pytest
 
 from forensia.knowledge.resources import (
     schema_dir,
-    sigma_bundle_path,
-    sigma_license_path,
 )
 from forensia.report.resources import (
     render_templates_dir,
@@ -25,8 +23,7 @@ def test_runtime_resources_are_readable() -> None:
     resources = (
         schema_dir() / "artifact_capabilities.yaml",
         schema_dir() / "verdict_taxonomy.yaml",
-        sigma_bundle_path(),
-        sigma_license_path(),
+        schema_dir() / "sigma.yaml",
         report_templates_dir() / "1_overview.md",
         report_formats_path(),
         render_templates_dir() / "report.html.j2",
@@ -66,10 +63,12 @@ def test_wheel_packages_runtime_resources(wheel_paths: set[str]) -> None:
     required = {
         "forensia/data/schema/verdict_taxonomy.yaml",
         "forensia/data/schema/artifact_capabilities.yaml",
-        "forensia/data/sigma/sigma_bundle.json",
-        "forensia/data/sigma/SIGMA_LICENSE.txt",
+        "forensia/data/schema/sigma.yaml",
+        "forensia/knowledge/sigma/converter.py",
+        "forensia/knowledge/sigma/validation.py",
         "forensia/data/report/1_overview.md",
         "forensia/data/report/_formats/report.yaml",
         "forensia/data/render/report.html.j2",
     }
     assert required <= wheel_paths
+    assert not any("data/sigma/" in path for path in wheel_paths)
