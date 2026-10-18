@@ -188,6 +188,25 @@ def _format_sidebar(snapshot: dict[str, Any]) -> Text:
     for status, count in (counts.get("hypothesis_statuses") or {}).items():
         text.append(f"  {status}: {count:,}\n", style="dim")
     text.append("\nLLM\n", style="bold cyan")
+    llm = snapshot.get("llm") or {}
+    text.append(f"URL      {llm.get('base_url') or '—'}\n", style="white")
+    text.append(f"Model    {llm.get('model') or '—'}\n", style="white")
+    status = str(llm.get("status") or "unknown")
+    label, color = {
+        "not_checked": ("Not checked", "dim"),
+        "not_configured": ("Not configured", "yellow"),
+        "waiting": ("Waiting", "yellow"),
+        "responded": ("Responded", "green"),
+        "timeout": ("Timed out", "yellow"),
+        "connection_error": ("Connection error", "red"),
+        "http_error": (f"HTTP {llm.get('http_status')}", "red"),
+        "interrupted": ("Interrupted", "yellow"),
+    }.get(status, ("Unknown", "dim"))
+    text.append(f"Last I/O {label}\n", style=color)
+    if llm.get("recorded"):
+        text.append("Recorded connection\n", style="dim")
+    if llm.get("observed_at"):
+        text.append(f"Seen     {_local_time(llm['observed_at'])}\n", style="dim")
     text.append(f"Calls        {usage.get('logical_call_count', '—')}\n", style="white")
     text.append(
         f"{remaining} calls remaining"

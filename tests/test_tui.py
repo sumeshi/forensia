@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import subprocess
 
 import pytest
 
+from forensia.config import Settings
 from forensia.core.case import Case
 from forensia.core.ownership import case_lock
 from forensia.core.progress_event import progress_event
@@ -144,6 +146,104 @@ def test_header_hides_old_session_stop_reason_during_ingest(tmp_path) -> None:
     header = _format_header(snapshot).plain
     assert "running / normalize" in header
     assert "Reason:" not in _format_sidebar(snapshot).plain
+
+
+@pytest.mark.parametrize(
+    ("status", "http_status", "expected"),
+    [
+        ("open", None, "Waiting"),
+        ("success", 200, "Responded"),
+        ("parse_error", 200, "Responded"),
+        ("timeout", None, "Timed out"),
+        ("transport_error", None, "Connection error"),
+        ("provider_error", 401, "HTTP 401"),
+        ("provider_error", 503, "HTTP 503"),
+        ("application_discard", None, "Interrupted"),
+    ],
+)
+def test_sidebar_projects_observed_llm_connection(
+    tmp_path, status, http_status, expected
+):
+    case = Case.init(tmp_path / "provider-case")
+    with CaseDB(case) as db:
+        db.execute(
+            "INSERT INTO trace.llm_provider_attempts (attempt_id,endpoint,model,status,http_status,start_time) "
+            "VALUES ('attempt','http://inference.example:9123/v1/chat/completions','independent-model',?,?,now())",
+            [status, http_status],
+        )
+        snapshot = case_snapshot(case, db)
+    sidebar = _format_sidebar(snapshot).plain
+    assert "http://inference.example:9123" in sidebar
+    assert "independent-model" in sidebar
+    assert f"Last I/O {expected}" in sidebar
+    assert "Seen     " in sidebar
+    assert "Recorded connection" in sidebar
+
+
+def test_llm_view_does_not_reuse_another_targets_success_or_expose_url_credentials(
+    tmp_path,
+):
+    case = Case.init(tmp_path / "provider-case")
+    with CaseDB(case) as db:
+        db.execute(
+            "INSERT INTO trace.llm_provider_attempts (attempt_id,endpoint,model,status,http_status,start_time) "
+            "VALUES ('old','http://inference.example:9123/v1/chat/completions','old-model','success',200,now())"
+        )
+        for endpoint, model in [
+            ("http://inference.example:9123", "new-model"),
+            ("http://other.example:9199", "old-model"),
+        ]:
+            view = case_snapshot(
+                case,
+                db,
+                settings=Settings(
+                    llm_base_url=endpoint, llm_model=model, llm_api_key="private-key"
+                ),
+            )
+            assert view["llm"]["base_url"] == endpoint
+            assert view["llm"]["model"] == model
+            assert view["llm"]["status"] == "not_checked"
+            assert view["llm"]["observed_at"] is None
+            assert "private-key" not in json.dumps(view)
+        assert (
+            case_snapshot(case, db, settings=Settings())["llm"]["status"]
+            == "not_configured"
+        )
+        db.execute(
+            "UPDATE trace.llm_provider_attempts SET endpoint='https://login:password@inference.example:9443/v1/chat/completions?token=private-token#private-fragment'"
+        )
+        saved = case_snapshot(case, db)["llm"]
+        assert saved["base_url"] == "https://inference.example:9443"
+        assert all(
+            secret not in json.dumps(saved)
+            for secret in ("login", "password", "private-token", "private-fragment")
+        )
+
+
+def test_tui_shows_saved_llm_target_and_status_at_wide_and_narrow_sizes(tmp_path):
+    case = Case.init(tmp_path / "connection-view")
+    with CaseDB(case) as db:
+        db.execute(
+            "INSERT INTO trace.llm_provider_attempts (attempt_id,endpoint,model,status,http_status,start_time) "
+            "VALUES ('attempt','http://127.0.0.1:9251/v1/chat/completions','independent-local-model','success',200,now())"
+        )
+
+    async def exercise():
+        app = CaseApp(case)
+        async with app.run_test(size=(120, 40)) as pilot:
+            for size in ((120, 40), (64, 32)):
+                await pilot.resize_terminal(*size)
+                await app._refresh()
+                content = app._sidebar.content.plain
+                assert "http://127.0.0.1:9251" in content
+                assert "independent-local-model" in content
+                assert "Last I/O Responded" in content
+                assert (
+                    app._sidebar.virtual_size.width
+                    <= app._sidebar.scrollable_content_region.width
+                )
+
+    asyncio.run(exercise())
 
 
 def test_tui_windows_keep_refresh_and_log_navigation_working(tmp_path) -> None:

@@ -223,6 +223,9 @@ def test_public_background_runtime_stop_busy_and_idle_overwrite(tmp_path):
         )
         assert accepted_stop["status"] == "accepted"
         waiting_snapshot = client.request({"type": "snapshot"})
+        assert waiting_snapshot["llm"]["base_url"] == provider.base_url
+        assert waiting_snapshot["llm"]["model"] == "fixed-test-model"
+        assert waiting_snapshot["llm"]["status"] == "waiting"
         waiting_session = waiting_snapshot["session"]
         assert waiting_session["provider_wait"]["waiting"] is True
         assert waiting_session["provider_wait"]["stop_requested"] is True

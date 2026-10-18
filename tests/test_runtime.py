@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import multiprocessing
 import subprocess
 import sys
@@ -315,6 +316,28 @@ def test_runtime_kill_during_write_preserves_committed_state(tmp_path):
         if sys.platform != "win32":
             Path(runtime_address(case.path)).unlink(missing_ok=True)
         _key_path(case.path).unlink(missing_ok=True)
+
+
+def test_runtime_snapshot_shows_configured_llm_before_first_request(tmp_path):
+    from forensia.runtime.engine import RuntimeEngine
+
+    case = Case.init(tmp_path / "configured-target")
+    with CaseDB(case):
+        pass
+    engine = RuntimeEngine(case.path)
+    engine.prepare(
+        settings={
+            "llm_base_url": "http://127.0.0.1:9361",
+            "llm_model": "new-local-model",
+            "llm_api_key": "private-api-key",
+        }
+    )
+    snapshot = engine.snapshot()
+    assert snapshot["llm"]["base_url"] == "http://127.0.0.1:9361"
+    assert snapshot["llm"]["model"] == "new-local-model"
+    assert snapshot["llm"]["status"] == "not_checked"
+    assert snapshot["llm"]["recorded"] is False
+    assert "private-api-key" not in json.dumps(snapshot)
 
 
 def test_probe_runtime_treats_endpoint_eof_as_disconnected(monkeypatch, tmp_path):

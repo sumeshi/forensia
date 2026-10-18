@@ -257,7 +257,7 @@ class RuntimeEngine:
 
     def snapshot(self) -> dict[str, Any]:
         with self._database(nonblocking=True) as db:
-            return case_snapshot(self._case or db.case, db)
+            return case_snapshot(self._case or db.case, db, settings=self._settings)
 
     def events(self, *, after_index: int = 0, limit: int = 100) -> list[dict[str, Any]]:
         with self._database(nonblocking=True) as db:

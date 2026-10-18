@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from typing import Any, Literal, get_args
+from urllib.parse import urlsplit, urlunsplit
 
+from forensia.config import Settings
 from forensia.core.case import Case
 from forensia.db.database import CaseDB
 from forensia.db.evidence_lookup import lookup_evidence_record
@@ -110,7 +112,87 @@ def _elapsed_seconds(started_at: Any, ended_at: Any = None) -> int | None:
         return None
 
 
-def case_snapshot(case: Case, db: CaseDB) -> dict[str, Any]:
+def _llm_connection(db: CaseDB, settings: Settings | None) -> dict[str, Any]:
+    """Project the selected target and its last observed provider communication."""
+    query = (
+        "SELECT endpoint, model, status, http_status, start_time, end_time "
+        "FROM trace.llm_provider_attempts "
+    )
+    params: tuple[Any, ...] = ()
+    if settings is not None:
+        query += "WHERE endpoint = ? AND model = ? "
+        params = (
+            f"{(settings.llm_base_url or '').rstrip('/')}/v1/chat/completions",
+            settings.llm_model,
+        )
+    attempt = _row(
+        db,
+        query
+        + "ORDER BY start_time DESC NULLS LAST, created_at DESC NULLS LAST LIMIT 1",
+        params,
+    )
+    if settings is not None:
+        endpoint, model = settings.llm_base_url, settings.llm_model
+    elif attempt:
+        endpoint, model = attempt.get("endpoint"), attempt.get("model")
+    else:
+        recorded = _row(
+            db,
+            "SELECT output_json FROM trace.investigation_steps WHERE phase = 'session-settings' ORDER BY created_at DESC LIMIT 1",
+            (),
+        )
+        values = (recorded or {}).get("output_json") or {}
+        if not isinstance(values, dict):
+            values = {}
+        endpoint, model = values.get("llm_base_url"), values.get("llm_model")
+
+    base_url = None
+    if endpoint:
+        try:
+            url = urlsplit(str(endpoint))
+            host = url.hostname or ""
+            host = f"[{host}]" if ":" in host else host
+            authority = f"{host}:{url.port}" if url.port is not None else host
+            if url.scheme in {"http", "https"} and host:
+                base_url = urlunsplit((url.scheme, authority, "", "", ""))
+        except ValueError:
+            pass
+    status = (
+        "not_checked"
+        if base_url and model
+        else "not_configured"
+        if settings is not None
+        else "unknown"
+    )
+    if attempt:
+        attempt_status = attempt.get("status")
+        http_status = attempt.get("http_status")
+        if attempt_status == "open":
+            status = "waiting"
+        elif http_status is not None:
+            status = "responded" if 200 <= http_status < 300 else "http_error"
+        else:
+            status = {
+                "success": "responded",
+                "timeout": "timeout",
+                "transport_error": "connection_error",
+                "application_discard": "interrupted",
+            }.get(attempt_status, "unknown")
+    return {
+        "base_url": base_url,
+        "model": model,
+        "status": status,
+        "http_status": attempt.get("http_status") if attempt else None,
+        "observed_at": (attempt.get("end_time") or attempt.get("start_time"))
+        if attempt
+        else None,
+        "recorded": settings is None,
+    }
+
+
+def case_snapshot(
+    case: Case, db: CaseDB, *, settings: Settings | None = None
+) -> dict[str, Any]:
     """Read one consistent, non-authoritative view of case progress."""
     with db.read_snapshot():
         finding_count = int(db.execute("SELECT COUNT(*) FROM findings").fetchone()[0])
@@ -185,7 +267,7 @@ def case_snapshot(case: Case, db: CaseDB) -> dict[str, Any]:
             (),
         )
         if session:
-            settings = _row(
+            session_settings = _row(
                 db,
                 "SELECT output_json FROM trace.investigation_steps WHERE session_id = ? AND phase = 'session-settings' ORDER BY created_at DESC LIMIT 1",
                 (session["session_id"],),
@@ -199,8 +281,10 @@ def case_snapshot(case: Case, db: CaseDB) -> dict[str, Any]:
                 latest_step = None
             budget_remaining = None
             budget_limit = None
-            if settings and isinstance(settings.get("output_json"), dict):
-                max_calls = settings["output_json"].get("max_llm_calls")
+            if session_settings and isinstance(
+                session_settings.get("output_json"), dict
+            ):
+                max_calls = session_settings["output_json"].get("max_llm_calls")
                 if isinstance(max_calls, int):
                     budget_limit = max_calls
                 if isinstance(max_calls, int) and max_calls > 0:
@@ -277,6 +361,7 @@ def case_snapshot(case: Case, db: CaseDB) -> dict[str, Any]:
             "session": session,
             "pipeline": pipeline_projection,
             "current_work": latest_step,
+            "llm": _llm_connection(db, settings),
             "counts": {
                 "findings": finding_count,
                 "hypotheses": hypothesis_count,
