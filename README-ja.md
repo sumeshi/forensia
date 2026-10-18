@@ -4,11 +4,11 @@
 
 [English](README.md)
 
-FORENSIAは、LLMを用いてWindowsデジタルフォレンジックを支援する、実験的なハーネスです。
+FORENSIAは、LLMを用いてWindowsデジタルフォレンジックを支援する実験的なハーネスです。
 
 MFT、EVTX、Prefetch、Registryなどの各種アーティファクトを取り込み、検知ルールによる発見を起点として、**調査仮説の生成、証拠の検索と検証、報告書の更新**を繰り返します。
 
-このプロジェクトのコンセプトは、**弱いLLMでも、調査の一貫性を保ちながら自律的にフォレンジック調査を進められるアーキテクチャ**です。
+このプロジェクトのコンセプトは、**弱いLLMでも、一貫性を保ちながら自律的に調査できるアーキテクチャ**です。
 
 ## 背景
 
@@ -40,7 +40,15 @@ MFT、EVTX、Prefetch、Registryなどの各種アーティファクトを取り
 
 ## 設計原則
 
-前述の目的を実現するため、3つの設計原則を定めています。
+LLMを取り巻く開発手法は、Prompt Engineering、Context Engineering、Harness Engineering、Loop Engineeringへと、設計の対象を広げてきました。
+
+LLMは開発の対象であると同時に、開発そのものを加速させる道具でもあります。コードの生成や試作、改善のサイクルが短くなる一方で、モデルやフレームワークも目まぐるしく進化しています。
+
+こうした環境では、個々の実装よりも、長く維持できるアーキテクチャに着目することが重要だと考えています。Pyramid of Painになぞらえるなら、変化しやすい個別の要素より、その背後にある変化しにくい構造に目を向けるという発想です。
+
+FORENSIAでも、調査の計画、実行、状態管理、検証、報告といった責務と、それらの関係を重視しています。**モデルやツールが進化しても、アーキテクチャ全体を作り直さずに、個々の実装を交換できる構造**を目指しています。
+
+この方針に基づき、3つの設計原則を定めています。
 
 ### 1. 孤独に戦う
 
@@ -238,12 +246,6 @@ FORENSIAは実験段階のプロジェクトです。
 - [DuckDB](https://duckdb.org/) — 証拠検索と調査状態の保存
 - [Sigma](https://github.com/SigmaHQ/sigma) — 調査の起点となる検知ルール
 
-設計にあたって以下のプロジェクトから影響を受けています。
-
-- [Pi](https://github.com/earendil-works/pi) — エージェントの実行ループと文脈管理
-- [ARTEX](https://github.com/mhtsec/ARTEX) — 計画と実行の分離、永続的なTodo、探索履歴の共有
-
-
 ## 開発への参加
 
 FORENSIAは開発中のプロジェクトであり、アーキテクチャやインターフェースは大幅に変更される可能性があります。
@@ -254,5 +256,7 @@ FORENSIAは開発中のプロジェクトであり、アーキテクチャやイ
 
 ## ライセンス
 
-本ソフトウェアは[MIT License](LICENSE)ライセンスの元提供されています。
-SigmaHQルールは[Detection Rule License 1.1](https://github.com/SigmaHQ/Detection-Rule-License)の条件で別途取得し、報告書には提供されたルールの著者・出典を保持します。`tests/fixtures/sigma/`の上流回帰データはPython配布物から除外し、元のライセンスを保持しています。
+FORENSIAは[MIT License](LICENSE)のもと提供されます。
+検知に使用可能なSigmaHQのルールには[Detection Rule License 1.1](https://github.com/SigmaHQ/Detection-Rule-License)が適用されます。
+
+[Pi Coding Agent](https://github.com/earendil-works/pi) および [Autumn-27](https://github.com/Autumn-27) のARTEXに着想を得ています。

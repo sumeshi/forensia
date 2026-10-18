@@ -8,7 +8,7 @@ FORENSIA is an experimental harness for LLM-assisted Windows digital forensics.
 
 It ingests artifacts such as MFT, EVTX, Prefetch, and Registry data, then uses findings from detection rules to begin a cycle of **forming hypotheses, searching and testing evidence, and updating a report**.
 
-The project explores an architecture that lets **even a limited LLM carry out a forensic investigation autonomously while keeping its work consistent**.
+The project explores an architecture that lets **even a limited LLM investigate autonomously while keeping its work consistent**.
 
 ## Background
 
@@ -38,7 +38,15 @@ FORENSIA therefore asks **how far a carefully designed harness can compensate fo
 
 ## Design Principles
 
-Three principles guide the project.
+LLM development has broadened its design focus through Prompt Engineering, Context Engineering, Harness Engineering, and Loop Engineering.
+
+LLMs are both the subject of development and tools that accelerate development itself. As cycles of code generation, prototyping, and improvement get shorter, models and frameworks are also evolving rapidly.
+
+In this environment, we believe it is important to focus on an architecture that can endure over time, rather than individual implementations. By analogy with the Pyramid of Pain, the idea is to look beyond rapidly changing individual elements to the more stable structures behind them.
+
+FORENSIA focuses on the responsibilities of investigation planning, execution, state management, verification, and reporting, and on how they relate to one another. We aim for **a structure that lets us replace individual implementations as models and tools evolve, without rebuilding the entire architecture**.
+
+Three design principles follow from this approach.
 
 ### 1. Go it alone
 
@@ -232,11 +240,6 @@ FORENSIA uses these open source projects.
 - [DuckDB](https://duckdb.org/) — Evidence queries and investigation state storage
 - [Sigma](https://github.com/SigmaHQ/sigma) — Detection rules that provide investigative leads
 
-Its design is also influenced by these projects.
-
-- [Pi](https://github.com/earendil-works/pi) — Agent execution loops and context management
-- [ARTEX](https://github.com/mhtsec/ARTEX) — Separation of planning and execution, persistent tasks, and shared search history
-
 ## Contributing
 
 FORENSIA is under active development. Its architecture and interfaces may change substantially.
@@ -246,5 +249,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) (currently in Japanese) for the implement
 
 ## License
 
-The software is available under the [MIT License](LICENSE).
-SigmaHQ rules are acquired separately under the [Detection Rule License 1.1](https://github.com/SigmaHQ/Detection-Rule-License). Reports retain the supplied rule authors and sources. Upstream regression data in `tests/fixtures/sigma/` is excluded from Python distributions and retains its own license.
+FORENSIA is available under the [MIT License](LICENSE).
+SigmaHQ rules available for detection are licensed under the [Detection Rule License 1.1](https://github.com/SigmaHQ/Detection-Rule-License).
+
+Inspired by [Pi Coding Agent](https://github.com/earendil-works/pi) and ARTEX by [Autumn-27](https://github.com/Autumn-27).
