@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
 
 import pytest
@@ -10,7 +11,7 @@ from forensia.core.case import Case
 from forensia.core.progress_event import progress_event
 from forensia.db.database import CaseDB
 from forensia.db.progress import list_progress_events, record_progress_event
-from forensia.db.views import case_events, case_snapshot
+from forensia.db.views import case_detail, case_events, case_snapshot
 from forensia.pipeline import _run_evidence_stages
 
 
@@ -158,6 +159,11 @@ def test_pipeline_projection_preserves_elapsed_through_terminal_event(
                 snapshot["elapsed_seconds"] == snapshot["pipeline"]["elapsed_seconds"]
             )
             assert snapshot["elapsed_seconds"] >= 30
+            assert snapshot["current_activity"]["status"] == (
+                terminal_status or "running"
+            )
+            assert snapshot["current_activity"]["phase"] == "normalize"
+            assert snapshot["current_activity"]["provider_waiting"] is False
 
 
 def test_evidence_stage_failure_records_terminal_lifecycle_event(monkeypatch) -> None:
@@ -449,3 +455,246 @@ def test_case_snapshot_prefers_newer_running_session_over_old_stage_event() -> N
             "iteration": None,
         }
         assert snapshot["pipeline"] is None
+
+
+def _activity_session(db, session_id="S-current", *, status="running"):
+    db.execute(
+        "INSERT INTO trace.investigation_sessions "
+        "(session_id, started_at, status, terminal_reason) VALUES (?, now(), ?, ?)",
+        (session_id, status, "Operator stopped" if status == "stopped" else None),
+    )
+
+
+def _activity_attempt(db, session_id, hypothesis_id, phase, attempt_id="provider-1"):
+    call_id = f"call-{attempt_id}"
+    db.execute(
+        "INSERT INTO trace.llm_logical_calls "
+        "(logical_call_id, session_id, hypothesis_id, phase) VALUES (?, ?, ?, ?)",
+        (call_id, session_id, hypothesis_id, phase),
+    )
+    db.execute(
+        "INSERT INTO trace.llm_provider_attempts "
+        "(attempt_id, logical_call_id, session_id, phase, status, start_time) "
+        "VALUES (?, ?, ?, ?, 'open', now())",
+        (attempt_id, call_id, session_id, phase),
+    )
+
+
+def test_current_activity_uses_current_execution_owner_and_bounded_purpose(tmp_path):
+    case = Case.init(tmp_path / "case")
+    with CaseDB(case) as db:
+        _activity_session(db)
+        _activity_session(db, "S-old", status="stopped")
+        db.execute(
+            "UPDATE trace.investigation_sessions SET started_at = now() - INTERVAL 1 DAY "
+            "WHERE session_id = 'S-old'"
+        )
+        db.execute(
+            "INSERT INTO hypotheses (hypothesis_id, description) VALUES (?, ?), (?, ?)",
+            ("H-current", "A current target " + "x" * 1000, "H-candidate", "Candidate"),
+        )
+        event_index = record_progress_event(
+            db,
+            progress_event(
+                "investigation.search",
+                "running",
+                session_id="S-current",
+                stage="execute",
+                summary="Searching acquired evidence",
+                refs={"hypothesis_id": "H-current", "execution_step_id": "execution-1"},
+                audit={"purpose": "Check the current file " + "p" * 1000},
+            ),
+        )
+        record_progress_event(
+            db,
+            progress_event(
+                "hypothesis.selected",
+                "completed",
+                session_id="S-current",
+                stage="select",
+                refs={"hypothesis_id": "H-candidate"},
+            ),
+        )
+        record_progress_event(
+            db,
+            progress_event(
+                "investigation.search",
+                "running",
+                session_id="S-old",
+                stage="execute",
+                summary="Old session must not win by event order",
+                refs={"hypothesis_id": "H-old"},
+                audit={"purpose": "Old purpose"},
+            ),
+        )
+        db.execute(
+            "INSERT INTO trace.investigation_steps "
+            "(step_id, session_id, hypothesis_id, phase, created_at) "
+            "VALUES ('contract-latest', 'S-current', 'H-candidate', 'task-contract', now())"
+        )
+        snapshot = case_snapshot(case, db)
+
+    activity = snapshot["current_activity"]
+    assert snapshot["current_work"]["phase"] == "task-contract"
+    assert activity["status"] == "running"
+    assert activity["phase"] == "execute"
+    assert activity["message"] == "Searching acquired evidence"
+    assert activity["session_id"] == "S-current"
+    assert activity["hypothesis_id"] == "H-current"
+    assert activity["refs"]["event_index"] == event_index
+    assert activity["refs"]["execution_step_id"] == "execution-1"
+    for key in ("purpose", "hypothesis_description"):
+        assert len(activity[key]) == 320
+        assert activity[key].endswith("…")
+
+
+@pytest.mark.parametrize("phase", ["check-verdict", "hypothesis_plan"])
+def test_current_activity_provider_scope_and_new_plan_do_not_reuse_old_purpose(
+    tmp_path, phase
+):
+    case = Case.init(tmp_path / "case")
+    with CaseDB(case) as db:
+        _activity_session(db)
+        db.execute(
+            "INSERT INTO hypotheses (hypothesis_id, description) VALUES "
+            "('H-current', 'Current target'), ('H-other', 'Other target')"
+        )
+        record_progress_event(
+            db,
+            progress_event(
+                "query.planned",
+                "completed",
+                session_id="S-current",
+                stage="investigate/do",
+                refs={"hypothesis_id": "H-current", "plan_step_id": "plan-old"},
+                audit={"purpose": "Known current query purpose"},
+            ),
+        )
+        _activity_attempt(db, "S-current", "H-current", phase)
+        _activity_attempt(db, "S-old", "H-other", "check-verdict", "old-provider")
+        activity = case_snapshot(case, db)["current_activity"]
+        assert activity["status"] == "waiting"
+        assert activity["phase"] == phase
+        assert activity["provider_waiting"] is True
+        assert activity["hypothesis_id"] == "H-current"
+        assert activity["refs"]["provider_attempt_id"] == "provider-1"
+        if phase == "hypothesis_plan":
+            assert activity["purpose"] is None
+            assert "plan_step_id" not in activity["refs"]
+        else:
+            assert activity["purpose"] == "Known current query purpose"
+
+        db.execute(
+            "UPDATE trace.llm_logical_calls SET hypothesis_id = 'H-other' "
+            "WHERE logical_call_id = 'call-provider-1'"
+        )
+        other = case_snapshot(case, db)["current_activity"]
+        assert other["hypothesis_id"] == "H-other"
+        assert other["hypothesis_description"] == "Other target"
+        assert other["purpose"] is None
+        assert "plan_step_id" not in other["refs"]
+
+        db.execute(
+            "UPDATE trace.investigation_sessions SET status = 'stopped', "
+            "finished_at = now(), terminal_reason = 'Operator stopped' "
+            "WHERE session_id = 'S-current'"
+        )
+        stopped = case_snapshot(case, db)
+        assert stopped["current_activity"]["status"] == "stopped"
+        assert stopped["current_activity"]["provider_waiting"] is False
+        assert stopped["current_activity"]["hypothesis_id"] is None
+        assert stopped["current_activity"]["purpose"] is None
+        assert stopped["session"]["provider_wait"]["waiting"] is False
+
+
+@pytest.mark.parametrize("running", [False, True])
+def test_current_activity_distinguishes_direction_queue_from_provider_wait(
+    tmp_path, running
+):
+    case = Case.init(tmp_path / "case")
+    with CaseDB(case) as db:
+        _activity_session(db, status="running" if running else "stopped")
+        if running:
+            _activity_attempt(db, "S-current", None, "plan-broad")
+        text = "Focus on this file " + "d" * 1000
+        db.execute(
+            "INSERT INTO trace.runtime_commands "
+            "(command_id, operation, payload, status) VALUES ('direction-1', 'steer', ?, 'accepted')",
+            (json.dumps({"text": text}),),
+        )
+        activity = case_snapshot(case, db)["current_activity"]
+        assert activity["status"] == "waiting"
+        assert activity["phase"] == (
+            "awaiting_safe_boundary" if running else "awaiting_command"
+        )
+        assert activity["provider_waiting"] is running
+        assert activity["command"]["status"] == "accepted"
+        assert activity["command"]["text"].endswith("…")
+        assert len(activity["command"]["text"]) == 320
+        receipt = case_detail(db, "command_receipt", "direction-1")
+        assert receipt["payload"] == {"text": text}
+
+
+def test_current_activity_applying_direction_uses_explicit_intervention_session(
+    tmp_path,
+):
+    case = Case.init(tmp_path / "case")
+    with CaseDB(case) as db:
+        _activity_session(db)
+        _activity_attempt(db, "S-current", "H-previous", "check-verdict")
+        _activity_attempt(db, "S-unrelated", None, "human-intervention", "unrelated")
+        db.execute(
+            "INSERT INTO trace.runtime_commands "
+            "(command_id, operation, payload, status, result) VALUES "
+            "('direction-1', 'steer', '{\"text\":\"Look at deletion\"}', 'applying', ?)",
+            (json.dumps({"intervention_session_id": "S-intervention"}),),
+        )
+        activity = case_snapshot(case, db)["current_activity"]
+        assert activity["status"] == "applying"
+        assert activity["phase"] == "applying_direction"
+        assert activity["message"] == "Applying your direction"
+        assert activity["session_id"] == "S-intervention"
+        assert activity["hypothesis_id"] is None
+        assert activity["purpose"] is None
+        assert activity["provider_waiting"] is False
+        _activity_attempt(
+            db, "S-intervention", None, "human-intervention", "direction-provider"
+        )
+        waiting = case_snapshot(case, db)["current_activity"]
+        assert waiting["phase"] == "applying_direction"
+        assert waiting["provider_waiting"] is True
+        assert waiting["refs"]["provider_attempt_id"] == "direction-provider"
+
+
+def test_current_activity_idle_and_terminal_work_remain_read_only(tmp_path):
+    case = Case.init(tmp_path / "case")
+    with CaseDB(case) as db:
+        idle = case_snapshot(case, db)["current_activity"]
+        assert idle["status"] == "idle"
+        assert idle["hypothesis_id"] is None
+        _activity_session(db, status="stopped")
+        record_progress_event(
+            db,
+            progress_event(
+                "investigation.search",
+                "running",
+                session_id="S-current",
+                stage="execute",
+                refs={"hypothesis_id": "H-old"},
+                audit={"purpose": "A past query"},
+            ),
+        )
+        before = db.execute("SELECT * FROM trace.progress_events").fetchall()
+    with CaseDB(case, read_only=True) as db:
+        for _ in range(2):
+            activity = case_snapshot(case, db)["current_activity"]
+            assert activity["status"] == "stopped"
+            assert activity["hypothesis_id"] is None
+            assert activity["purpose"] is None
+            case_events(db)
+        assert db.execute("SELECT * FROM trace.progress_events").fetchall() == before
+        assert (
+            db.execute("SELECT count(*) FROM trace.investigation_steps").fetchone()[0]
+            == 0
+        )
+        assert db.execute("SELECT count(*) FROM investigation_tasks").fetchone()[0] == 0

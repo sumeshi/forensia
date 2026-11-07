@@ -33,6 +33,20 @@ DetailKind = Literal[
 DETAIL_KINDS = frozenset(get_args(DetailKind))
 _DETAIL_LIMIT = 100
 _VALUE_LIMIT = 16_384
+_ACTIVITY_TEXT_LIMIT = 320
+_ACTIVITY_REF_FIELDS = (
+    "hypothesis_id",
+    "step_id",
+    "plan_step_id",
+    "execution_step_id",
+    "do_step_id",
+    "check_step_id",
+    "sufficiency_step_id",
+    "settlement_ref",
+    "receipt_id",
+    "attempt_ref",
+    "assessment_id",
+)
 
 # Select explicit parent pipeline lifecycle transitions, not child progress.
 _PIPELINE_STAGE_EVENT_SQL = """
@@ -42,6 +56,45 @@ _PIPELINE_STAGE_EVENT_SQL = """
     WHERE json_extract_string(payload, '$.scope') = 'pipeline_stage'
       AND kind IN ('pipeline.ingest', 'pipeline.normalize', 'pipeline.analyze')
     ORDER BY event_index DESC
+    LIMIT 1
+"""
+
+# Only executed work stages own the current activity. Selection candidates,
+# historical steps and LLM text cannot select a different hypothesis here.
+_ACTIVITY_EVENT_SQL = (
+    """
+    SELECT event_index, kind, stage, status, left(summary, 321) AS summary,
+           created_at, left(json_extract_string(payload, '$.audit.purpose'), 321) AS purpose,
+           json_object(
+"""
+    + ", ".join(
+        f"'{field}', left(json_extract_string(refs, '$.{field}'), 321)"
+        for field in _ACTIVITY_REF_FIELDS
+    )
+    + """
+           ) AS refs
+    FROM trace.progress_events
+    WHERE session_id = ? AND kind IN (
+        'hypothesis.investigation_started', 'query.planned',
+        'investigation.search', 'investigation.search_fallback',
+        'hypothesis.check_completed', 'hypothesis.check_failed',
+        'investigation.assessment', 'investigation.sufficiency',
+        'investigation.settlement', 'hypothesis.verdict_applied',
+        'hypothesis.work_paused', 'hypothesis.plan_retry',
+        'investigation.plan.completed', 'investigation.plan_failed'
+    )
+    ORDER BY event_index DESC LIMIT 1
+"""
+)
+
+_ACTIVITY_COMMAND_SQL = """
+    SELECT command_id, operation, status, updated_at,
+           left(json_extract_string(payload, '$.text'), 321) AS text,
+           json_extract_string(result, '$.intervention_session_id') AS intervention_session_id
+    FROM trace.runtime_commands
+    WHERE status IN ('accepted', 'applying')
+      AND operation IN ('steer', 'stop', 'add', 'report')
+    ORDER BY CASE WHEN status = 'applying' THEN 0 ELSE 1 END, created_at, command_id
     LIMIT 1
 """
 
@@ -112,6 +165,205 @@ def _elapsed_seconds(started_at: Any, ended_at: Any = None) -> int | None:
         return None
 
 
+def _activity_text(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    value = " ".join(value.split())
+    if not value:
+        return None
+    return (
+        value[: _ACTIVITY_TEXT_LIMIT - 1] + "…"
+        if len(value) > _ACTIVITY_TEXT_LIMIT
+        else value
+    )
+
+
+def _open_provider_attempt(db: CaseDB, session_id: str) -> dict[str, Any] | None:
+    return _row(
+        db,
+        "SELECT a.attempt_id, a.phase, a.start_time, c.logical_call_id, "
+        "c.hypothesis_id, c.action_id FROM trace.llm_provider_attempts a "
+        "JOIN trace.llm_logical_calls c USING (logical_call_id) "
+        "WHERE c.session_id = ? AND a.status = 'open' "
+        "ORDER BY a.start_time DESC NULLS LAST, a.retry_ordinal DESC, a.attempt_id LIMIT 1",
+        (session_id,),
+    )
+
+
+def _current_activity(
+    db: CaseDB,
+    session: dict[str, Any] | None,
+    pipeline: dict[str, Any] | None,
+    state: dict[str, Any] | None,
+    open_attempt: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Describe live work from explicit ownership without changing its state."""
+    activity: dict[str, Any] = {
+        "status": "idle",
+        "phase": "idle",
+        "message": "No investigation is running",
+        "session_id": None,
+        "hypothesis_id": None,
+        "hypothesis_description": None,
+        "purpose": None,
+        "refs": {},
+        "updated_at": None,
+        "provider_waiting": False,
+        "command": None,
+    }
+    active = False
+    event = None
+    if pipeline:
+        active = pipeline.get("status") == "running"
+        activity.update(
+            status=_activity_text(pipeline.get("status")) or "idle",
+            phase=_activity_text(pipeline.get("stage")) or "pipeline",
+            message=_activity_text(pipeline.get("summary"))
+            or "Preparing evidence for investigation",
+            updated_at=pipeline.get("created_at"),
+        )
+        activity["refs"] = {"event_index": pipeline["event_index"]}
+    elif session:
+        active = session.get("status") == "running"
+        activity.update(
+            status="running"
+            if active
+            else _activity_text(session.get("status")) or "idle",
+            phase="investigate" if active else "terminal",
+            message="Continuing the investigation"
+            if active
+            else _activity_text(session.get("terminal_reason"))
+            or "The investigation is not running",
+            session_id=session["session_id"],
+            updated_at=session.get("started_at")
+            if active
+            else session.get("finished_at"),
+        )
+        if active:
+            event = _row(db, _ACTIVITY_EVENT_SQL, (session["session_id"],))
+            if event and event["kind"] not in {
+                "hypothesis.verdict_applied",
+                "hypothesis.work_paused",
+                "investigation.plan.completed",
+                "investigation.plan_failed",
+            }:
+                refs = event.get("refs") or {}
+                activity.update(
+                    phase=_activity_text(event.get("stage")) or "investigate",
+                    message=_activity_text(event.get("summary"))
+                    or "Continuing the investigation",
+                    hypothesis_id=refs.get("hypothesis_id"),
+                    purpose=_activity_text(event.get("purpose")),
+                    refs={
+                        key: text
+                        for key in _ACTIVITY_REF_FIELDS
+                        if (text := _activity_text(refs.get(key)))
+                    }
+                    | {"event_index": event["event_index"]},
+                    updated_at=event.get("created_at"),
+                )
+            if open_attempt:
+                owner = open_attempt.get("hypothesis_id")
+                # A new plan has no known query purpose until it is admitted.
+                phase = str(open_attempt.get("phase") or "")
+                same_owner = owner is not None and owner == activity["hypothesis_id"]
+                if not same_owner or "plan" in phase:
+                    activity["purpose"] = None
+                activity.update(
+                    status="waiting",
+                    phase=_activity_text(phase) or "waiting_for_provider",
+                    message="Waiting for the model response",
+                    hypothesis_id=_activity_text(owner),
+                    provider_waiting=True,
+                    updated_at=open_attempt.get("start_time"),
+                )
+                if not same_owner or "plan" in phase:
+                    activity["refs"] = {}
+                activity["refs"].update(
+                    logical_call_id=open_attempt["logical_call_id"],
+                    provider_attempt_id=open_attempt["attempt_id"],
+                )
+    elif state:
+        terminal_status = state.get("status")
+        if terminal_status in {"stopped", "completed", "failed", "interrupted"}:
+            activity.update(
+                status=terminal_status,
+                phase="terminal",
+                message=_activity_text(state.get("stop_reason"))
+                or "The investigation is not running",
+                updated_at=state.get("updated_at"),
+            )
+
+    command = _row(db, _ACTIVITY_COMMAND_SQL, ())
+    if command:
+        operation = command["operation"]
+        applying = command["status"] == "applying"
+        activity["command"] = {
+            key: _activity_text(command.get(key))
+            for key in ("command_id", "operation", "status", "text")
+        }
+        activity["refs"]["command_id"] = command["command_id"]
+        if applying and operation == "steer":
+            intervention_session = command.get("intervention_session_id")
+            intervention_attempt = (
+                _open_provider_attempt(db, intervention_session)
+                if intervention_session
+                else None
+            )
+            activity.update(
+                status="applying",
+                phase="applying_direction",
+                message="Applying your direction",
+                session_id=intervention_session,
+                hypothesis_id=None,
+                purpose=None,
+                refs={"command_id": command["command_id"]},
+                updated_at=command.get("updated_at"),
+                provider_waiting=intervention_attempt is not None,
+            )
+            if intervention_attempt:
+                activity["refs"].update(
+                    logical_call_id=intervention_attempt["logical_call_id"],
+                    provider_attempt_id=intervention_attempt["attempt_id"],
+                )
+        elif not applying:
+            activity.update(
+                status="waiting",
+                phase="awaiting_safe_boundary" if active else "awaiting_command",
+                message=(
+                    "Direction accepted; waiting for a safe boundary"
+                    if active
+                    else "Direction accepted; waiting to apply"
+                )
+                if operation == "steer"
+                else "Waiting for a safe boundary to apply your command"
+                if active
+                else "Waiting to apply your command",
+            )
+        elif not active:
+            activity.update(
+                status="applying",
+                phase=operation,
+                message={
+                    "add": "Adding acquired evidence",
+                    "report": "Preparing the report",
+                    "stop": "Stopping the investigation",
+                }.get(operation, "Applying your command"),
+            )
+
+    if hypothesis_id := activity["hypothesis_id"]:
+        hypothesis = _row(
+            db,
+            "SELECT left(description, 321) AS description FROM hypotheses WHERE hypothesis_id = ?",
+            (hypothesis_id,),
+        )
+        activity["hypothesis_description"] = (
+            _activity_text(hypothesis.get("description")) if hypothesis else None
+        )
+        activity["refs"]["hypothesis_id"] = hypothesis_id
+    return activity
+
+
 def case_snapshot(case: Case, db: CaseDB) -> dict[str, Any]:
     """Read one consistent, non-authoritative view of case progress."""
     with db.read_snapshot():
@@ -148,16 +400,10 @@ def case_snapshot(case: Case, db: CaseDB) -> dict[str, Any]:
             if session_row
             else None
         )
+        open_attempt = None
         if session:
-            open_attempt = _row(
-                db,
-                "SELECT a.attempt_id, a.phase, a.start_time "
-                "FROM trace.llm_provider_attempts a "
-                "JOIN trace.llm_logical_calls c USING (logical_call_id) "
-                "WHERE c.session_id = ? AND a.status = 'open' "
-                "ORDER BY a.retry_ordinal DESC, a.start_time DESC LIMIT 1",
-                (session["session_id"],),
-            )
+            if session.get("status") == "running":
+                open_attempt = _open_provider_attempt(db, session["session_id"])
             stop_command = _row(
                 db,
                 "SELECT command_id, status, reason FROM trace.runtime_commands "
@@ -279,6 +525,9 @@ def case_snapshot(case: Case, db: CaseDB) -> dict[str, Any]:
             "session": session,
             "pipeline": pipeline_projection,
             "current_work": latest_step,
+            "current_activity": _current_activity(
+                db, session, pipeline_projection, state, open_attempt
+            ),
             "counts": {
                 "findings": finding_count,
                 "hypotheses": hypothesis_count,
@@ -340,7 +589,7 @@ def case_detail(
             "receipt_id",
         ),
         "command_receipt": (
-            "SELECT command_id, operation, status, reason, result, created_at, updated_at FROM trace.runtime_commands WHERE command_id = ?",
+            "SELECT command_id, operation, payload, status, reason, result, created_at, updated_at FROM trace.runtime_commands WHERE command_id = ?",
             "command_id",
         ),
         "assessment": (

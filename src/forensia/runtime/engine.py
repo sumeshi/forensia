@@ -38,6 +38,81 @@ def _safe_error(exc: Exception, settings: Settings) -> str:
     return message[:2000] or type(exc).__name__
 
 
+def _command_event(
+    command_id: str,
+    operation: str,
+    status: str,
+    payload: dict[str, Any],
+    *,
+    reason: str | None = None,
+    result: dict[str, Any] | None = None,
+    continuation: str = "not_requested",
+) -> dict[str, Any]:
+    """Describe a command using saved input and host outcomes, without a model call."""
+    result = result or {}
+    refs = dict(result["refs"]) if isinstance(result.get("refs"), dict) else {}
+    refs["command_id"] = command_id
+    session_id = result.get("intervention_session_id")
+    if session_id:
+        refs["session_id"] = session_id
+    instruction = str(payload.get("text") or "") if operation == "steer" else ""
+    if operation == "steer":
+        summary = {
+            "accepted": "Your instruction is queued for a safe investigation boundary.",
+            "applying": "I am applying your instruction.",
+            "applied": "Your instruction was applied.",
+            "rejected": "Your instruction was not adopted.",
+            "failed": "I could not apply your instruction.",
+            "interrupted": "Instruction processing stopped at your request.",
+        }[status]
+        action_summary = {
+            "update_policy": "Updated the investigation policy.",
+            "add_work": "Added investigation work through the normal admission checks.",
+            "prioritize_hypothesis": "Saved the requested investigation priority.",
+        }
+        result_summary = (
+            action_summary.get(str(result.get("action")), summary)
+            if status == "applied"
+            else summary
+        )
+    else:
+        summary = result_summary = f"Runtime {operation} {status}."
+    if reason:
+        result_summary = f"{result_summary} {reason[:500]}"
+    return progress_event(
+        "runtime.command",
+        {
+            "accepted": "running",
+            "applying": "running",
+            "applied": "completed",
+            "rejected": "skipped",
+            "failed": "failed",
+            "interrupted": "interrupted",
+        }[status],
+        severity=(
+            "error"
+            if status == "failed"
+            else "success"
+            if status == "applied"
+            else "info"
+            if status in {"accepted", "applying"}
+            else "warning"
+        ),
+        reason=reason,
+        refs=refs,
+        stage="runtime",
+        session_id=session_id,
+        summary=summary,
+        command_id=command_id,
+        operation=operation,
+        command_status=status,
+        instruction=instruction[:4000],
+        instruction_truncated=len(instruction) > 4000,
+        result_summary=result_summary,
+        continuation=continuation,
+    )
+
+
 class RuntimeEngine:
     """Own one case's command queue and adapt it to the existing pipeline."""
 
@@ -54,6 +129,8 @@ class RuntimeEngine:
         self._template: Path | None = None
         self._prepared = False
         self._active = False
+        self._investigating = False
+        self._continuing = False
         self._initial_pending = False
         self._applying = False
         self._retiring = False
@@ -148,7 +225,7 @@ class RuntimeEngine:
         with CaseDB(self._case, read_only=self._case.database_path.exists()) as db:
             db.execute("SELECT command_id FROM trace.runtime_commands LIMIT 0")
             interrupted = db.execute(
-                "SELECT command_id, operation FROM trace.runtime_commands WHERE status = 'applying'"
+                "SELECT command_id, operation, payload FROM trace.runtime_commands WHERE status = 'applying'"
             ).fetchall()
         from forensia.pipeline import pin_investigation_inputs
 
@@ -178,7 +255,7 @@ class RuntimeEngine:
         if interrupted:
             with CaseDB(self._case) as db:
                 with db.transaction():
-                    for command_id, operation in interrupted:
+                    for command_id, operation, payload in interrupted:
                         db.execute(
                             "UPDATE trace.runtime_commands SET status = 'failed', reason = ?, updated_at = ? WHERE command_id = ?",
                             [
@@ -189,15 +266,14 @@ class RuntimeEngine:
                         )
                         record_progress_event(
                             db,
-                            progress_event(
-                                "runtime.command",
+                            _command_event(
+                                command_id,
+                                operation,
                                 "failed",
-                                severity="error",
+                                json.loads(payload)
+                                if isinstance(payload, str)
+                                else payload,
                                 reason="runtime_restarted_during_apply",
-                                stage="runtime",
-                                summary="Runtime command was not replayed after an interrupted apply",
-                                command_id=command_id,
-                                operation=operation,
                             ),
                         )
         for command_id, operation in accepted:
@@ -244,7 +320,7 @@ class RuntimeEngine:
             "SELECT 1 FROM trace.runtime_commands WHERE operation = 'stop' "
             "AND status IN ('accepted', 'applying') LIMIT 1"
         ).fetchone()
-        if pending:
+        if pending or not self._running:
             self.stop_requested.set()
         else:
             self.stop_requested.clear()
@@ -323,6 +399,7 @@ class RuntimeEngine:
                                 "skipped",
                                 severity="warning",
                                 reason="command_id_content_mismatch",
+                                refs={"command_id": command_id},
                                 stage="runtime",
                                 summary="Runtime rejected a command ID reused with different content",
                                 command_id=command_id,
@@ -347,21 +424,37 @@ class RuntimeEngine:
                     )
                     record_progress_event(
                         db,
-                        progress_event(
-                            "runtime.command",
-                            "skipped" if reject_resume else "running",
-                            severity="warning" if reject_resume else "info",
+                        _command_event(
+                            command_id,
+                            operation,
+                            "rejected" if reject_resume else "accepted",
+                            payload,
                             reason="runtime_already_active" if reject_resume else None,
-                            stage="runtime",
-                            summary="Runtime command rejected"
-                            if reject_resume
-                            else "Runtime command accepted",
-                            command_id=command_id,
-                            operation=operation,
+                            continuation=(
+                                "after_apply"
+                                if operation in {"add", "report", "steer"}
+                                and (
+                                    self._investigating
+                                    or self._continuing
+                                    or self._resume_after
+                                )
+                                else "not_requested"
+                            ),
                         ),
                     )
             if duplicate is None and not reject_resume:
                 self._sync_stop_requested(db)
+                if operation == "stop":
+                    self.stop_requested.set()
+                    self._resume_after.clear()
+                elif operation in {"add", "report", "steer"}:
+                    if self._investigating or self._continuing:
+                        self.stop_requested.set()
+                        self._resume_after.add(command_id)
+                    elif self._resume_after:
+                        # Commands received during the pause are applied in
+                        # order before the suspended investigation continues.
+                        self._resume_after.add(command_id)
         if conflict:
             raise ValueError("command_id was already used with different content")
         if duplicate is not None:
@@ -373,18 +466,6 @@ class RuntimeEngine:
                 "status": "rejected",
                 "reason": "Runtime is already active",
             }
-        if operation == "stop":
-            self.stop_requested.set()
-        elif (self._active or self._applying) and operation in {
-            "add",
-            "report",
-            "steer",
-        }:
-            self.stop_requested.set()
-            if operation in {"add", "report", "steer"}:
-                self._resume_after.add(command_id)
-        if operation == "stop":
-            self._resume_after.clear()
         self._commands.put(command_id)
         return {"command_id": command_id, "operation": operation, "status": "accepted"}
 
@@ -519,6 +600,7 @@ class RuntimeEngine:
     ) -> None:
         with self._lock:
             self._active = True
+            self._investigating = True
             self._initial_pending = False
         try:
             from forensia.pipeline import run_investigation
@@ -540,6 +622,7 @@ class RuntimeEngine:
         finally:
             with self._lock:
                 self._active = False
+                self._investigating = False
             self._close_active_db()
 
     def _apply_command(self, command_id: str) -> None:
@@ -560,10 +643,35 @@ class RuntimeEngine:
             operation, payload = row
             if isinstance(payload, str):
                 payload = json.loads(payload)
+            intervention_session_id = (
+                f"steer-{command_id}" if operation == "steer" else None
+            )
+            applying_result = (
+                {"intervention_session_id": intervention_session_id}
+                if intervention_session_id
+                else None
+            )
             with db.transaction():
                 db.execute(
-                    "UPDATE trace.runtime_commands SET status = 'applying', updated_at = ? WHERE command_id = ?",
-                    [_now(), command_id],
+                    "UPDATE trace.runtime_commands SET status = 'applying', result = ?, updated_at = ? WHERE command_id = ?",
+                    [
+                        json.dumps(applying_result) if applying_result else None,
+                        _now(),
+                        command_id,
+                    ],
+                )
+                record_progress_event(
+                    db,
+                    _command_event(
+                        command_id,
+                        operation,
+                        "applying",
+                        payload,
+                        result=applying_result,
+                        continuation="after_apply"
+                        if command_id in self._resume_after
+                        else "not_requested",
+                    ),
                 )
             self._sync_stop_requested(db)
         result: Any = None
@@ -601,7 +709,7 @@ class RuntimeEngine:
                     raise ValueError("steer requires text")
                 db = self._open_active_db()
                 self._active = True
-                session_id = f"steer-{command_id}"
+                session_id = intervention_session_id
                 telemetry_token = None
                 session_status = "failed"
                 session_reason = "intervention raised"
@@ -644,8 +752,18 @@ class RuntimeEngine:
                     result_status = (
                         str(result.get("status"))
                         if isinstance(result, dict)
-                        else "failed"
+                        else "invalid"
                     )
+                    if result_status not in {"applied", "rejected", "failed"}:
+                        result = {
+                            "status": "failed",
+                            "reason": "invalid_intervention_result",
+                            "refs": {},
+                        }
+                        result_status = "failed"
+                    if result_status != "applied":
+                        status = result_status
+                        reason = str(result.get("reason") or "Intervention failed")
                     if result_status in {"applied", "rejected"}:
                         session_status = "completed"
                         session_reason = str(
@@ -718,7 +836,51 @@ class RuntimeEngine:
                 "rejected",
                 str(result.get("reason") or "Operation rejected"),
             )
+        should_resume = False
         with self._database(write=True) as db:
+            self._sync_stop_requested(db)
+            resume_requested = command_id in self._resume_after
+            self._resume_after.discard(command_id)
+            if operation == "stop" or self.stop_requested.is_set() or not self._running:
+                self._resume_after.clear()
+                continuation_status = "stopped"
+                continuation_reason = "explicit_stop_or_shutdown"
+            elif resume_requested and (
+                status == "applied"
+                or operation == "steer"
+                and status in {"failed", "rejected"}
+            ):
+                pending = db.execute(
+                    "SELECT command_id, operation FROM trace.runtime_commands "
+                    "WHERE status = 'accepted' AND command_id != ? "
+                    "ORDER BY created_at, command_id",
+                    (command_id,),
+                ).fetchall()
+                if pending:
+                    # Keep the intent with queued operations so the Runtime
+                    # never starts a long investigation ahead of an instruction.
+                    for pending_id, pending_operation in pending:
+                        if pending_operation != "resume":
+                            self._resume_after.add(pending_id)
+                    continuation_status = "after_pending_commands"
+                    continuation_reason = "queued_operations_first"
+                else:
+                    should_resume = True
+                    continuation_status = "resuming"
+                    continuation_reason = "continue_suspended_investigation"
+            else:
+                continuation_status = "not_requested"
+                continuation_reason = "no_suspended_investigation"
+            result = dict(result) if isinstance(result, dict) else {"value": result}
+            if operation == "steer":
+                result["status"] = status
+                result.setdefault("reason", reason)
+                result["intervention_session_id"] = intervention_session_id
+            result["continuation"] = {
+                "requested": resume_requested,
+                "status": continuation_status,
+                "reason": continuation_reason,
+            }
             with db.transaction():
                 db.execute(
                     "UPDATE trace.runtime_commands SET status = ?, reason = ?, result = ?, updated_at = ? WHERE command_id = ?",
@@ -732,38 +894,43 @@ class RuntimeEngine:
                 )
                 record_progress_event(
                     db,
-                    progress_event(
-                        "runtime.command",
-                        {
-                            "applied": "completed",
-                            "rejected": "skipped",
-                            "failed": "failed",
-                            "interrupted": "interrupted",
-                        }[status],
-                        severity="success" if status == "applied" else "warning",
+                    _command_event(
+                        command_id,
+                        operation,
+                        status,
+                        payload,
                         reason=reason,
-                        stage="runtime",
-                        summary=f"Runtime command {status}",
-                        command_id=command_id,
-                        operation=operation,
+                        result=result,
+                        continuation=continuation_status,
                     ),
                 )
             self._sync_stop_requested(db)
-        if command_id in self._resume_after:
-            self._resume_after.discard(command_id)
-            if status == "applied":
-                try:
-                    self._investigate(
-                        None,
-                        self._resume_settings(),
-                        None,
-                        None,
-                        manual_resume=True,
-                    )
-                except InvestigationStopped:
-                    self._record_runtime_interrupted()
-                except Exception as exc:
-                    self._record_runtime_failure(exc)
+            if should_resume:
+                # Reserve the continuation before releasing the command lock.
+                # A direction arriving while settings are loaded must still
+                # interrupt or precede this investigation, never wait behind it.
+                self._continuing = True
+        if should_resume:
+            try:
+                if self.stop_requested.is_set() or not self._running:
+                    return
+                resume_settings = self._resume_settings()
+                if self.stop_requested.is_set() or not self._running:
+                    return
+                self._investigate(
+                    None,
+                    resume_settings,
+                    None,
+                    None,
+                    manual_resume=True,
+                )
+            except InvestigationStopped:
+                self._record_runtime_interrupted()
+            except Exception as exc:
+                self._record_runtime_failure(exc)
+            finally:
+                with self._lock:
+                    self._continuing = False
 
     def _resume_settings(self) -> Settings:
         self._settings = load_settings(require_inference=True)

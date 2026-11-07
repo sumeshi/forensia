@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import multiprocessing
 import subprocess
 import sys
@@ -646,12 +647,14 @@ def test_active_steer_pause_clears_its_stop_and_keeps_applied_receipt(
         investigations += 1
         if investigations == 1:
             engine._active = True
+            engine._investigating = True
             first_investigation.set()
             try:
                 assert engine.stop_requested.wait(3)
                 raise InvestigationStopped
             finally:
                 engine._active = False
+                engine._investigating = False
         continuation_attempted.set()
         raise RuntimeError("follow-up failed")
 
@@ -690,6 +693,344 @@ def test_active_steer_pause_clears_its_stop_and_keeps_applied_receipt(
         ).fetchone()[0]
     assert receipts == {"active-resume": "interrupted", "active-steer": "applied"}
     assert follow_up_failure == 1
+
+
+def _control_engine(tmp_path, monkeypatch):
+    from forensia.config import Settings
+    from forensia.runtime.engine import RuntimeEngine
+
+    case = Case.init(tmp_path / "case")
+    with CaseDB(case):
+        pass
+    engine = RuntimeEngine(case.path)
+    engine.prepare()
+    settings = Settings(llm_base_url="http://127.0.0.1:1", llm_model="test")
+    engine._settings = settings
+    monkeypatch.setattr(engine, "_resume_settings", lambda: settings)
+    return case, engine
+
+
+@pytest.mark.parametrize(
+    ("outcome", "expected_status"),
+    [
+        ("applied", "applied"),
+        ("rejected", "rejected"),
+        ("failed", "failed"),
+        ("raise", "failed"),
+        ("unknown_status", "failed"),
+        ("unknown_shape", "failed"),
+    ],
+)
+def test_active_direction_retains_outcome_and_continues_without_retry(
+    tmp_path, monkeypatch, outcome, expected_status
+):
+    import forensia.pipeline
+    from forensia.core.control import InvestigationStopped
+    from forensia.db.progress import list_progress_events
+    from forensia.investigation import intervention
+
+    case, engine = _control_engine(tmp_path, monkeypatch)
+    started = threading.Event()
+    continued = threading.Event()
+    investigation_calls = []
+    intervention_calls = []
+
+    def investigate(*_args, **kwargs):
+        investigation_calls.append(kwargs)
+        if len(investigation_calls) == 1:
+            started.set()
+            assert kwargs["stop_requested"].wait(3)
+            raise InvestigationStopped
+        continued.set()
+
+    def apply(*_args, **_kwargs):
+        intervention_calls.append(outcome)
+        assert not engine.stop_requested.is_set()
+        if outcome == "raise":
+            raise RuntimeError("instruction processing failed")
+        if outcome == "unknown_shape":
+            return None
+        if outcome == "unknown_status":
+            return {"status": "unexpected"}
+        return {"status": outcome, "reason": f"host_{outcome}", "refs": {}}
+
+    monkeypatch.setattr(forensia.pipeline, "run_investigation", investigate)
+    monkeypatch.setattr(intervention, "apply_intervention", apply)
+    engine.command("start", "resume", {})
+    worker = threading.Thread(target=engine.run)
+    worker.start()
+    try:
+        assert started.wait(3)
+        engine.command("direction", "steer", {"text": "Check approved maintenance."})
+        assert continued.wait(4)
+    finally:
+        engine.close()
+        worker.join(timeout=3)
+    assert not worker.is_alive()
+    assert len(investigation_calls) == 2
+    assert investigation_calls[-1]["manual_resume"] is True
+    assert intervention_calls == [outcome]
+    with CaseDB(case, read_only=True) as db:
+        status, result = db.execute(
+            "SELECT status, result FROM trace.runtime_commands WHERE command_id = 'direction'"
+        ).fetchone()
+        result = json.loads(result)
+        events = [
+            event
+            for event in list_progress_events(db)
+            if event["refs"].get("command_id") == "direction"
+        ]
+    assert status == result["status"] == expected_status
+    assert result["continuation"]["status"] == "resuming"
+    assert result["intervention_session_id"] == "steer-direction"
+    assert [event["payload"]["command_status"] for event in events] == [
+        "accepted",
+        "applying",
+        expected_status,
+    ]
+    assert all(
+        event["payload"]["instruction"] == "Check approved maintenance."
+        for event in events
+    )
+    assert all(event["payload"]["result_summary"] for event in events)
+    assert events[-1]["payload"]["continuation"] == "resuming"
+
+
+@pytest.mark.parametrize("last_status", ["applied", "failed", "rejected"])
+def test_queued_directions_apply_before_one_autonomous_continuation(
+    tmp_path, monkeypatch, last_status
+):
+    import forensia.pipeline
+    from forensia.core.control import InvestigationStopped
+    from forensia.investigation import intervention
+
+    case, engine = _control_engine(tmp_path, monkeypatch)
+    started = threading.Event()
+    release_pause = threading.Event()
+    continued = threading.Event()
+    applied = []
+    investigations = []
+
+    def investigate(*_args, **kwargs):
+        investigations.append(kwargs)
+        if len(investigations) == 1:
+            started.set()
+            assert kwargs["stop_requested"].wait(3)
+            assert release_pause.wait(3)
+            raise InvestigationStopped
+        assert applied == ["First direction", "Second direction"]
+        continued.set()
+
+    def apply(_case, _db, text, **_kwargs):
+        assert not engine.stop_requested.is_set()
+        applied.append(text)
+        return {"status": last_status if text == "Second direction" else "applied"}
+
+    monkeypatch.setattr(forensia.pipeline, "run_investigation", investigate)
+    monkeypatch.setattr(intervention, "apply_intervention", apply)
+    engine.command("start", "resume", {})
+    worker = threading.Thread(target=engine.run)
+    worker.start()
+    try:
+        assert started.wait(3)
+        engine.command("direction-1", "steer", {"text": "First direction"})
+        engine.command("direction-2", "steer", {"text": "Second direction"})
+        release_pause.set()
+        assert continued.wait(4)
+    finally:
+        release_pause.set()
+        engine.close()
+        worker.join(timeout=3)
+    assert len(investigations) == 2
+    with CaseDB(case, read_only=True) as db:
+        rows = db.execute(
+            "SELECT command_id, status, result FROM trace.runtime_commands "
+            "WHERE operation = 'steer' ORDER BY created_at"
+        ).fetchall()
+    assert [row[1] for row in rows] == ["applied", last_status]
+    assert [json.loads(row[2])["continuation"]["status"] for row in rows] == [
+        "after_pending_commands",
+        "resuming",
+    ]
+
+
+def test_direction_received_during_continuation_start_is_applied_first(
+    tmp_path, monkeypatch
+):
+    import forensia.pipeline
+    from forensia.core.control import InvestigationStopped
+    from forensia.investigation import intervention
+
+    _case, engine = _control_engine(tmp_path, monkeypatch)
+    settings = engine._settings
+    started = threading.Event()
+    preparing_continuation = threading.Event()
+    release_settings = threading.Event()
+    continued = threading.Event()
+    settings_calls = []
+    investigations = []
+    applied = []
+
+    def resume_settings():
+        settings_calls.append(True)
+        if len(settings_calls) == 2:
+            preparing_continuation.set()
+            assert release_settings.wait(3)
+        return settings
+
+    def investigate(*_args, **kwargs):
+        investigations.append(kwargs)
+        if len(investigations) == 1:
+            started.set()
+            assert kwargs["stop_requested"].wait(3)
+            raise InvestigationStopped
+        assert applied == ["First direction", "Second direction"]
+        continued.set()
+
+    def apply(_case, _db, text, **_kwargs):
+        applied.append(text)
+        return {"status": "applied"}
+
+    monkeypatch.setattr(engine, "_resume_settings", resume_settings)
+    monkeypatch.setattr(forensia.pipeline, "run_investigation", investigate)
+    monkeypatch.setattr(intervention, "apply_intervention", apply)
+    engine.command("start", "resume", {})
+    worker = threading.Thread(target=engine.run)
+    worker.start()
+    try:
+        assert started.wait(3)
+        engine.command("direction-1", "steer", {"text": "First direction"})
+        assert preparing_continuation.wait(3)
+        engine.command("direction-2", "steer", {"text": "Second direction"})
+        release_settings.set()
+        assert continued.wait(4)
+    finally:
+        release_settings.set()
+        engine.close()
+        worker.join(timeout=3)
+    assert len(investigations) == 2
+
+
+def test_explicit_stop_during_direction_prevents_autonomous_continuation(
+    tmp_path, monkeypatch
+):
+    import forensia.pipeline
+    from forensia.core.control import InvestigationStopped
+    from forensia.investigation import intervention
+
+    case, engine = _control_engine(tmp_path, monkeypatch)
+    started = threading.Event()
+    applying = threading.Event()
+    release_apply = threading.Event()
+    investigations = []
+
+    def investigate(*_args, **kwargs):
+        investigations.append(kwargs)
+        started.set()
+        assert kwargs["stop_requested"].wait(3)
+        raise InvestigationStopped
+
+    def apply(*_args, **_kwargs):
+        applying.set()
+        assert release_apply.wait(3)
+        return {"status": "applied"}
+
+    monkeypatch.setattr(forensia.pipeline, "run_investigation", investigate)
+    monkeypatch.setattr(intervention, "apply_intervention", apply)
+    engine.command("start", "resume", {})
+    worker = threading.Thread(target=engine.run)
+    worker.start()
+    try:
+        assert started.wait(3)
+        engine.command("direction", "steer", {"text": "Check maintenance."})
+        assert applying.wait(3)
+        # The applying receipt contains its actual intervention session owner.
+        receipt = engine.detail("command_receipt", "direction")
+        assert receipt["result"]["intervention_session_id"] == "steer-direction"
+        engine.command("stop", "stop", {})
+        release_apply.set()
+        for _ in range(100):
+            receipt = engine.command("stop", "stop", {})
+            if receipt["status"] == "applied":
+                break
+            time.sleep(0.01)
+        assert receipt["status"] == "applied"
+    finally:
+        release_apply.set()
+        engine.close()
+        worker.join(timeout=3)
+    assert len(investigations) == 1
+    with CaseDB(case, read_only=True) as db:
+        (result,) = db.execute(
+            "SELECT result FROM trace.runtime_commands WHERE command_id = 'direction'"
+        ).fetchone()
+    assert json.loads(result)["continuation"]["status"] == "stopped"
+
+
+def test_idle_direction_failure_is_not_success_and_does_not_start_investigation(
+    tmp_path, monkeypatch
+):
+    from forensia.investigation import intervention
+
+    case, engine = _control_engine(tmp_path, monkeypatch)
+
+    def classify(*_args, **_kwargs):
+        raise RuntimeError("provider unavailable")
+
+    def unexpected_investigation(*_args, **_kwargs):
+        pytest.fail("An idle direction must not start an autonomous investigation")
+
+    monkeypatch.setattr(intervention, "request_llm_json", classify)
+    monkeypatch.setattr(engine, "_investigate", unexpected_investigation)
+    engine.command("direction", "steer", {"text": "Check maintenance."})
+    engine._apply_command_inner("direction")
+    with CaseDB(case, read_only=True) as db:
+        status, result = db.execute(
+            "SELECT status, result FROM trace.runtime_commands WHERE command_id = 'direction'"
+        ).fetchone()
+        (session_status,) = db.execute(
+            "SELECT status FROM trace.investigation_sessions WHERE session_id = 'steer-direction'"
+        ).fetchone()
+    engine.close()
+    assert status == session_status == "failed"
+    assert json.loads(result)["status"] == "failed"
+    assert json.loads(result)["continuation"]["status"] == "not_requested"
+
+
+def test_rejected_direction_rolls_back_partial_case_changes(tmp_path, monkeypatch):
+    from forensia.investigation import intervention
+
+    case, engine = _control_engine(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        intervention,
+        "request_llm_json",
+        lambda *_args, **_kwargs: {
+            "action": "update_policy",
+            "policy_updates": {"objective": "Check maintenance."},
+        },
+    )
+
+    def reject_partial_change(db, *_args):
+        db.execute(
+            "INSERT INTO findings (finding_id, title) VALUES ('partial', 'Must roll back')"
+        )
+        raise ValueError("policy update rejected")
+
+    monkeypatch.setattr(intervention, "_apply_policy", reject_partial_change)
+    engine.command("direction", "steer", {"text": "Check maintenance."})
+    engine._apply_command_inner("direction")
+    with CaseDB(case, read_only=True) as db:
+        status, result = db.execute(
+            "SELECT status, result FROM trace.runtime_commands WHERE command_id = 'direction'"
+        ).fetchone()
+        assert (
+            db.execute(
+                "SELECT count(*) FROM findings WHERE finding_id = 'partial'"
+            ).fetchone()[0]
+            == 0
+        )
+    engine.close()
+    assert status == json.loads(result)["status"] == "rejected"
 
 
 def test_overwrite_preflight_passes_template_as_report_spec(tmp_path, monkeypatch):

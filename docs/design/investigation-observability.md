@@ -23,7 +23,11 @@
 
 例えば、仮説の計画から検索stepへ進み、検索結果のReceipt、採用されたEvidence、Assessment、ホストの判定を順に確認する。行数やツールの成功だけで確定とせず、未充足の条件や停止理由も同じ流れで確認する。画面で記録を開く操作によって、検索やモデル呼出しを再実行しない。
 
-追加指示の受付と適用は、引き続き別々のcommand receiptで確認する。調査が待機中の場合も、指示を受け付けたことだけで適用済み・停止済みと表示しない。
+画面上部の`Now`欄には、現在の対象・目的・動作・モデル応答待ちを常設する。過去のログや詳細を読んでいる間も、現在作業はRuntimeのsnapshotから更新する。保存された直近のstepや、選択候補の一覧をそのまま「実行中」とはみなさない。停止済みセッションの対象・目的も現在作業へ持ち越さない。
+
+入力欄へ自然文を送ると、`You`の指示と`FORENSIA`の受付・適用結果が活動表示へ残る。入力の全文はcommand receiptから確認できる。追加指示の受付と適用は別々に記録し、指示を受け付けたことだけで適用済み・停止済みと表示しない。
+
+基本動作は自律調査であり、各段階で入力を求めて待つ構成ではない。調査中の追加指示は安全な処理境界で適用し、連続した指示を処理してから自律調査を再開する。指示を採用できない場合や解釈に失敗した場合は、その結果を正しく示し、元の調査の継続を妨げない。明示的な停止・終了は優先する。停止中に指示だけを更新した場合は勝手に調査を始めず、`/resume`で再開する。
 
 ## 表示する情報の信頼境界
 
@@ -90,6 +94,7 @@ timelineの各ページには、そのページに含まれるセッションの
 - [test_llm_acceptance.py](../../tests/test_llm_acceptance.py)：HTTP成功、JSONの受理・拒否、修復後の試行の区別。
 - [test_provenance.py](../../tests/test_provenance.py)：実装内容の変更検知と、欠損時の不明表示。
 - [test_tui.py](../../tests/test_tui.py)：表示切替、参照から詳細への移動、ページング、過去イベント閲覧、狭い画面、更新中の詳細表示。
+- [test_tui_steering.py](../../tests/test_tui_steering.py)：入力欄から実Runtimeへの指示、方針の適用、受付と適用の対話表示、自律調査の継続。
 - [test_investigation_observability.py](../../tests/test_investigation_observability.py)：計画からSQL実行・評価・正式判定への参照、停止・再試行時の記録の保持。
 - [test_db_progress.py](../../tests/test_db_progress.py)：永続イベントの順序、保持、snapshotの境界、有限な読取り。
 - [test_trace_views.py](../../tests/test_trace_views.py)：明示的な所属・参照だけを使うtimeline、sessionの環境情報への参照、保存結果と現行Evidenceの区別。

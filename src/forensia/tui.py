@@ -33,7 +33,7 @@ _SEVERITY_COLORS = {
 }
 _HELP = """Commands
 
-Natural language          Steer the investigation
+Natural language          Add direction; active investigation continues after applying it
 /stop                    Stop the investigation
 /resume                  Resume a stopped investigation
 /add PATH                Add acquired evidence
@@ -51,6 +51,8 @@ Natural language          Steer the investigation
 /kill                    Force termination; interrupt unfinished work
 
 Click a timestamp or record reference to inspect the saved record.
+The Now panel follows current work even while you browse earlier events.
+Instructions are received immediately and applied at a safe boundary.
 Details offer Back and Raw/Summary; /trace includes previous sessions.
 F1 opens Help. Escape closes this window.
 """
@@ -231,6 +233,31 @@ def _format_sidebar(snapshot: dict[str, Any]) -> Text:
     return text
 
 
+def _format_current_activity(snapshot: dict[str, Any]) -> Text:
+    activity = snapshot.get("current_activity") or {}
+    status = activity.get("status") or _case_status(snapshot)
+    text = Text("Now  ", style="bold cyan")
+    text.append(activity.get("message") or f"Investigation {status}", style="bold")
+    if activity.get("provider_waiting"):
+        text.append(" · waiting for model response", style="yellow")
+    if hypothesis_id := activity.get("hypothesis_id"):
+        text.append("\n")
+        text.append(_record_link("timeline", hypothesis_id, hypothesis_id))
+        if description := activity.get("hypothesis_description"):
+            text.append(f" · {_short(description, 240)}")
+    if purpose := activity.get("purpose"):
+        text.append(f"\nPurpose: {_short(purpose, 320)}")
+    text.append(
+        "\nAutonomous investigation · add direction below anytime · /stop to pause"
+        if _case_status(snapshot) == "running"
+        else "\nHandling your command · you can add direction below"
+        if status in {"waiting", "applying"}
+        else "\nAdd direction below · /resume to continue investigation",
+        style="dim",
+    )
+    return text
+
+
 def _local_time(value: Any) -> str:
     if not value:
         return "—"
@@ -283,9 +310,11 @@ def _short(value: Any, limit: int = 500) -> str:
 
 def _format_activity(event: dict[str, Any]) -> Text:
     """Present recorded intent and host outcomes without inventing narration."""
+    payload = event.get("payload") or event.get("attributes") or {}
+    if event.get("kind") == "runtime.command" and payload.get("operation") == "steer":
+        return _format_direction(event, payload)
     text = _format_event(event)
     refs = event.get("refs") or {}
-    payload = event.get("payload") or event.get("attributes") or {}
     audit = payload.get("audit") or {}
     if not isinstance(audit, dict):
         audit = {}
@@ -347,6 +376,55 @@ def _format_activity(event: dict[str, Any]) -> Text:
     }:
         text.append("\n  ")
         text.append(_record_link("step", refs["step_id"], "Stage details"))
+    return text
+
+
+def _format_direction(event: dict[str, Any], payload: dict[str, Any]) -> Text:
+    text = Text()
+    text.append(
+        _local_time(event.get("created_at")),
+        style=Style(
+            color="#9ca3af",
+            underline=True,
+            meta={"@click": f"app.show_event({event['event_index']})"},
+        ),
+    )
+    status = payload.get("command_status") or event.get("status")
+    if status == "accepted" and payload.get("instruction"):
+        text.append("  You\n", style="bold cyan")
+        instruction = _short(payload["instruction"], 600)
+        text.append(f"  {instruction}\n")
+        if payload.get("instruction_truncated"):
+            text.append(
+                "  (preview; open the receipt for your full direction)\n", style="dim"
+            )
+    else:
+        text.append("  ")
+    text.append("FORENSIA  ", style="bold")
+    text.append(
+        _short(
+            payload.get("result_summary")
+            or event.get("summary")
+            or f"Direction {status}",
+            600,
+        ),
+        style=_SEVERITY_COLORS.get(event.get("severity"), "white"),
+    )
+    continuation = payload.get("continuation")
+    if continuation in {"after_apply", "after_pending_commands"}:
+        text.append(
+            "\n  Investigation continues after queued directions are handled.",
+            style="dim",
+        )
+    elif continuation == "resuming":
+        text.append("\n  Continuing autonomous investigation.", style="dim")
+    elif continuation == "stopped":
+        text.append("\n  Investigation remains paused.", style="dim")
+    if command_id := (event.get("refs") or {}).get("command_id") or payload.get(
+        "command_id"
+    ):
+        text.append("\n  ")
+        text.append(_record_link("command_receipt", command_id, "Direction receipt"))
     return text
 
 
@@ -551,6 +629,7 @@ class CaseApp(App[None]):
     CSS = """
     Screen { layout: vertical; }
     #case-state { height: 3; padding: 0 1; border-bottom: solid cyan; content-align: left middle; }
+    #current-activity { height: auto; min-height: 3; max-height: 7; padding: 0 1; border-bottom: solid $primary-darken-2; }
     #body { height: 1fr; }
     #sidebar { width: 30; height: 1fr; padding: 1; border-left: solid $primary-darken-2; overflow-y: auto; }
     #investigation-state, #connections { height: auto; }
@@ -593,6 +672,7 @@ class CaseApp(App[None]):
 
     def compose(self) -> ComposeResult:
         self._header = Static("Opening case…", id="case-state")
+        self._current = Static("Reading current work…", id="current-activity")
         self._sidebar = Static("", id="investigation-state")
         self._connections = Static("Opening database…", id="connections")
         self._log = RichLog(
@@ -604,9 +684,10 @@ class CaseApp(App[None]):
             max_lines=4000,
         )
         self._prompt = Input(
-            placeholder="Command or steering instruction · F1 Help", id="prompt"
+            placeholder="Add direction anytime · /stop pauses · F1 Help", id="prompt"
         )
         yield self._header
+        yield self._current
         with Horizontal(id="body"):
             yield self._log
             with Vertical(id="sidebar"):
@@ -818,7 +899,8 @@ class CaseApp(App[None]):
                             severity = "error"
                         notices.append(
                             (
-                                f"Command {receipt['status']}: {receipt.get('reason') or receipt.get('operation')}",
+                                f"{'Direction' if receipt.get('operation') == 'steer' else 'Command'} "
+                                f"{receipt['status']}: {receipt.get('reason') or receipt.get('operation')}",
                                 severity,
                             )
                         )
@@ -852,6 +934,7 @@ class CaseApp(App[None]):
             self._events.extend(latest)
             self._events = self._events[-_PAGE_SIZE:]
         self._header.update(_format_header(snapshot))
+        self._current.update(_format_current_activity(snapshot))
         self._sidebar.update(_format_sidebar(snapshot))
         self._last_view_at = snapshot.get("generated_at")
         self._connection_state()
@@ -964,12 +1047,18 @@ class CaseApp(App[None]):
                         "client_id": self.client._controller,
                     },
                 )
-                self._pending_commands.add(command_id)
-                if len(self._pending_commands) > 20:
-                    self._pending_commands.pop()
-                self._notice(
-                    f"{operation} accepted; waiting for receipt ({accepted.get('status', 'unknown')})"
-                )
+                if accepted.get("status") in {"accepted", "applying"}:
+                    self._pending_commands.add(command_id)
+                    self._notice(
+                        "Direction received; waiting for a safe boundary."
+                        if operation == "steer"
+                        else f"{operation} accepted; waiting for receipt"
+                    )
+                else:
+                    self._notice(
+                        f"{operation} {accepted.get('status', 'unknown')}: {accepted.get('reason') or ''}",
+                        "warning",
+                    )
         except Exception as exc:
             self._notice(f"Failed: {exc}", "error")
         await self._refresh()
