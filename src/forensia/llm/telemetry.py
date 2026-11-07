@@ -313,6 +313,34 @@ class LLMTelemetry:
             (response_body, attempt_id),
         )
 
+    def latest_attempt_id(self, logical_call_id: str | None) -> str | None:
+        """Return the provider receipt produced by this logical call's latest request."""
+        return (
+            self._last_attempt_by_call.get(logical_call_id) if logical_call_id else None
+        )
+
+    def record_attempt_acceptance(
+        self,
+        *,
+        attempt_id: str | None,
+        parse_status: str,
+        accepted: bool,
+        discarded_reason: str | None = None,
+    ) -> None:
+        """Record host JSON parsing without changing the provider's HTTP outcome.
+
+        Acceptance here describes the JSON parser; domain admission remains in
+        the owning investigation or report receipt.
+        """
+        if attempt_id is None:
+            return
+        self.db.execute(
+            "UPDATE trace.llm_provider_attempts "
+            "SET parse_status = ?, accepted = ?, discarded_reason = ? "
+            "WHERE attempt_id = ?",
+            (parse_status, accepted, discarded_reason, attempt_id),
+        )
+
     def finalize_attempt(
         self,
         *,

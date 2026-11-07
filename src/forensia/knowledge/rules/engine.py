@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from string import Formatter
 from typing import Any
+from uuid import uuid4
 
 import yaml
 
@@ -537,7 +538,81 @@ def _keywords_for_event_ids(event_ids: list[int]) -> tuple[list[str], list[int]]
     return keywords, matched_event_ids
 
 
-def _execute_keyword_search(db: CaseDB, keywords: list[str]) -> list[dict[str, Any]]:
+def _observe_fallback_query(
+    sql: str,
+    config: dict[str, Any],
+    run_query: Callable[[], list[dict[str, Any]]],
+    *,
+    on_query: Callable[[dict[str, Any]], None] | None,
+) -> list[dict[str, Any]]:
+    """Report a fallback query's lifecycle without changing query error handling."""
+    if on_query is None:
+        return run_query()
+    event = {
+        "query_ref": uuid4().hex,
+        "sql": sql,
+        "params": [],
+        "phase": config["phase"],
+        "config": config,
+        "row_limit": config["limit"],
+    }
+    on_query({**event, "status": "running", "returned_count": None, "truncated": None})
+    try:
+        rows = run_query()
+    except Exception as exc:
+        on_query(
+            {
+                **event,
+                "status": "failed",
+                "returned_count": None,
+                "truncated": None,
+                "error": str(exc),
+                "error_type": type(exc).__name__,
+                "reason": str(exc),
+            }
+        )
+        raise
+    on_query(
+        {
+            **event,
+            "status": "completed",
+            "returned_count": len(rows),
+            # Reaching the SQL limit cannot prove whether additional rows exist.
+            "truncated": None if len(rows) >= config["limit"] else False,
+        }
+    )
+    return rows
+
+
+def _execute_fallback_rule_query(
+    db: CaseDB,
+    sql: str,
+    rule_id: str,
+    config: dict[str, Any],
+    *,
+    on_query: Callable[[dict[str, Any]], None] | None,
+) -> list[dict[str, Any]]:
+    rule = Rule(
+        id=rule_id,
+        title="",
+        query=sql,
+        finding=FindingTemplate(title="", summary=""),
+    )
+    return _observe_fallback_query(
+        sql,
+        config,
+        lambda: [row for batch in iter_rule_row_batches(db, rule) for row in batch],
+        on_query=on_query,
+    )
+
+
+def _execute_keyword_search(
+    db: CaseDB,
+    keywords: list[str],
+    *,
+    on_query: Callable[[dict[str, Any]], None] | None = None,
+    config: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     """Search evtx_events.raw_json with LIKE clauses for the given keywords.
 
     Constructs an OR'd WHERE clause with proper escaping for SQL LIKE wildcards.
@@ -550,18 +625,37 @@ def _execute_keyword_search(db: CaseDB, keywords: list[str]) -> list[dict[str, A
         for keyword in keywords
     )
     sql = f"SELECT * FROM evtx_events WHERE {like_clauses} LIMIT 100"
-    result = db.execute(sql)
-    columns = [item[0] for item in result.description]
-    return [dict(zip(columns, row, strict=False)) for row in result.fetchall()]
+
+    def run_query() -> list[dict[str, Any]]:
+        result = db.execute(sql)
+        columns = [item[0] for item in result.description]
+        return [dict(zip(columns, row, strict=False)) for row in result.fetchall()]
+
+    return _observe_fallback_query(
+        sql,
+        {
+            **(config or {}),
+            "phase": "keyword_in_raw_json",
+            "keywords": keywords,
+            "limit": 100,
+        },
+        run_query,
+        on_query=on_query,
+    )
 
 
 def execute_event_keyword_fallback_search(
-    db: CaseDB, sql: str
+    db: CaseDB,
+    sql: str,
+    *,
+    on_query: Callable[[dict[str, Any]], None] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
     """Fallback for queries that explicitly reference event_ids but return no rows.
 
     Looks up event-specific string search keywords in data/schema/event_ids.yaml,
     then re-queries evtx_events by matching raw_json text.
+    When supplied, on_query observes the SQL before execution and its final outcome,
+    including searches that return no rows.
     """
     event_ids = _extract_event_ids_from_sql(sql)
     if not event_ids:
@@ -569,7 +663,16 @@ def execute_event_keyword_fallback_search(
     keywords, matched_event_ids = _keywords_for_event_ids(event_ids)
     if not keywords:
         return [], None
-    rows = _execute_keyword_search(db, keywords)
+    rows = _execute_keyword_search(
+        db,
+        keywords,
+        on_query=on_query,
+        config={
+            "event_ids": matched_event_ids,
+            "source": "event_id_schema",
+            "original_sql": sql,
+        },
+    )
     if not rows:
         return [], None
     return rows, {
@@ -581,12 +684,17 @@ def execute_event_keyword_fallback_search(
 
 
 def execute_fallback_search(
-    db: CaseDB, fallback: dict[str, Any]
+    db: CaseDB,
+    fallback: dict[str, Any],
+    *,
+    on_query: Callable[[dict[str, Any]], None] | None = None,
 ) -> list[dict[str, Any]]:
     """Execute a fallback search phase based on phase type and parameters.
 
     Returns empty list for invalid phase or missing required fields.
     Logs warnings for unknown phases or invalid table names.
+    When supplied, on_query receives running and completed/failed SQL events.
+    Configurations that do not execute SQL emit no events.
     """
     phase = fallback.get("phase")
     if phase == "keyword_in_raw_json":
@@ -604,19 +712,13 @@ def execute_fallback_search(
             for kw in valid_keywords
         )
         sql = f"SELECT * FROM evtx_events WHERE {like_clauses} LIMIT 100"
-        return [
-            row
-            for batch in iter_rule_row_batches(
-                db,
-                Rule(
-                    id="fallback-keyword",
-                    title="",
-                    query=sql,
-                    finding=FindingTemplate(title="", summary=""),
-                ),
-            )
-            for row in batch
-        ]
+        return _execute_fallback_rule_query(
+            db,
+            sql,
+            "fallback-keyword",
+            {**fallback, "keywords": valid_keywords, "limit": 100},
+            on_query=on_query,
+        )
     if phase == "related_event_ids":
         event_ids = fallback.get("event_ids") or []
         if not event_ids:
@@ -635,19 +737,13 @@ def execute_fallback_search(
             return []
         event_list = ",".join(str(eid) for eid in valid_event_ids)
         sql = f"SELECT * FROM evtx_events WHERE event_id IN ({event_list}) LIMIT 100"
-        return [
-            row
-            for batch in iter_rule_row_batches(
-                db,
-                Rule(
-                    id="fallback-correlation",
-                    title="",
-                    query=sql,
-                    finding=FindingTemplate(title="", summary=""),
-                ),
-            )
-            for row in batch
-        ]
+        return _execute_fallback_rule_query(
+            db,
+            sql,
+            "fallback-correlation",
+            {**fallback, "event_ids": valid_event_ids, "limit": 100},
+            on_query=on_query,
+        )
     if phase == "artifact_table":
         table = fallback.get("table")
         if not table:
@@ -662,19 +758,13 @@ def execute_fallback_search(
             )
             return []
         sql = f"SELECT * FROM {table_name} LIMIT 100"
-        return [
-            row
-            for batch in iter_rule_row_batches(
-                db,
-                Rule(
-                    id="fallback-artifact",
-                    title="",
-                    query=sql,
-                    finding=FindingTemplate(title="", summary=""),
-                ),
-            )
-            for row in batch
-        ]
+        return _execute_fallback_rule_query(
+            db,
+            sql,
+            "fallback-artifact",
+            {**fallback, "table": table_name, "limit": 100},
+            on_query=on_query,
+        )
     if phase and phase not in FALLBACK_PHASES:
         import logging
 

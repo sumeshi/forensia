@@ -1736,6 +1736,20 @@ async def _run_cycle_body(
                 "query_id": extras.get("query_id"),
                 "reasoning_entry_id": extras.get("reasoning_entry_id"),
                 "step_id": extras.get("step_id"),
+                **{
+                    key: extras.get(key)
+                    for key in (
+                        "plan_step_id",
+                        "execution_step_id",
+                        "do_step_id",
+                        "check_step_id",
+                        "sufficiency_step_id",
+                        "settlement_ref",
+                        "receipt_id",
+                        "attempt_ref",
+                        "assessment_id",
+                    )
+                },
             }.items()
             if value
         }
@@ -1762,6 +1776,7 @@ async def _run_cycle_body(
                         "candidate_count",
                         "unassessed_count",
                         "error_type",
+                        "audit",
                     }
                 },
             )

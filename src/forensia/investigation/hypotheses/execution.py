@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
 from typing import Any
 
 import sqlglot
@@ -242,6 +243,8 @@ def resolve_zero_row_fallbacks(
     hypothesis: Hypothesis,
     planned_query: Any,
     rows: list[Any],
+    *,
+    on_query: Callable[[dict[str, Any]], None] | None = None,
 ) -> tuple[list[Any], dict[str, Any] | None]:
     """Run the existing rule/event fallbacks after a zero-row primary query."""
 
@@ -260,7 +263,24 @@ def resolve_zero_row_fallbacks(
                         "artifact_table",
                     }:
                         continue
-                    fallback_rows = execute_fallback_search(db, fallback)
+
+                    def observe_rule_query(
+                        event: dict[str, Any],
+                        rule_id: str = source_rule_id,
+                        declaration: dict[str, Any] = fallback,
+                    ) -> None:
+                        if on_query:
+                            on_query(
+                                {
+                                    **event,
+                                    "source_rule_id": rule_id,
+                                    "declared_fallback": declaration,
+                                }
+                            )
+
+                    fallback_rows = execute_fallback_search(
+                        db, fallback, on_query=observe_rule_query if on_query else None
+                    )
                     if not fallback_rows:
                         continue
                     _log(
@@ -284,7 +304,7 @@ def resolve_zero_row_fallbacks(
                     break
     if len(rows) == 0 and fallback_info is None:
         fallback_rows, fallback_meta = execute_event_keyword_fallback_search(
-            db, planned_query.sql
+            db, planned_query.sql, on_query=on_query
         )
         if fallback_rows:
             _log(
@@ -349,6 +369,7 @@ def build_sql_receipt(
     fallback_info: dict[str, Any] | None = None,
     error: str | None = None,
     validator_info: dict[str, Any] | None = None,
+    receipt_id: str | None = None,
 ) -> ToolReceipt:
     """Build a deterministic receipt from values observed by the runner.
 
@@ -377,7 +398,7 @@ def build_sql_receipt(
         if row.get(key)
     }
     continuation_handle = f"sql:{session_id}:{hypothesis.id}:{query_hash}"
-    receipt_id = (
+    receipt_id = receipt_id or (
         f"receipt-{session_id}-{hypothesis.id}-{plan_cycle}-{query_index}-{query_hash}"
     )
 

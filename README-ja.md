@@ -209,6 +209,8 @@ $ uv run forensia investigate ./input --out ./CASE001-WINDESKTOP-FOOBAR
 
 TUIの`/quit`または`Ctrl+Q`で調査プロセスも終了します。停止待ちを打ち切るには`/kill`、調査を続けたまま画面だけを閉じるには`/detach`を使います。強制終了では処理中の作業が中断されます。
 
+既定の`/activity`では、明示的な計画、実行結果、判定理由を表示します。関連記録をクリックすると証拠や保存した詳細へ進めます。`/logs`は短いイベント一覧、`/trace <hypothesis_id>`は仮説ごとの調査履歴をページ単位で読む操作です。閲覧によって調査を再実行しません。保存する記録と再現性の限界は[調査の可観測性](docs/design/investigation-observability.md)を参照してください。
+
 
 ## 限界と評価方針
 

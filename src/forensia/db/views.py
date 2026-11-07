@@ -10,6 +10,7 @@ from forensia.core.case import Case
 from forensia.db.database import CaseDB
 from forensia.db.evidence_lookup import lookup_evidence_record
 from forensia.db.progress import list_progress_events
+from forensia.db.trace_views import hypothesis_timeline, related_records
 
 DetailKind = Literal[
     "hypothesis",
@@ -27,6 +28,7 @@ DetailKind = Literal[
     "llm_call",
     "llm_attempt",
     "event",
+    "timeline",
 ]
 DETAIL_KINDS = frozenset(get_args(DetailKind))
 _DETAIL_LIMIT = 100
@@ -313,6 +315,8 @@ def case_detail(
         raise ValueError(f"limit must be between 1 and {_DETAIL_LIMIT}")
     if type(offset) is not int or offset < 0:
         raise ValueError("detail offset must be a nonnegative integer")
+    if kind == "timeline":
+        return hypothesis_timeline(db, id, limit=limit, offset=offset)
     queries: dict[str, tuple[str, str]] = {
         "hypothesis": (
             "SELECT * FROM hypotheses WHERE hypothesis_id = ?",
@@ -377,6 +381,8 @@ def case_detail(
     }
     if kind == "evidence":
         row = lookup_evidence_record(db, id)
+        if row:
+            row["related_records"] = related_records(db, kind, row)
         return _detail_page(row, kind, id, offset) if row else None
     try:
         sql, _id_field = queries[kind]
@@ -411,6 +417,13 @@ def case_detail(
             for evidence_id in evidence_ids[:limit]
             if (evidence := lookup_evidence_record(db, str(evidence_id))) is not None
         ]
+        row["evidence_view"] = {
+            "origin": "current_case_records",
+            "historical_result": False,
+            "notice": "Evidence is read now by historical ID; content may have changed since this receipt.",
+        }
+    if row:
+        row["related_records"] = related_records(db, kind, row)
     return _detail_page(row, kind, id, offset) if row else None
 
 
@@ -436,6 +449,7 @@ def _detail_page(
         "offset": offset,
         "next_offset": end if end < len(serialized) else None,
         "total_chars": len(serialized),
+        "related_records": row.get("related_records", []),
     }
 
 

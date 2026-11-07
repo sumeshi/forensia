@@ -333,6 +333,23 @@ def _invalidate_removed_evidence_in_transaction(
             """,
             (reason, *sorted(linked_hypotheses)),
         )
+        # Completed work depended on the same material as its hypothesis.
+        # Keep its historical result, but reopen the authoritative Task/Gap
+        # rows so it cannot look complete while that result is being reviewed.
+        db.execute(
+            "UPDATE investigation_tasks SET status = 'in_progress', "
+            "blocked_reason = NULL, updated_at = now() "
+            f"WHERE hypothesis_id IN ({hypothesis_placeholders}) AND status = 'resolved'",
+            tuple(sorted(linked_hypotheses)),
+        )
+        db.execute(
+            "UPDATE report_gaps SET status = 'in_progress', updated_at = now() "
+            f"WHERE (hypothesis_id IN ({hypothesis_placeholders}) "
+            "OR gap_id IN (SELECT source_gap_id FROM hypotheses "
+            f"WHERE hypothesis_id IN ({hypothesis_placeholders}))) "
+            "AND status = 'resolved'",
+            (*sorted(linked_hypotheses), *sorted(linked_hypotheses)),
+        )
     if affected_claims:
         claim_placeholders = ", ".join("?" for _ in affected_claims)
         db.execute(

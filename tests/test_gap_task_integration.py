@@ -831,7 +831,7 @@ class ProseChangeResolutionTests(unittest.TestCase):
                 self.assertEqual(row[1], "linked_hypothesis_untestable")
                 self.assertEqual(row[2], "H-1")
 
-    def test_confirmed_or_refuted_linked_hypothesis_resolves_gap(self) -> None:
+    def test_unlinked_conclusive_hypothesis_cannot_resolve_new_gap(self) -> None:
         for status in ("confirmed", "refuted"):
             with tempfile.TemporaryDirectory() as tmpdir:
                 with CaseDB(Case.init(tmpdir)) as db:
@@ -844,7 +844,7 @@ class ProseChangeResolutionTests(unittest.TestCase):
                     )
                     inject_gap_hypotheses(db, state, [gap], "S-1")
                     row = db.execute("SELECT status FROM report_gaps").fetchone()
-                    self.assertEqual(row[0], "resolved")
+                    self.assertEqual(row[0], "needs_review")
 
 
 class RetryAndProjectionTests(unittest.TestCase):
@@ -1129,7 +1129,7 @@ class RetryAndProjectionTests(unittest.TestCase):
                 self.assertEqual(active, [])
                 self.assertEqual([item.id for item in resolved], ["H-001"])
 
-    def test_conclusive_resolution_closes_linked_task_and_gap(self) -> None:
+    def test_resolution_call_without_settlement_keeps_linked_work_open(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             with CaseDB(Case.init(tmpdir)) as db:
                 hypothesis = _insert_hypothesis(db, "H-001")
@@ -1142,16 +1142,16 @@ class RetryAndProjectionTests(unittest.TestCase):
                         "SELECT status FROM investigation_tasks "
                         "WHERE hypothesis_id = 'H-001'"
                     ).fetchone()[0],
-                    "resolved",
+                    "open",
                 )
                 self.assertEqual(
                     db.execute(
                         "SELECT status FROM report_gaps WHERE hypothesis_id = 'H-001'"
                     ).fetchone()[0],
-                    "resolved",
+                    "open",
                 )
 
-    def test_conclusive_question_resolution_also_closes_other_linked_gaps(self) -> None:
+    def test_question_status_alone_cannot_close_other_linked_gaps(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir, CaseDB(Case.init(tmpdir)) as db:
             _insert_hypothesis(db, "H-QUESTION")
             db.execute(
@@ -1184,7 +1184,7 @@ class RetryAndProjectionTests(unittest.TestCase):
                 ).fetchall()
             )
             self.assertEqual(statuses["GAP-QUESTION"], "open")
-            self.assertEqual(statuses["GAP-STOP-H-QUESTION"], "resolved")
+            self.assertEqual(statuses["GAP-STOP-H-QUESTION"], "in_progress")
 
     def test_report_and_persisted_rows_share_task_gap_ids(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

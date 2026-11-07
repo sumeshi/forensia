@@ -289,6 +289,9 @@ def test_phase_check_trace_persists_assessment_content_fingerprints(tmp_path) ->
         evidence_assessment=assessment,
         canonicalization_error="",
         attempt_ref="R-1",
+        plan_step_id="plan-assessment",
+        execution_step_id="execution-assessment",
+        do_step_id="do-assessment",
     )
     check_result = SimpleNamespace(
         verdict="inconclusive",
@@ -509,6 +512,7 @@ def test_runner_empty_sql_reaches_only_observable_refutation(
             session_id="S-test",
             plan_cycle=1,
             query_index=0,
+            plan_step_id="plan-absence",
             emit_fn=None,
             focus_sections={},
             hypothesis_plan=SimpleNamespace(query=query),
@@ -580,6 +584,7 @@ def test_timeline_query_hydration_controls_retrieval_adequacy(
             session_id="S-timeline",
             plan_cycle=1,
             query_index=0,
+            plan_step_id="plan-timeline",
             emit_fn=None,
             focus_sections={},
             hypothesis_plan=SimpleNamespace(query=query),

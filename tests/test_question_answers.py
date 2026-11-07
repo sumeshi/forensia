@@ -351,6 +351,7 @@ class QuestionAnswerTests(unittest.TestCase):
         )
         from forensia.investigation.investigation_session import Ctx
         from forensia.investigation.report_gap import inject_gap_hypotheses
+        from forensia.investigation.task_contracts import task_contract_summary
         from forensia.report.render.writer import render_written_report
         from forensia.report.sections.report_input import SectionSource
         from forensia.report.sections.section_refresher import (
@@ -862,6 +863,17 @@ class QuestionAnswerTests(unittest.TestCase):
                     [hypothesis.id],
                 ).fetchone()
                 self.assertEqual(("confirmed", "confirmed"), settled)
+                verification_task = db.execute(
+                    "SELECT task_id, status FROM investigation_tasks "
+                    "WHERE hypothesis_id = ? AND kind = 'verification'",
+                    [hypothesis.id],
+                ).fetchone()
+                self.assertIsNotNone(verification_task)
+                self.assertEqual("resolved", verification_task[1])
+                completed_work = task_contract_summary(db, verification_task[0])
+                self.assertEqual("current", completed_work["input_currentness"])
+                self.assertEqual("completed", completed_work["result"]["status"])
+                self.assertTrue(completed_work["result"]["settlement_ref"])
                 self.assertEqual(
                     ("open", "question_requirements_unverified"),
                     db.execute(
@@ -921,6 +933,16 @@ class QuestionAnswerTests(unittest.TestCase):
                 ).fetchone()
                 self.assertEqual(
                     ("open", "question_requirements_unverified"), gap_state
+                )
+                partial_task = db.execute(
+                    "SELECT task_id, status FROM investigation_tasks "
+                    "WHERE hypothesis_id = ? AND kind = 'verification'",
+                    [partial_hypothesis.id],
+                ).fetchone()
+                self.assertEqual("resolved", partial_task[1])
+                self.assertEqual(
+                    "completed",
+                    task_contract_summary(db, partial_task[0])["result"]["status"],
                 )
                 partial_link = db.execute(
                     "SELECT link_id, query_id FROM hypothesis_evidence "

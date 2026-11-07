@@ -205,6 +205,8 @@ To start over in the same output location for testing, use `--overwrite`. This d
 
 In the TUI, `/quit` or `Ctrl+Q` also shuts down the investigation process. Use `/kill` to force termination while stopping, or `/detach` to close the screen while the investigation continues. Forced termination interrupts unfinished work.
 
+The default `/activity` view shows explicit plans, execution results, and decision reasons. Click record references to inspect their evidence and saved details; use `/logs` for compact events and `/trace <hypothesis_id>` for a paged investigation history. These views read saved records without rerunning the investigation. See [investigation observability](docs/design/investigation-observability.md) for the stored records and limits of reproducibility (Japanese).
+
 ## Limitations and Evaluation
 
 FORENSIA is experimental.\

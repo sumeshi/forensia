@@ -13,12 +13,24 @@ import json
 from typing import Any
 
 from forensia.core.session import Hypothesis
+from forensia.core.task import TaskCompletion
 from forensia.db.database import CaseDB
+from forensia.investigation.task_contracts import (
+    ensure_task_contract,
+    evaluate_task_completion,
+    load_task_contract,
+    record_task_completion,
+)
 from forensia.investigation.work_judgment import (
+    EXTERNAL_TASK_KINDS,
     VERIFICATION_INFEASIBLE_CODES,
     blocker_message,
     coverage_readiness,
     judge_work,
+)
+from forensia.report.sections.section_taxonomy import (
+    guess_related_sections,
+    sections_for_keypoint,
 )
 
 _OBJECTIVE_GAP_TEXT = "Investigation objective not configured"
@@ -28,6 +40,67 @@ _TERMINAL_CLASSIFICATIONS = {"deferred", "blocked", "needs_review", "untestable"
 def _stable_id(prefix: str, value: str) -> str:
     digest = hashlib.sha256(value.encode()).hexdigest()[:16]
     return f"{prefix}-{digest}"
+
+
+def ensure_hypothesis_verification_task(
+    db: CaseDB, hypothesis_id: str, *, session_id: str = ""
+) -> str | None:
+    """Admit the existing hypothesis as bounded verification work before a run.
+
+    The caller owns the transaction. Existing open work is retained, including
+    Tasks admitted by report or stop processing; this is not a second agenda.
+    """
+    row = db.execute(
+        "SELECT description, source_gap_id FROM hypotheses WHERE hypothesis_id = ?",
+        [hypothesis_id],
+    ).fetchone()
+    if row is None:
+        return None
+    existing = db.execute(
+        "SELECT task_id FROM investigation_tasks WHERE hypothesis_id = ? "
+        "AND status IN ('open', 'in_progress') ORDER BY task_id LIMIT 1",
+        [hypothesis_id],
+    ).fetchone()
+    if existing:
+        return str(existing[0])
+    gap_id = None
+    if row[1]:
+        gap = db.execute(
+            "SELECT gap_id FROM report_gaps WHERE gap_id = ?", [row[1]]
+        ).fetchone()
+        gap_id = str(gap[0]) if gap else None
+    task_id = _stable_id("TASK-VERIFY", hypothesis_id)
+    judgment = judge_work(db, [hypothesis_id])[hypothesis_id]
+    capabilities = list(judgment.capabilities)
+    _, sources = coverage_readiness(db, capabilities)
+    db.execute(
+        "INSERT INTO investigation_tasks "
+        "(task_id, kind, description, status, gap_id, hypothesis_id, "
+        "required_capability, required_source, owner_phase, retry_condition, "
+        "created_at, updated_at) "
+        "VALUES (?, 'verification', ?, 'in_progress', ?, ?, ?, ?, "
+        "'verification', 'new_evidence_or_manual_resume', now(), now()) "
+        "ON CONFLICT (task_id) DO UPDATE SET status = 'in_progress', "
+        "gap_id = EXCLUDED.gap_id, required_capability = EXCLUDED.required_capability, "
+        "required_source = EXCLUDED.required_source, blocked_reason = NULL, "
+        "updated_at = now()",
+        [
+            task_id,
+            str(row[0] or hypothesis_id),
+            gap_id,
+            hypothesis_id,
+            ",".join(capabilities),
+            ",".join(sources),
+        ],
+    )
+    if gap_id:
+        db.execute(
+            "UPDATE report_gaps SET task_id = ?, updated_at = now() "
+            "WHERE gap_id = ? AND task_id IS NULL",
+            [task_id, gap_id],
+        )
+    ensure_task_contract(db, task_id, session_id=session_id)
+    return task_id
 
 
 def ensure_objective_gap(db: CaseDB, objective: str) -> str:
@@ -176,6 +249,7 @@ def _upsert_terminal_work(
             reason,
         ],
     )
+    ensure_task_contract(db, task_id)
 
 
 def classify_active_hypotheses_on_stop(
@@ -349,6 +423,150 @@ def pause_hypothesis_work(db: CaseDB, hypothesis: Hypothesis, reason: str) -> No
         )
 
 
+def reconcile_completed_task_inputs(db: CaseDB) -> list[str]:
+    """Reopen recorded internal results whose accepted inputs became stale.
+
+    This covers absence judgments, which need not have EvidenceLinks for the
+    evidence invalidator to discover. Uncontracted legacy work and external
+    owner results are not migrated or judged by this transition.
+    """
+    reopened: set[str] = set()
+    external_kinds = sorted(EXTERNAL_TASK_KINDS)
+    external_placeholders = ", ".join("?" for _ in external_kinds)
+    with db.transaction():
+        rows = db.execute(
+            "WITH completed AS ("
+            "SELECT hypothesis_id, input_json, output_json, "
+            "json_extract_string(input_json, '$.task_id') AS task_id, "
+            "row_number() OVER (PARTITION BY json_extract_string(input_json, '$.task_id') "
+            "ORDER BY created_at DESC, step_id DESC) AS position "
+            "FROM trace.investigation_steps WHERE phase = 'task-completion' "
+            "AND json_extract_string(output_json, '$.completion.status') = 'completed'"
+            ") SELECT t.task_id, t.hypothesis_id, c.hypothesis_id, c.input_json, c.output_json "
+            "FROM investigation_tasks t JOIN hypotheses h ON h.hypothesis_id = t.hypothesis_id "
+            "JOIN completed c ON c.task_id = t.task_id AND c.position = 1 "
+            "WHERE t.status = 'resolved' AND h.status IN ('confirmed', 'refuted') "
+            f"AND COALESCE(t.kind, '') NOT IN ({external_placeholders}) "
+            "ORDER BY t.task_id",
+            external_kinds,
+        ).fetchall()
+        reasons: dict[str, set[str]] = {}
+        for task_id, hypothesis_id, result_hypothesis_id, raw_input, raw_output in rows:
+            contract = load_task_contract(db, str(task_id))
+            if (
+                contract is None
+                or contract.contract.task_kind in EXTERNAL_TASK_KINDS
+                or contract.contract.expected_output != "hypothesis_settlement"
+                or contract.contract.hypothesis_id != hypothesis_id
+                or result_hypothesis_id != hypothesis_id
+            ):
+                continue
+            try:
+                step_input = (
+                    json.loads(raw_input) if isinstance(raw_input, str) else raw_input
+                )
+                output = (
+                    json.loads(raw_output)
+                    if isinstance(raw_output, str)
+                    else raw_output
+                )
+                if not isinstance(step_input, dict) or not isinstance(output, dict):
+                    continue
+                previous = TaskCompletion.model_validate(output.get("completion"))
+            except TypeError, ValueError:
+                continue
+            if (
+                previous.task_id != task_id
+                or not previous.settlement_ref
+                or step_input.get("contract_ref") != previous.contract_ref
+            ):
+                continue
+            current = evaluate_task_completion(
+                db, str(task_id), settlement_ref=previous.settlement_ref
+            )
+            if current.status != "stale":
+                continue
+            record_task_completion(db, current)
+            reopened.add(str(hypothesis_id))
+            reasons.setdefault(str(hypothesis_id), set()).add(current.reason)
+        if not reopened:
+            return []
+
+        ids = sorted(reopened)
+        placeholders = ", ".join("?" for _ in ids)
+        sections = {
+            str(row[0])
+            for row in db.execute(
+                "SELECT section_key FROM report_gaps "
+                f"WHERE hypothesis_id IN ({placeholders}) OR gap_id IN "
+                f"(SELECT source_gap_id FROM hypotheses WHERE hypothesis_id IN ({placeholders}))",
+                [*ids, *ids],
+            ).fetchall()
+            if row[0]
+        }
+        for hypothesis_id, description, keypoint in db.execute(
+            "SELECT hypothesis_id, description, target_keypoint_id FROM hypotheses "
+            f"WHERE hypothesis_id IN ({placeholders})",
+            ids,
+        ).fetchall():
+            sections.update(guess_related_sections(str(description or "")))
+            if keypoint:
+                sections.update(sections_for_keypoint(str(keypoint)))
+            reason = (
+                "Completed task inputs changed; reassessment required: "
+                + "; ".join(sorted(reasons[str(hypothesis_id)]))
+            )
+            db.execute(
+                "UPDATE hypotheses SET status = 'active', verdict = NULL, resolved_session = NULL, "
+                "sufficiency_status = 'needs_review', sufficiency_score = NULL, "
+                "sufficiency_reason = ?, human_review_required = TRUE, selection_count = 0, "
+                "last_selected_at = NULL, next_eligible_at = NULL, blocked_reason = NULL, "
+                "updated_at = now() WHERE hypothesis_id = ?",
+                [reason, hypothesis_id],
+            )
+        db.execute(
+            "UPDATE investigation_tasks SET status = 'in_progress', blocked_reason = NULL, "
+            f"updated_at = now() WHERE hypothesis_id IN ({placeholders}) AND status = 'resolved' "
+            f"AND COALESCE(kind, '') NOT IN ({external_placeholders})",
+            [*ids, *external_kinds],
+        )
+        db.execute(
+            "UPDATE report_gaps SET status = 'in_progress', updated_at = now() "
+            f"WHERE (hypothesis_id IN ({placeholders}) OR gap_id IN "
+            f"(SELECT source_gap_id FROM hypotheses WHERE hypothesis_id IN ({placeholders}))) "
+            "AND status = 'resolved'",
+            [*ids, *ids],
+        )
+        for claim_id, raw_hypotheses, section_key in db.execute(
+            "SELECT claim_id, hypothesis_ids, section_key FROM claims"
+        ).fetchall():
+            try:
+                claim_hypotheses = (
+                    json.loads(raw_hypotheses)
+                    if isinstance(raw_hypotheses, str)
+                    else raw_hypotheses
+                )
+            except TypeError, ValueError:
+                continue
+            if not isinstance(claim_hypotheses, list) or not reopened.intersection(
+                item for item in claim_hypotheses if isinstance(item, str)
+            ):
+                continue
+            db.execute(
+                "UPDATE claims SET support_status = 'needs_review', updated_at = now() "
+                "WHERE claim_id = ?",
+                [claim_id],
+            )
+            if section_key:
+                sections.add(str(section_key))
+        for section_key in sorted(sections):
+            db.execute(
+                "UPDATE report_sections SET stale = TRUE WHERE section_key = ?",
+                [section_key],
+            )
+    return sorted(reopened)
+
+
 def reopen_retryable_work(db: CaseDB, *, manual_resume: bool = False) -> list[str]:
     """Reactivate only work whose persisted retry condition became true.
 
@@ -441,10 +659,27 @@ def reopen_retryable_work(db: CaseDB, *, manual_resume: bool = False) -> list[st
     return reopened
 
 
-def resolve_linked_work(db: CaseDB, hypothesis_id: str) -> None:
-    """Close the Task and Gap satisfied by a conclusive hypothesis verdict."""
+def resolve_linked_work(
+    db: CaseDB,
+    hypothesis_id: str,
+    *,
+    settlement_ref: str | None = None,
+    session_id: str = "",
+) -> None:
+    """Complete only work whose frozen contract accepts the host result.
+
+    A Task's success never substitutes for answering a broader question. The
+    question owner evaluates its current full scope independently.
+    """
+    from forensia.core.textutil import normalize_text
     from forensia.investigation.report_gap import link_settled_question_gap
 
+    hypothesis = db.execute(
+        "SELECT status, source_gap_id, description FROM hypotheses WHERE hypothesis_id = ?",
+        [hypothesis_id],
+    ).fetchone()
+    if hypothesis is None or hypothesis[0] not in {"confirmed", "refuted"}:
+        return
     link_settled_question_gap(db, hypothesis_id)
     db.execute(
         "UPDATE report_gaps SET coverage_reason = 'question_relevance_unverified', updated_at = now() "
@@ -453,19 +688,43 @@ def resolve_linked_work(db: CaseDB, hypothesis_id: str) -> None:
         "AND status <> 'resolved'",
         [hypothesis_id],
     )
-    db.execute(
-        "UPDATE investigation_tasks SET status = 'resolved', blocked_reason = NULL, "
-        "updated_at = now() WHERE hypothesis_id = ? "
-        "AND status IN ('open', 'in_progress')",
+    tasks = db.execute(
+        "SELECT task_id, kind, gap_id FROM investigation_tasks WHERE hypothesis_id = ? "
+        "AND status IN ('open', 'in_progress', 'resolved') ORDER BY task_id",
         [hypothesis_id],
-    )
-    db.execute(
-        "UPDATE report_gaps SET status = 'resolved', updated_at = now() "
-        "WHERE hypothesis_id = ? AND status IN ('open', 'in_progress') "
-        "AND gap_id <> COALESCE((SELECT source_gap_id FROM hypotheses "
-        "WHERE hypothesis_id = ?), '')",
-        [hypothesis_id, hypothesis_id],
-    )
+    ).fetchall()
+    for task_id, kind, gap_id in tasks:
+        if kind in {"human_decision", "external_lookup", "evidence_acquisition"}:
+            continue
+        completion = evaluate_task_completion(
+            db, str(task_id), settlement_ref=settlement_ref
+        )
+        record_task_completion(db, completion, session_id=session_id)
+        if completion.status != "completed":
+            continue
+        db.execute(
+            "UPDATE investigation_tasks SET status = 'resolved', blocked_reason = NULL, "
+            "updated_at = now() WHERE task_id = ?",
+            [task_id],
+        )
+        if not gap_id:
+            continue
+        gap = db.execute(
+            "SELECT description, block_heading, origin, hypothesis_id "
+            "FROM report_gaps WHERE gap_id = ?",
+            [gap_id],
+        ).fetchone()
+        if gap is None or str(gap[1] or "").strip() or gap[3] != hypothesis_id:
+            continue
+        direct_requirement = gap_id == hypothesis[1] and normalize_text(
+            str(gap[0] or "")
+        ) == normalize_text(str(hypothesis[2] or ""))
+        if gap[2] == "termination" or direct_requirement:
+            db.execute(
+                "UPDATE report_gaps SET status = 'resolved', updated_at = now() "
+                "WHERE gap_id = ? AND status IN ('open', 'in_progress')",
+                [gap_id],
+            )
 
 
 def stop_summary(db: CaseDB) -> dict[str, int]:

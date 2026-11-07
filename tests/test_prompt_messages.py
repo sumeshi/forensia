@@ -229,6 +229,44 @@ class PromptMessageTests(unittest.TestCase):
         self.assertNotIn("TEMPLATE_CONTEXT", fitted_text)
         self.assertNotIn("template detail", fitted_text)
 
+    def test_case_history_yields_budget_to_current_task_and_evidence(self) -> None:
+        from forensia.context.prompt_context import PromptMessages
+
+        messages = PromptMessages(
+            [
+                {"role": "system", "content": "<TASK>Verify HOST-ALPHA.</TASK>"},
+                {
+                    "role": "user",
+                    "content": "current evidence_id=evtx-current\n"
+                    "<CASE_ATTEMPT_HISTORY>"
+                    + ("old search result " * 100)
+                    + "</CASE_ATTEMPT_HISTORY>\n",
+                },
+            ],
+            retrieval_event_ids=("history-selection",),
+        )
+        with (
+            patch(
+                "forensia.context.prompt_context.get_llm_settings",
+                return_value={"max_tokens": 1, "llm_context_window_tokens": None},
+            ),
+            patch(
+                "forensia.context.prompt_context.get_prompt_budget_tokens",
+                return_value=30,
+            ),
+        ):
+            fitted = fit_prompt_messages(messages)
+
+        assert fitted is not None
+        text = "\n".join(message["content"] for message in fitted)
+        assert "<TASK>Verify HOST-ALPHA.</TASK>" in text
+        assert "evidence_id=evtx-current" in text
+        assert "old search result" not in text
+        assert fitted.retrieval_event_ids == ("history-selection",)
+        assert fitted.omitted_optional_blocks == (
+            ("CASE_ATTEMPT_HISTORY", 1, "input_budget"),
+        )
+
     def test_observed_candidate_drafter_discloses_sigma_fields_and_retrieval_terms(
         self,
     ) -> None:

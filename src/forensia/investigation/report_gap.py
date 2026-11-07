@@ -24,6 +24,7 @@ from forensia.investigation.hypotheses.hypothesis_model import (
     hypothesis_similarity,
 )
 from forensia.investigation.hypotheses.hypothesis_store import _upsert_hypothesis
+from forensia.investigation.task_contracts import ensure_task_contract
 from forensia.investigation.verification.sufficiency import derivation_root_key
 from forensia.investigation.work_judgment import open_work_refs
 from forensia.knowledge.questions import (
@@ -778,13 +779,24 @@ def inject_gap_hypotheses(
             if explicit_request
             else _existing_hypothesis(state, gap)
         )
+        if (
+            existing is not None
+            and existing.status in {"confirmed", "refuted"}
+            and existing.source_gap_id != gap_id
+        ):
+            # A similar conclusion is a lead, not proof that this separately
+            # admitted requirement was satisfied under the same contract.
+            existing = None
         if existing is not None:
             if existing.status in {"confirmed", "refuted"}:
+                from forensia.investigation.work_state import resolve_linked_work
+
                 db.execute(
-                    "UPDATE report_gaps SET hypothesis_id = ?, status = 'resolved', "
+                    "UPDATE report_gaps SET hypothesis_id = ?, status = 'open', "
                     "updated_at = now() WHERE gap_id = ?",
                     [existing.id, gap_id],
                 )
+                resolve_linked_work(db, existing.id, session_id=session_id)
             else:
                 # untestable means the scope could not answer the request yet
                 # (GOAL 9.4): it is not evidence-acquisition completion, so the
@@ -863,6 +875,7 @@ def inject_gap_hypotheses(
                 "UPDATE report_gaps SET task_id = ? WHERE gap_id = ?",
                 [task_id, gap_id],
             )
+            ensure_task_contract(db, task_id, session_id=session_id)
             if progress_callback:
                 progress_callback(
                     progress_event(

@@ -15,6 +15,7 @@ from forensia.context.playbook import (
 )
 from forensia.context.prompt_context import (
     _case_profile_guidance,
+    _instrument_retrieval,
     _org_knowledge_guidance,
     _time_range_guidance,
     capture_prompt_retrieval,
@@ -26,6 +27,7 @@ from forensia.db.evidence_lookup import canonical_record_table, routed_family
 from forensia.db.query import normalize_value
 from forensia.db.schema import load_live_schema
 from forensia.investigation.case_policy import case_policy_block
+from forensia.investigation.trace_history import build_case_history, render_case_history
 from forensia.knowledge.catalog import load_benign_context_rules
 from forensia.knowledge.coverage import (
     disclosure_tables_for_spec,
@@ -421,6 +423,31 @@ def build_query_intent_messages(
     planning_tables = (
         eligible_tables if eligible_tables is not None else disclosure_tables
     )
+    case_history_block = ""
+    if db is not None:
+        case_history = build_case_history(
+            db,
+            hypothesis,
+            spec_payload=spec_payload,
+            eligible_tables=tuple(planning_tables),
+        )
+        case_history_block = render_case_history(case_history)
+        if case_history_block:
+            _instrument_retrieval(
+                db,
+                session_id=session_id,
+                scope_kind="hypothesis",
+                scope_id=str(getattr(hypothesis, "id", "") or ""),
+                phase="hypothesis_plan",
+                source_kind="case_attempt_history",
+                query_terms=list(case_history.query_terms),
+                candidate_count=case_history.candidate_count,
+                selected_refs=[
+                    str(item["attempt_ref"]) for item in case_history.summaries
+                ],
+                selected_chars=len(case_history_block),
+                budget=case_history.char_budget,
+            )
     template_catalog = query_template_catalog_for_tables(planning_tables or ())
     template_catalog_md = _template_catalog_block(template_catalog)
     action_examples = _query_intent_examples(planning_tables, template_catalog)
@@ -546,6 +573,7 @@ def build_query_intent_messages(
     ]
     user = (
         f"{working_state_block}"
+        f"{case_history_block}"
         f"peer_active_hypotheses: {json.dumps(peer_hypotheses, ensure_ascii=False, default=str)}\n"
         f"host_feedback:\n{host_feedback}\n"
         f"prior_check_feedback:\n{prior_check_feedback or '(no prior checks)'}\n"

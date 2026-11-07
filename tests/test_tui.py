@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import subprocess
 
 import pytest
@@ -12,7 +13,15 @@ from forensia.db.database import CaseDB, CaseDBBusyError
 from forensia.db.progress import record_progress_event
 from forensia.db.views import case_snapshot
 from forensia.runtime import probe_runtime, start_runtime
-from forensia.tui import CaseApp, InfoWindow, _command, _format_header, _format_sidebar
+from forensia.tui import (
+    CaseApp,
+    InfoWindow,
+    _command,
+    _format_activity,
+    _format_detail,
+    _format_header,
+    _format_sidebar,
+)
 
 
 @pytest.mark.parametrize("command", ["ctrl+q", "/quit", "/kill", "/detach"])
@@ -217,6 +226,30 @@ def test_tui_windows_keep_refresh_and_log_navigation_working(tmp_path) -> None:
     asyncio.run(exercise())
 
 
+def test_query_detail_distinguishes_materialized_plan_from_executed_sql() -> None:
+    detail = {
+        "step_id": "do-1",
+        "phase": "do",
+        "input_json": {"planned_query": {"sql": "SELECT * FROM evtx_events"}},
+        "output_json": {
+            "tool_receipt": {
+                "arguments": {
+                    "host_executed_sql": "SELECT * FROM evtx_events LIMIT 201"
+                }
+            }
+        },
+    }
+    rendered = _format_detail(detail).plain
+    assert (
+        "SQL submitted for execution\nSELECT * FROM evtx_events LIMIT 201" in rendered
+    )
+    detail["phase"] = "plan-hypothesis"
+    detail["output_json"] = {}
+    rendered = _format_detail(detail).plain
+    assert "Planned SQL\nSELECT * FROM evtx_events" in rendered
+    assert "submitted for execution" not in rendered
+
+
 def test_tui_retains_runtime_and_last_view_on_read_failure(
     tmp_path, monkeypatch
 ) -> None:
@@ -315,5 +348,98 @@ def test_tui_quit_keeps_screen_and_control_when_stop_times_out(
             app._prompt.value = "/detach"
             await pilot.press("enter")
         assert client.released
+
+    asyncio.run(exercise())
+
+
+def test_activity_trace_navigation_preserves_saved_history_and_raw_details(
+    tmp_path,
+) -> None:
+    case = Case.init(tmp_path / "trace-case")
+    purpose = "Check the file [bold]name[/bold] against its deletion flag"
+    with CaseDB(case) as db:
+        db.execute(
+            "INSERT INTO hypotheses (hypothesis_id, description, status) VALUES ('H-audit', 'Check deletion', 'active')"
+        )
+        db.execute(
+            "INSERT INTO trace.investigation_steps "
+            "(step_id, session_id, hypothesis_id, phase, input_json, output_json, created_at) "
+            "VALUES ('plan-audit', 'previous-session', 'H-audit', 'plan-hypothesis', '{}', ?, now())",
+            (
+                json.dumps(
+                    {
+                        "materialized_query": {
+                            "purpose": purpose,
+                            "sql": "SELECT 'original SQL'",
+                        }
+                    }
+                ),
+            ),
+        )
+        record_progress_event(
+            db,
+            progress_event(
+                "query.planned",
+                "completed",
+                session_id="previous-session",
+                summary="Query prepared",
+                refs={"hypothesis_id": "H-audit", "plan_step_id": "plan-audit"},
+                audit={
+                    "version": "1",
+                    "origin": "planner",
+                    "purpose": purpose,
+                    "test_intent": "refute",
+                },
+            ),
+        )
+
+    async def exercise() -> None:
+        app = CaseApp(case)
+        async with app.run_test(size=(120, 40)) as pilot:
+            assert app._log.border_title == "Activity"
+            assert purpose in " ".join(line.text for line in app._log.lines)
+            app._prompt.value = "/logs"
+            await pilot.press("enter")
+            assert app._log.border_title == "Log"
+            assert "Purpose:" not in " ".join(line.text for line in app._log.lines)
+            app._prompt.value = "/activity"
+            await pilot.press("enter")
+            assert app._log.border_title == "Activity"
+
+            # Dispatch the same literal action attached to the visible reference.
+            activity = _format_activity(app._events[-1])
+            action = next(
+                span.style.meta["@click"]
+                for span in activity.spans
+                if getattr(span.style, "meta", {})
+                .get("@click", "")
+                .startswith("app.show_record('timeline'")
+            )
+            await app.run_action(action)
+            await pilot.pause()
+            assert app._detail["kind"] == "timeline"
+            assert app._detail["items"][0]["session_id"] == "previous-session"
+            assert (
+                "Saved history" in app.screen.query_one("#info-content").content.plain
+            )
+            await app.action_show_record("step", "plan-audit")
+            await pilot.pause()
+            assert (
+                app._detail["output_json"]["materialized_query"]["sql"]
+                == "SELECT 'original SQL'"
+            )
+            await pilot.click("#info-back")
+            assert app._detail["kind"] == "timeline"
+            await pilot.click("#info-raw")
+            assert '"items"' in app.screen.query_one("#info-content").content.plain
+            await app._refresh()
+            assert not app._runtime_lost
+            await pilot.press("escape")
+            app._prompt.value = "/trace H-audit"
+            await pilot.click("#prompt")
+            await pilot.press("enter")
+            assert app._detail["kind"] == "timeline"
+            await pilot.resize_terminal(64, 32)
+            assert app.screen.query_one("#info-close").region.right <= 64
 
     asyncio.run(exercise())

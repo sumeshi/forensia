@@ -21,7 +21,7 @@ from textual.widgets import Button, Footer, Input, RichLog, Rule, Static
 from forensia.core.case import Case
 from forensia.core.ownership import CaseLock, controller_lock_path
 from forensia.db.database import CaseDB, CaseDBBusyError
-from forensia.db.views import case_detail, case_events, case_snapshot
+from forensia.db.views import DETAIL_KINDS, case_detail, case_events, case_snapshot
 from forensia.runtime import RuntimeClient, probe_runtime, start_runtime
 
 _PAGE_SIZE = 40
@@ -41,13 +41,17 @@ Natural language          Steer the investigation
 /report --write          Update and export the report
 /detail KIND ID          Open a record (e.g. finding, hypothesis, evidence)
 /detail event INDEX      Open a log event and its references
+/trace HYPOTHESIS_ID      Follow plans, execution, checks and decisions
+/activity                Show investigation activity (default)
+/logs                    Show compact log events
 /more                    Read the next detail page
 /older, /newer           Browse earlier events / follow current events
 /detach                  Close the TUI; keep the Runtime alive
 /quit                    Stop the investigation and exit (Ctrl+Q)
 /kill                    Force termination; interrupt unfinished work
 
-Click a log timestamp to open the event details.
+Click a timestamp or record reference to inspect the saved record.
+Details offer Back and Raw/Summary; /trace includes previous sessions.
 F1 opens Help. Escape closes this window.
 """
 
@@ -102,6 +106,10 @@ def _command(value: str) -> tuple[str, dict[str, Any]]:
         return "detail", {"kind": parts[1], "id": parts[2]}
     if command == "/detail" and len(parts) == 1:
         return "detail_close", {}
+    if command == "/trace" and len(parts) == 2:
+        return "detail", {"kind": "timeline", "id": parts[1]}
+    if command in {"/activity", "/logs"} and len(parts) == 1:
+        return command[1:], {}
     if command in {"/older", "/newer", "/more"} and len(parts) == 1:
         return command[1:], {}
     if command in {"/stop", "/resume"} and stripped.lower() == command:
@@ -250,6 +258,243 @@ def _format_event(event: dict[str, Any]) -> Text:
     return text
 
 
+def _record_link(kind: str, item_id: Any, label: str) -> Text:
+    """Use literal action arguments; record content is never Rich markup."""
+    text = Text(label)
+    if kind in DETAIL_KINDS and item_id is not None:
+        text.stylize(
+            Style(
+                color="#67e8f9",
+                underline=True,
+                meta={"@click": f"app.show_record({kind!r}, {str(item_id)!r})"},
+            )
+        )
+    return text
+
+
+def _short(value: Any, limit: int = 500) -> str:
+    if isinstance(value, (dict, list)):
+        value = json.dumps(value, ensure_ascii=False, default=str)
+    value = " ".join(str(value).split())
+    return value[:limit] + (
+        "… (open record for full text)" if len(value) > limit else ""
+    )
+
+
+def _format_activity(event: dict[str, Any]) -> Text:
+    """Present recorded intent and host outcomes without inventing narration."""
+    text = _format_event(event)
+    refs = event.get("refs") or {}
+    payload = event.get("payload") or event.get("attributes") or {}
+    audit = payload.get("audit") or {}
+    if not isinstance(audit, dict):
+        audit = {}
+    if hypothesis_id := refs.get("hypothesis_id"):
+        text.append("\n  ")
+        text.append(_record_link("timeline", hypothesis_id, f"Trace {hypothesis_id}"))
+    if event.get("session_id"):
+        text.append(f"  session {_short(event['session_id'], 100)}", style="dim")
+    if audit.get("origin"):
+        text.append(f"\n  Recorded by: {_short(audit['origin'])}", style="dim")
+    for key, label in (
+        ("purpose", "Purpose"),
+        ("test_intent", "Verification intent"),
+        ("fallback_phase", "Fallback search"),
+        ("source_rule_id", "Source rule"),
+        ("returned_count", "Rows returned"),
+        ("retrieval_outcome", "Retrieval assessment"),
+        ("truncated", "Truncated"),
+        ("proposed_verdict", "Checker proposal"),
+        ("report_text", "Check explanation"),
+        ("role", "Evidence role"),
+        ("matched_conditions", "Matched conditions"),
+        ("machine_status", "Evidence sufficiency"),
+        ("reasons", "Sufficiency reasons"),
+        ("missing_requirements", "Missing requirements"),
+        ("human_review_required", "Human review required"),
+        ("verdict", "Host verdict"),
+        ("allowed", "Settlement allowed"),
+        ("gates_passed", "Passed conditions"),
+        ("gates_failed", "Unmet conditions"),
+        ("reason", "Reason"),
+    ):
+        if key in audit:
+            value = "unknown" if audit[key] is None else _short(audit[key])
+            text.append(f"\n  {label}: {value}")
+    if event.get("reason") and event["reason"] != audit.get("reason"):
+        text.append(f"\n  Reason: {_short(event['reason'])}")
+    for key, kind, label in (
+        ("plan_step_id", "step", "Plan"),
+        ("execution_step_id", "step", "Execution start"),
+        ("receipt_id", "query_receipt", "Query result"),
+        ("check_step_id", "step", "Check"),
+        ("assessment_id", "assessment", "Evidence assessment"),
+        ("sufficiency_step_id", "step", "Sufficiency"),
+        ("settlement_ref", "step", "Settlement"),
+    ):
+        if refs.get(key):
+            text.append("\n  ")
+            text.append(_record_link(kind, refs[key], label))
+    if refs.get("step_id") and refs["step_id"] not in {
+        refs.get(key)
+        for key in (
+            "plan_step_id",
+            "execution_step_id",
+            "check_step_id",
+            "sufficiency_step_id",
+            "settlement_ref",
+        )
+    }:
+        text.append("\n  ")
+        text.append(_record_link("step", refs["step_id"], "Stage details"))
+    return text
+
+
+def _format_detail(detail: Any, *, raw: bool = False) -> Text:
+    if not isinstance(detail, dict):
+        return Text(json.dumps(detail, ensure_ascii=False, indent=2, default=str))
+    text = Text()
+    if detail.get("kind") == "timeline" and not raw:
+        text.append(f"Investigation trace · {detail['id']}\n", style="bold cyan")
+        text.append(
+            "Saved history; past decisions may have been superseded.\n", style="dim"
+        )
+        text.append(
+            f"Records {detail['offset'] + 1 if detail['items'] else 0}–"
+            f"{detail['offset'] + len(detail['items'])} of {detail['total_items']}\n"
+        )
+        for item in detail["items"]:
+            text.append(
+                f"\n{item.get('created_at') or 'unknown time'} UTC"
+                f" · session {item.get('session_id') or 'unknown'}\n",
+                style="dim",
+            )
+            text.append(
+                _record_link(
+                    item["kind"], item["id"], item.get("phase") or item["kind"]
+                )
+            )
+            text.append(f"  {item.get('summary') or ''}\n")
+            _append_related(text, item.get("related_records") or [])
+    elif "total_chars" in detail:
+        text.append(detail["text"])
+    elif not raw and "event_index" in detail:
+        text.append(_format_activity(detail))
+        text.append(f"\n\nSaved summary: {detail.get('summary') or 'none recorded'}")
+    elif (
+        not raw
+        and "step_id" in detail
+        and isinstance(detail.get("input_json"), dict)
+        and isinstance(detail.get("output_json"), dict)
+        and (
+            detail.get("phase")
+            in {
+                "plan-hypothesis",
+                "query-execution",
+                "do",
+                "check",
+                "sufficiency",
+                "settlement",
+            }
+            or "tool_receipt" in detail["output_json"]
+        )
+    ):
+        text.append(
+            f"Saved {detail.get('phase') or 'query'} record\n", style="bold cyan"
+        )
+        text.append(
+            f"Session: {detail.get('session_id') or 'unknown'}\n"
+            f"Hypothesis: {detail.get('hypothesis_id') or 'case-wide'}\n"
+            f"Recorded: {detail.get('created_at') or 'unknown'} UTC\n",
+            style="dim",
+        )
+        step_input = detail.get("input_json") or {}
+        step_output = detail.get("output_json") or {}
+        query = (
+            step_output.get("materialized_query")
+            or step_input.get("planned_query")
+            or {}
+        )
+        if detail.get("phase") == "query-execution":
+            text.append(
+                "\nExecution was about to start. Open the related result to establish its outcome.\n",
+                style="dim",
+            )
+        if plan_status := step_output.get("_plan_status"):
+            text.append(
+                f"\nQuery admitted: {plan_status.get('query_materialized', 'unknown')}\n"
+            )
+            if plan_status.get("stop_reason"):
+                text.append(f"Plan stopped: {plan_status['stop_reason']}\n")
+        for key, label in (
+            ("purpose", "Purpose"),
+            ("test_intent", "Verification intent"),
+        ):
+            if query.get(key):
+                text.append(f"\n{label}: {query[key]}\n")
+        if receipt := step_output.get("tool_receipt"):
+            text.append("\nRecorded execution result\n", style="bold")
+            text.append(json.dumps(receipt, ensure_ascii=False, indent=2, default=str))
+            text.append(
+                "\nEvidence links open current case records. Historical receipts preserve the original references.\n",
+                style="dim",
+            )
+        if "check_verdict" in step_output:
+            text.append(
+                f"\nChecker proposal: {step_output['check_verdict']}\n", style="bold"
+            )
+            text.append(
+                str(step_output.get("check_summary") or "No explanation recorded")
+            )
+        if assessment := step_output.get("assessment"):
+            text.append("\n\nEvidence assessment\n", style="bold")
+            text.append(
+                json.dumps(assessment, ensure_ascii=False, indent=2, default=str)
+            )
+        if settlement := step_output.get("settlement"):
+            text.append("\nHost settlement\n", style="bold")
+            for key in ("verdict", "allowed", "reason", "gates_passed", "gates_failed"):
+                if key in settlement:
+                    text.append(f"{key.replace('_', ' ')}: {settlement[key]}\n")
+        if "machine_status" in step_output:
+            text.append("\nEvidence sufficiency\n", style="bold")
+            text.append(
+                json.dumps(step_output, ensure_ascii=False, indent=2, default=str)
+            )
+        receipt = step_output.get("tool_receipt") or {}
+        executed_sql = step_input.get("host_executed_sql") or (
+            receipt.get("arguments") or {}
+        ).get("host_executed_sql")
+        if executed_sql:
+            text.append("\n\nSQL submitted for execution\n", style="bold")
+            text.append(str(executed_sql))
+        elif query.get("sql"):
+            text.append("\n\nPlanned SQL\n", style="bold")
+            text.append(str(query["sql"]))
+        text.append("\n\nRaw / Summary opens the complete saved fields.", style="dim")
+    else:
+        text.append(json.dumps(detail, ensure_ascii=False, indent=2, default=str))
+    if detail.get("related_records"):
+        text.append("\n\nRelated records\n", style="bold cyan")
+        _append_related(text, detail["related_records"])
+    return text
+
+
+def _append_related(text: Text, records: list[dict[str, Any]]) -> None:
+    for record in records:
+        text.append("  ")
+        text.append(
+            _record_link(
+                record["kind"],
+                record["id"],
+                f"{record['label']}: {record['id']}"
+                if record.get("label")
+                else record["id"],
+            )
+        )
+        text.append("\n")
+
+
 class InfoWindow(ModalScreen[None]):
     BINDINGS = [("escape", "dismiss", "Close")]
     DEFAULT_CSS = """
@@ -258,7 +503,7 @@ class InfoWindow(ModalScreen[None]):
     #info-scroll { height: 1fr; }
     #info-content { height: auto; }
     #info-buttons { height: 3; align-horizontal: right; }
-    #info-buttons Button { margin-left: 1; }
+    #info-buttons Button { margin-left: 1; min-width: 8; width: auto; }
     """
 
     def __init__(self, title: str, content: Text, more: bool = False):
@@ -272,6 +517,8 @@ class InfoWindow(ModalScreen[None]):
             with VerticalScroll(id="info-scroll"):
                 yield Static(self._content, id="info-content")
             with Horizontal(id="info-buttons"):
+                yield Button("Back", id="info-back")
+                yield Button("Raw / Summary", id="info-raw")
                 yield Button("More", id="info-more")
                 yield Button("Close", id="info-close", variant="primary")
 
@@ -283,10 +530,19 @@ class InfoWindow(ModalScreen[None]):
         self.query_one("#info-content", Static).update(content)
         self.query_one("#info-scroll", VerticalScroll).scroll_home(animate=False)
         self.query_one("#info-more", Button).display = more
+        self.query_one("#info-back", Button).display = (
+            bool(self.app._detail_history) and title != "Help"
+        )
+        self.query_one("#info-raw", Button).display = title != "Help"
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "info-more":
             await self.app._more_detail()
+        elif event.button.id == "info-back":
+            self.app._back_detail()
+        elif event.button.id == "info-raw":
+            self.app._detail_raw = not self.app._detail_raw
+            self.app._show_detail()
         else:
             self.dismiss()
 
@@ -323,6 +579,10 @@ class CaseApp(App[None]):
         self._cursor = 0
         self._following = True
         self._detail: Any = None
+        self._detail_location: tuple[str, str, int] | None = None
+        self._detail_history: list[tuple[tuple[str, str, int], Any]] = []
+        self._detail_raw = False
+        self._activity = True
         self._pending_commands: set[str] = set()
         self._rendered_event_indexes: tuple[int, ...] | None = None
         self._log_width = 0
@@ -341,7 +601,7 @@ class CaseApp(App[None]):
             wrap=True,
             markup=False,
             highlight=False,
-            max_lines=500,
+            max_lines=4000,
         )
         self._prompt = Input(
             placeholder="Command or steering instruction · F1 Help", id="prompt"
@@ -434,17 +694,36 @@ class CaseApp(App[None]):
             isinstance(self._detail, dict)
             and self._detail.get("next_offset") is not None
         )
-        if isinstance(self._detail, dict) and "total_chars" in self._detail:
-            content = self._detail["text"]
-            title = (
-                f"Detail · {self._detail['kind']} · page at {self._detail['offset']}"
+        title = "Detail"
+        if self._detail_location:
+            title += f" · {self._detail_location[0]} · {self._detail_location[1]}"
+        self._open_window(
+            title, _format_detail(self._detail, raw=self._detail_raw), more
+        )
+
+    async def action_show_record(self, kind: str, item_id: str) -> None:
+        try:
+            detail = await asyncio.to_thread(
+                _read_detail, self.case, self.client, kind, item_id
             )
-        else:
-            content = json.dumps(
-                self._detail, ensure_ascii=False, indent=2, default=str
-            )
-            title = "Detail"
-        self._open_window(title, Text(content), more)
+            if detail is None:
+                self._notice("No matching saved record", "warning")
+                return
+            if self._detail_location is not None:
+                self._detail_history.append((self._detail_location, self._detail))
+                self._detail_history = self._detail_history[-50:]
+            self._detail_location = (kind, item_id, 0)
+            self._detail = detail
+            self._detail_raw = False
+            self._show_detail()
+        except Exception as exc:
+            self._notice(f"Unable to read detail: {exc}", "error")
+
+    def _back_detail(self) -> None:
+        if self._detail_history:
+            self._detail_location, self._detail = self._detail_history.pop()
+            self._detail_raw = False
+            self._show_detail()
 
     async def _more_detail(self) -> None:
         if (
@@ -454,7 +733,7 @@ class CaseApp(App[None]):
             self._notice("No further detail page", "warning")
             return
         try:
-            self._detail = await asyncio.to_thread(
+            detail = await asyncio.to_thread(
                 _read_detail,
                 self.case,
                 self.client,
@@ -462,18 +741,21 @@ class CaseApp(App[None]):
                 self._detail["id"],
                 self._detail["next_offset"],
             )
+            if self._detail_location is not None:
+                self._detail_history.append((self._detail_location, self._detail))
+                self._detail_history = self._detail_history[-50:]
+            self._detail_location = (
+                self._detail["kind"],
+                self._detail["id"],
+                self._detail["next_offset"],
+            )
+            self._detail = detail
             self._show_detail()
         except Exception as exc:
             self._notice(f"Unable to read detail: {exc}", "error")
 
     async def action_show_event(self, event_index: int) -> None:
-        try:
-            self._detail = await asyncio.to_thread(
-                _read_detail, self.case, self.client, "event", str(event_index)
-            )
-            self._show_detail()
-        except Exception as exc:
-            self._notice(f"Unable to read event: {exc}", "error")
+        await self.action_show_record("event", str(event_index))
 
     async def on_mount(self) -> None:
         try:
@@ -593,9 +875,12 @@ class CaseApp(App[None]):
                     event for event in self._events if event["event_index"] > last
                 ]
             for event in events:
-                self._log.write(_format_event(event))
+                self._log.write(
+                    _format_activity(event) if self._activity else _format_event(event)
+                )
             self._rendered_event_indexes = event_indexes
-        self._log.border_title = "Log" if self._following else "Log · history"
+        title = "Activity" if self._activity else "Log"
+        self._log.border_title = title if self._following else f"{title} · history"
         for message, severity in notices:
             self._notice(message, severity)
 
@@ -615,12 +900,14 @@ class CaseApp(App[None]):
                 await self._quit(force=operation == "kill")
                 return
             elif operation == "detail":
-                self._detail = await asyncio.to_thread(
-                    _read_detail, self.case, self.client, payload["kind"], payload["id"]
-                )
-                self._show_detail()
+                await self.action_show_record(payload["kind"], payload["id"])
+            elif operation in {"activity", "logs"}:
+                self._activity = operation == "activity"
+                self._rendered_event_indexes = None
             elif operation == "detail_close":
                 self._detail = None
+                self._detail_location = None
+                self._detail_history.clear()
                 if isinstance(self.screen, InfoWindow):
                     self.screen.dismiss()
             elif operation == "more":

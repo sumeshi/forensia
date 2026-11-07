@@ -44,6 +44,14 @@ class SourceInvalidationTests(unittest.TestCase):
             [evidence_id],
         )
         db.execute(
+            "INSERT INTO investigation_tasks (task_id, kind, status, gap_id, hypothesis_id) "
+            "VALUES ('TASK-evidence', 'verification', 'resolved', 'GAP-evidence', 'H-1')"
+        )
+        db.execute(
+            "INSERT INTO report_gaps (gap_id, status, task_id, hypothesis_id) "
+            "VALUES ('GAP-evidence', 'resolved', 'TASK-evidence', 'H-1')"
+        )
+        db.execute(
             """
             INSERT INTO claims (
                 claim_id, section_key, claim_text, hypothesis_ids, evidence_ids,
@@ -116,6 +124,14 @@ class SourceInvalidationTests(unittest.TestCase):
                 ):
                     normalize_all(case, db)
 
+                self.assertEqual(
+                    ("in_progress", "in_progress"),
+                    db.execute(
+                        "SELECT t.status, g.status FROM investigation_tasks t "
+                        "JOIN report_gaps g ON g.gap_id = t.gap_id "
+                        "WHERE t.task_id = 'TASK-evidence'"
+                    ).fetchone(),
+                )
                 hypothesis = db.execute(
                     "SELECT status, verdict, sufficiency_status, human_review_required "
                     "FROM hypotheses WHERE hypothesis_id = 'H-1'"

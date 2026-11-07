@@ -202,20 +202,37 @@ def parse_llm_json(
     ordinal: list[int] | None = None,
     correction_budget: list[int] | None = None,
     max_tokens: int | None = None,
+    attempt_id: str | None = None,
 ) -> dict[str, Any]:
     """Parse an LLM output string into a dict, with cheap repair and LLM-based repair fallback."""
+    telemetry = get_active_telemetry()
+
+    def record_parse(receipt_id: str | None, *, accepted: bool) -> None:
+        if telemetry is not None:
+            telemetry.record_attempt_acceptance(
+                attempt_id=receipt_id,
+                parse_status="parsed" if accepted else "error",
+                accepted=accepted,
+                discarded_reason=None if accepted else "invalid JSON object",
+            )
+
     correction_budget = correction_budget if correction_budget is not None else [1]
     try:
-        return JSON_REPAIR_PIPELINE.parse_object(output)
+        parsed = JSON_REPAIR_PIPELINE.parse_object(output)
     except RuntimeError:
+        record_parse(attempt_id, accepted=False)
         raise
     except Exception as parse_error:
+        record_parse(attempt_id, accepted=False)
         if correction_budget[0] <= 0:
             raise RuntimeError(
                 f"LLM returned invalid JSON after {MAX_JSON_REPAIR_ATTEMPTS} repair attempts: {parse_error}"
             ) from parse_error
         correction_budget[0] -= 1
         repair_error = parse_error
+    else:
+        record_parse(attempt_id, accepted=True)
+        return parsed
 
     repaired = _request_json_repair(
         output,
@@ -227,14 +244,21 @@ def parse_llm_json(
         ordinal=ordinal,
         max_tokens=max_tokens,
     )
+    repaired_attempt_id = (
+        telemetry.latest_attempt_id(logical_call_id) if telemetry is not None else None
+    )
     try:
-        return JSON_REPAIR_PIPELINE.parse_object(repaired)
+        parsed = JSON_REPAIR_PIPELINE.parse_object(repaired)
     except RuntimeError:
+        record_parse(repaired_attempt_id, accepted=False)
         raise
     except Exception as error:
+        record_parse(repaired_attempt_id, accepted=False)
         raise RuntimeError(
             f"LLM returned invalid JSON after {MAX_JSON_REPAIR_ATTEMPTS} repair attempts: {error}"
         ) from error
+    record_parse(repaired_attempt_id, accepted=True)
+    return parsed
 
 
 def _chat_completion_resuming_outage(
@@ -418,6 +442,13 @@ def request_llm_json(
                     )
                 continue
             if not output or not output.strip():
+                if telemetry is not None:
+                    telemetry.record_attempt_acceptance(
+                        attempt_id=telemetry.latest_attempt_id(logical_call_id),
+                        parse_status="error",
+                        accepted=False,
+                        discarded_reason="empty response",
+                    )
                 raise LLMServerUnavailableError("LLM returned empty response")
         except LLMContextWindowError as exc:
             if not context_compaction_used and correction_budget[0] > 0:
@@ -460,6 +491,11 @@ def request_llm_json(
                 ordinal=ordinal,
                 correction_budget=correction_budget,
                 max_tokens=base_max,
+                attempt_id=(
+                    telemetry.latest_attempt_id(logical_call_id)
+                    if telemetry is not None
+                    else None
+                ),
             )
             close_owned_call("success")
             return parsed

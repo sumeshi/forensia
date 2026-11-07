@@ -158,6 +158,7 @@ def _estimate_message_tokens(text: str) -> int:
 
 
 _OPTIONAL_PROMPT_BLOCKS = (
+    "CASE_ATTEMPT_HISTORY",
     "ORG_KNOWLEDGE",
     "TEMPLATE_CATALOG",
     "ORG_KNOWLEDGE_INDEX",

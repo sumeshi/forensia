@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from forensia.db.database import CaseDB
 from forensia.db.investigation_state import load_investigation_state
+from forensia.investigation.task_contracts import task_contract_summary
 from forensia.investigation.work_judgment import open_work_refs, work_context_snapshot
 from forensia.knowledge.questions import gap_operational_reason
 
@@ -59,6 +61,7 @@ def build_working_state(
                     "description": str(r[2] or "")[:200],
                     "reason": str(r[3] or "")[:160],
                     "retry_condition": str(r[4] or ""),
+                    "contract": task_contract_summary(db, str(r[0])),
                 }
                 for r in rows
             ]
@@ -160,5 +163,12 @@ def render_working_state(state: dict[str, Any]) -> str:
                 f"open task={row['id']} kind={row['kind']} retry={row['retry_condition']} "
                 f"{row['description']} {row['reason']}"
             )
+            if contract := row.get("contract"):
+                payload = (
+                    json.dumps(contract, ensure_ascii=False, separators=(",", ":"))
+                    .replace("<", "\\u003c")
+                    .replace(">", "\\u003e")
+                )
+                lines.append(f"task contract={payload}")
     lines.append("</WORKING_STATE>")
     return "\n".join(lines)

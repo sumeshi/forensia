@@ -18,6 +18,7 @@ from forensia.context.investigation_candidates import build_investigation_candid
 from forensia.core.case import Case
 from forensia.core.control import check_stop
 from forensia.core.progress_event import progress_event
+from forensia.core.provenance import build_runtime_provenance
 from forensia.core.session import SessionState
 from forensia.db.database import CaseDB
 from forensia.db.investigation_state import (
@@ -40,6 +41,7 @@ from forensia.investigation.hypotheses.seeding import (
 from forensia.investigation.work_state import (
     ensure_objective_gap,
     format_terminal_reason,
+    reconcile_completed_task_inputs,
     reopen_retryable_work,
 )
 from forensia.llm.llm_client import (
@@ -275,8 +277,8 @@ def _save_step(
     input_json: Any,
     output_json: Any,
     suffix: str | None = None,
-) -> None:
-    """Persist an investigation step (input/output JSON) to the database."""
+) -> str:
+    """Persist a step and return its durable identity for causal references."""
     step_id = f"{session_id}-{iteration:02d}-{phase}"
     if hypothesis_id and not (suffix or "").startswith(f"{hypothesis_id}-"):
         step_id = f"{step_id}-{hypothesis_id}"
@@ -313,6 +315,7 @@ def _save_step(
             datetime.now(UTC).replace(tzinfo=None),
         ),
     )
+    return step_id
 
 
 def _reasoning_entry_id(
@@ -321,9 +324,12 @@ def _reasoning_entry_id(
     iteration: int,
     phase: str,
     query_id: str | None,
+    attempt_ref: str | None = None,
 ) -> str:
     """Generate a deterministic SHA1-based ID for a reasoning entry."""
     body = f"{session_id}-{hypothesis_id}-{iteration}-{phase}-{query_id or '-'}"
+    if attempt_ref:
+        body += f"-{attempt_ref}"
     return hashlib.sha1(body.encode("utf-8")).hexdigest()[:16]
 
 
@@ -336,13 +342,14 @@ def append_hypothesis_reasoning(
     body: str,
     verdict: str | None = None,
     query_id: str | None = None,
+    attempt_ref: str | None = None,
 ) -> str | None:
     """Persist a free-text reasoning entry linked to a hypothesis and phase."""
     text = str(body).strip()
     if not hypothesis_id or not text:
         return None
     entry_id = _reasoning_entry_id(
-        hypothesis_id, session_id, iteration, phase, query_id
+        hypothesis_id, session_id, iteration, phase, query_id, attempt_ref
     )
     db.execute(
         """
@@ -374,6 +381,8 @@ def append_settlement_feedback(
     query_id: str | None,
     previous_verdict: str,
     decision: Any,
+    *,
+    attempt_ref: str | None = None,
 ) -> str | None:
     """Persist a host settlement override so the next plan can observe it."""
     final_verdict = str(decision.verdict)
@@ -395,6 +404,7 @@ def append_settlement_feedback(
         body[:1000],
         verdict=final_verdict,
         query_id=query_id,
+        attempt_ref=attempt_ref,
     )
 
 
@@ -465,6 +475,16 @@ def _init_session(
         ctx = Ctx(owner_id=owner_id)
         adopted_settings = asdict(get_settings())
         adopted_settings.pop("llm_api_key", None)
+        try:
+            runtime_provenance = build_runtime_provenance()
+        except Exception as exc:
+            # Runtime identification is supplementary; a missing package
+            # manifest must not prevent the investigation from starting.
+            runtime_provenance = {
+                "version": "1",
+                "status": "unknown",
+                "error_type": type(exc).__name__,
+            }
         _save_step(
             db=db,
             session_id=session_id,
@@ -473,6 +493,15 @@ def _init_session(
             hypothesis_id=None,
             input_json={},
             output_json=adopted_settings,
+        )
+        _save_step(
+            db=db,
+            session_id=session_id,
+            iteration=0,
+            phase="runtime-provenance",
+            hypothesis_id=None,
+            input_json={},
+            output_json=runtime_provenance,
         )
         if policy.record is not None:
             _save_step(
@@ -518,6 +547,7 @@ def _init_session(
         else:
             persisted_investigation = load_investigation_state(db) or {}
         if not report_only:
+            reconcile_completed_task_inputs(db)
             reopen_retryable_work(db, manual_resume=manual_resume)
             mark_investigation_started(db)
         active_hypotheses, resolved_hypotheses = load_persisted_hypotheses(db)

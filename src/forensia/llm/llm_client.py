@@ -672,7 +672,8 @@ def chat_completion(
                 if complete_json
                 else ("truncated" if unusable_truncation else "unparsed"),
                 truncated=unusable_truncation,
-                accepted=not unusable_truncation,
+                # HTTP completion does not establish host JSON acceptance.
+                accepted=False if unusable_truncation else None,
                 discarded_reason=truncation_reason if unusable_truncation else None,
                 retry_class=retry_class,
                 retry_reason=retry_reason,

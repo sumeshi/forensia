@@ -8,6 +8,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from typing import Any
+from uuid import uuid4
 
 from forensia.context.case_profile import CaseEvidenceProfile
 from forensia.context.retrieval import evaluate_retrieval
@@ -61,6 +62,10 @@ from forensia.investigation.progress import (
     HypothesisProgressTracker,
     query_fingerprint,
 )
+from forensia.investigation.task_contracts import (
+    prepare_hypothesis_task_contracts,
+    record_settlement_receipt,
+)
 from forensia.investigation.verification.assessment import (
     EvidenceAssessment,
     assess_evidence_group,
@@ -79,7 +84,10 @@ from forensia.investigation.verification.sufficiency import (
     create_evidence_links_for_query,
     record_unlinkable_observation,
 )
-from forensia.investigation.work_state import pause_hypothesis_work
+from forensia.investigation.work_state import (
+    ensure_hypothesis_verification_task,
+    pause_hypothesis_work,
+)
 from forensia.knowledge.coverage import (
     derive_required_capabilities,
 )
@@ -88,6 +96,7 @@ from forensia.llm.llm_client import (
     LLMRequestTimeoutError,
     LLMStructuredOutputError,
 )
+from forensia.llm.telemetry import telemetry_scope
 
 
 def _matching_findings(
@@ -291,6 +300,126 @@ class _HypothesisRunState:
     attempt_ref: str = ""
     attempt_fingerprints: dict[str, str] | None = None
     repeat_gate: dict[str, Any] | None = None
+    task_contract_refs: dict[str, str] = field(default_factory=dict)
+    run_ref: str = field(default_factory=lambda: uuid4().hex)
+    plan_step_id: str = ""
+    execution_step_id: str = ""
+    do_step_id: str = ""
+    check_step_id: str = ""
+    sufficiency_step_id: str = ""
+    settlement_ref: str = ""
+    plan_action_id: str = ""
+    fallback_step_ids: list[str] = field(default_factory=list)
+    fallback_start_steps: dict[str, str] = field(default_factory=dict)
+    has_tool_receipt: bool = False
+
+
+def _attempt_refs(rs: _HypothesisRunState, **extra: Any) -> dict[str, Any]:
+    """Join observable stages by their durable identities, never display text."""
+    query = getattr(rs, "planned_query", None) or getattr(
+        getattr(rs, "hypothesis_plan", None), "query", None
+    )
+    refs = {
+        "hypothesis_id": rs.hypothesis.id,
+        "query_id": getattr(query, "query_id", ""),
+        "receipt_id": rs.attempt_ref if getattr(rs, "has_tool_receipt", False) else "",
+        "attempt_ref": rs.attempt_ref,
+        **{
+            key: getattr(rs, key, "")
+            for key in (
+                "plan_step_id",
+                "execution_step_id",
+                "do_step_id",
+                "check_step_id",
+                "sufficiency_step_id",
+                "settlement_ref",
+            )
+        },
+        **extra,
+    }
+    return {key: value for key, value in refs.items() if value}
+
+
+def _audit_summary(
+    rs: _HypothesisRunState, *, origin: str = "host", **facts: Any
+) -> dict[str, Any]:
+    """Bound existing public intent and stage facts; never request model thought."""
+    query = getattr(rs, "planned_query", None) or getattr(
+        getattr(rs, "hypothesis_plan", None), "query", None
+    )
+    return {
+        "version": "1",
+        "origin": origin,
+        "purpose": str(getattr(query, "purpose", ""))[:500],
+        "test_intent": getattr(query, "test_intent", None),
+        **facts,
+    }
+
+
+def _record_fallback_query(rs: _HypothesisRunState, event: dict[str, Any]) -> None:
+    """Persist the exact secondary SQL and its outcome beneath the primary run."""
+    query_ref = str(event["query_ref"])
+    status = str(event["status"])
+    start_ref = rs.fallback_start_steps.get(query_ref, "")
+    step_id = _save_step(
+        db=rs.db,
+        session_id=rs.session_id,
+        iteration=rs.plan_cycle,
+        phase="fallback-query" if status == "running" else "fallback-query-result",
+        hypothesis_id=rs.hypothesis.id,
+        input_json={
+            **_attempt_refs(rs),
+            "fallback_query_ref": query_ref,
+            "fallback_start_step_id": start_ref,
+            "sql": event["sql"],
+            "params": event.get("params", []),
+            "phase": event.get("phase"),
+            "source_rule_id": event.get("source_rule_id", ""),
+            "declared_fallback": event.get("declared_fallback"),
+            "resolved_config": event.get("config"),
+        },
+        output_json={
+            key: event[key]
+            for key in (
+                "status",
+                "returned_count",
+                "truncated",
+                "reason",
+                "error",
+                "error_type",
+                "duration_ms",
+            )
+            if key in event
+        },
+        suffix=query_ref,
+    )
+    rs.fallback_step_ids.append(step_id)
+    if status == "running":
+        rs.fallback_start_steps[query_ref] = start_ref = step_id
+    if rs.ctx.progress_callback:
+        rs.ctx.progress_callback(
+            progress_event(
+                "investigation.search_fallback",
+                status,
+                severity="error" if status == "failed" else "info",
+                reason="fallback_sql_error" if status == "failed" else None,
+                refs=_attempt_refs(
+                    rs, step_id=step_id, fallback_start_step_id=start_ref
+                ),
+                stage="execute",
+                iteration=rs.plan_cycle,
+                session_id=rs.session_id,
+                summary=f"fallback evidence query {status}",
+                audit=_audit_summary(
+                    rs,
+                    status=status,
+                    fallback_phase=event.get("phase"),
+                    source_rule_id=event.get("source_rule_id", ""),
+                    returned_count=event.get("returned_count"),
+                    truncated=event.get("truncated"),
+                ),
+            )
+        )
 
 
 async def _phase_plan(rs: _HypothesisRunState) -> str:
@@ -302,22 +431,28 @@ async def _phase_plan(rs: _HypothesisRunState) -> str:
     case_profile = rs.case_profile
     rs.plan_attempt += 1
     rs.hypothesis_plan = None
+    rs.plan_action_id = f"plan:{rs.run_ref}:{query_index}:{rs.plan_attempt}"
     try:
-        hypothesis_plan = await _call_with_outage_recovery(
-            plan_hypothesis_query,
-            base_url=base_url,
-            model=model,
-            _outage_progress_callback=rs.ctx.progress_callback,
-            state=state,
-            hypothesis=hypothesis,
-            db=db,
-            status_callback=llm_status_fn or (lambda msg: _log("LLM", msg)),
-            query_index=query_index,
-            time_range=case.time_range,
-            case_profile=case_profile,
-            case_policy=rs.ctx.forensia_policy,
-            correction_budget=rs.correction_budget,
-        )
+        with telemetry_scope(
+            action_id=rs.plan_action_id,
+            hypothesis_id=hypothesis.id,
+            iteration=plan_cycle,
+        ):
+            hypothesis_plan = await _call_with_outage_recovery(
+                plan_hypothesis_query,
+                base_url=base_url,
+                model=model,
+                _outage_progress_callback=rs.ctx.progress_callback,
+                state=state,
+                hypothesis=hypothesis,
+                db=db,
+                status_callback=llm_status_fn or (lambda msg: _log("LLM", msg)),
+                query_index=query_index,
+                time_range=case.time_range,
+                case_profile=case_profile,
+                case_policy=rs.ctx.forensia_policy,
+                correction_budget=rs.correction_budget,
+            )
     except LLMBudgetExceededError, InvestigationStopped, LLMOutageBudgetExceededError:
         raise
     except (LLMStructuredOutputError, LLMRequestTimeoutError) as exc:
@@ -334,6 +469,7 @@ async def _phase_plan(rs: _HypothesisRunState) -> str:
             iteration=plan_cycle,
             phase="error",
             body=f"[provider-response] {reason}",
+            attempt_ref=rs.plan_action_id,
         )
         hypothesis_plan = HypothesisPlanResult(
             query=None,
@@ -350,6 +486,7 @@ async def _phase_plan(rs: _HypothesisRunState) -> str:
             iteration=plan_cycle,
             phase="error",
             body=f"[internal-error] {err_msg}",
+            attempt_ref=rs.plan_action_id,
         )
         hypothesis_plan = HypothesisPlanResult(
             query=None,
@@ -368,7 +505,10 @@ async def _phase_plan(rs: _HypothesisRunState) -> str:
         attempt_number=rs.plan_attempt,
         correction_budget=rs.correction_budget,
         emit=rs.emit_fn,
+        run_ref=rs.run_ref,
+        action_id=rs.plan_action_id,
     )
+    rs.plan_step_id = hypothesis_plan.step_id
     if flow != "ok":
         return flow
     return "ok"
@@ -382,6 +522,13 @@ def _phase_execute(rs: _HypothesisRunState) -> str:
     hypothesis_plan = rs.hypothesis_plan
     tracker = rs.tracker
     planned_query = hypothesis_plan.query
+    rs.planned_query = planned_query
+    rs.attempt_ref = f"receipt-{uuid4().hex}"
+    rs.execution_step_id = rs.do_step_id = rs.check_step_id = ""
+    rs.sufficiency_step_id = rs.settlement_ref = ""
+    rs.fallback_step_ids = []
+    rs.fallback_start_steps = {}
+    rs.has_tool_receipt = False
     reasoning_entry_id = append_hypothesis_reasoning(
         db=db,
         hypothesis_id=hypothesis.id,
@@ -390,6 +537,7 @@ def _phase_execute(rs: _HypothesisRunState) -> str:
         phase="plan",
         body=planned_query.purpose,
         query_id=planned_query.query_id,
+        attempt_ref=rs.attempt_ref,
     )
     _log(
         "QUERY",
@@ -403,9 +551,10 @@ def _phase_execute(rs: _HypothesisRunState) -> str:
             kind="query.planned",
             status="completed",
             reason="focus_hypothesis_query_planned",
-            query_id=planned_query.query_id,
-            hypothesis_id=hypothesis.id,
             reasoning_entry_id=reasoning_entry_id,
+            step_id=rs.plan_step_id,
+            **_attempt_refs(rs),
+            audit=_audit_summary(rs, origin="planner"),
         )
     query_fp = query_fingerprint(planned_query.sql)
     verification_fp = verification_spec_fingerprint(hypothesis.verification_spec)
@@ -423,10 +572,8 @@ def _phase_execute(rs: _HypothesisRunState) -> str:
         scope_fp=scope_fp,
     )
     if rs.repeat_gate["decision"] == "skip":
-        gate_attempt_ref = (
-            f"gate:{session_id}:{plan_cycle}:{query_index}:{query_fp[:12]}"
-        )
-        _save_step(
+        gate_attempt_ref = rs.attempt_ref
+        rs.do_step_id = _save_step(
             db=db,
             session_id=session_id,
             iteration=plan_cycle,
@@ -435,6 +582,8 @@ def _phase_execute(rs: _HypothesisRunState) -> str:
             input_json={
                 "planned_query": planned_query.model_dump(),
                 "query_index": query_index,
+                "plan_step_id": rs.plan_step_id,
+                "attempt_ref": gate_attempt_ref,
             },
             output_json={
                 "repeat_gate": rs.repeat_gate,
@@ -457,6 +606,7 @@ def _phase_execute(rs: _HypothesisRunState) -> str:
             phase="repeat_gate",
             body=json.dumps(rs.repeat_gate, sort_keys=True),
             query_id=planned_query.query_id,
+            attempt_ref=rs.attempt_ref,
         )
         if rs.ctx.progress_callback:
             rs.ctx.progress_callback(
@@ -465,16 +615,18 @@ def _phase_execute(rs: _HypothesisRunState) -> str:
                     "skipped",
                     severity="warning",
                     reason=rs.repeat_gate["reason_code"],
-                    refs={
-                        "hypothesis_id": hypothesis.id,
-                        "query_id": planned_query.query_id,
-                        "attempt_ref": gate_attempt_ref,
-                        "blocked_attempt_ref": rs.repeat_gate.get("attempt_ref"),
-                    },
+                    refs=_attempt_refs(
+                        rs,
+                        step_id=rs.do_step_id,
+                        blocked_attempt_ref=rs.repeat_gate.get("attempt_ref"),
+                    ),
                     stage="execute",
                     iteration=plan_cycle,
                     session_id=session_id,
                     summary="repeated SQL attempt skipped for unchanged verification and evidence scope",
+                    audit=_audit_summary(
+                        rs, status="skipped", reason=rs.repeat_gate["reason_code"]
+                    ),
                 )
             )
         return "break"
@@ -495,6 +647,38 @@ def _phase_execute(rs: _HypothesisRunState) -> str:
     elif source_families is None:
         source_families = _query_artifact_families(planned_query.sql)
     host_executed_sql = bounded_select_sql(planned_query.sql)
+    # Save before executing SQL so a process interruption remains observable.
+    # The terminal do receipt links back here instead of rewriting this start.
+    rs.execution_step_id = _save_step(
+        db=db,
+        session_id=session_id,
+        iteration=plan_cycle,
+        phase="query-execution",
+        hypothesis_id=hypothesis.id,
+        input_json={
+            "planned_query": planned_query.model_dump(mode="json"),
+            "query_index": query_index,
+            "plan_step_id": rs.plan_step_id,
+            "attempt_ref": rs.attempt_ref,
+            "host_executed_sql": host_executed_sql,
+            **rs.attempt_fingerprints,
+        },
+        output_json={"status": "running"},
+        suffix=f"{planned_query.query_id}-{query_index:02d}",
+    )
+    if rs.ctx.progress_callback:
+        rs.ctx.progress_callback(
+            progress_event(
+                "investigation.search",
+                "running",
+                refs=_attempt_refs(rs, step_id=rs.execution_step_id),
+                stage="execute",
+                iteration=plan_cycle,
+                session_id=session_id,
+                summary="evidence query started",
+                audit=_audit_summary(rs, status="running"),
+            )
+        )
     try:
         rows, sql_truncated = fetch_bounded_records(
             db, host_executed_sql, max_rows=MAX_SQL_ROWS
@@ -502,8 +686,37 @@ def _phase_execute(rs: _HypothesisRunState) -> str:
         original_row_count = len(rows) + int(sql_truncated)
         _log("EXEC", f"{hypothesis.id} {planned_query.query_id} — {len(rows)} rows")
         rows, fallback_info = resolve_zero_row_fallbacks(
-            db=db, hypothesis=hypothesis, planned_query=planned_query, rows=rows
+            db=db,
+            hypothesis=hypothesis,
+            planned_query=planned_query,
+            rows=rows,
+            on_query=lambda event: _record_fallback_query(rs, event),
         )
+    except InvestigationStopped as exc:
+        interrupted_step_id = _save_step(
+            db=db,
+            session_id=session_id,
+            iteration=plan_cycle,
+            phase="query-execution-interrupted",
+            hypothesis_id=hypothesis.id,
+            input_json=_attempt_refs(rs),
+            output_json={"status": "interrupted", "reason": str(exc)[:500]},
+        )
+        if rs.ctx.progress_callback:
+            rs.ctx.progress_callback(
+                progress_event(
+                    "investigation.search",
+                    "interrupted",
+                    reason="operator_requested_stop",
+                    refs=_attempt_refs(rs, step_id=interrupted_step_id),
+                    stage="execute",
+                    iteration=plan_cycle,
+                    session_id=session_id,
+                    summary="evidence query interrupted; result is unknown",
+                    audit=_audit_summary(rs, status="interrupted"),
+                )
+            )
+        raise
     except Exception as exc:
         err_msg = str(exc)
         tracker.record(verdict="exec_error", row_count=0)
@@ -520,8 +733,10 @@ def _phase_execute(rs: _HypothesisRunState) -> str:
             original_row_count=None,
             host_executed_sql=host_executed_sql,
             error=err_msg,
+            receipt_id=rs.attempt_ref,
         )
         rs.attempt_ref = receipt.receipt_id
+        receipt.arguments["fallback_step_ids"] = list(rs.fallback_step_ids)
         evaluation = evaluate_retrieval(
             receipt,
             required_fields=["normalized_sql"],
@@ -547,7 +762,7 @@ def _phase_execute(rs: _HypothesisRunState) -> str:
         output = build_receipt_step_payload(receipt, evaluation)
         output["attempt"] = attempt
         output["repeat_gate"] = rs.repeat_gate or {}
-        _save_step(
+        rs.do_step_id = _save_step(
             db=db,
             session_id=session_id,
             iteration=plan_cycle,
@@ -556,6 +771,9 @@ def _phase_execute(rs: _HypothesisRunState) -> str:
             input_json={
                 "planned_query": planned_query.model_dump(),
                 "query_index": query_index,
+                "plan_step_id": rs.plan_step_id,
+                "execution_step_id": rs.execution_step_id,
+                "fallback_step_ids": list(rs.fallback_step_ids),
             },
             output_json=output,
             suffix=f"{planned_query.query_id}-{query_index:02d}",
@@ -565,6 +783,7 @@ def _phase_execute(rs: _HypothesisRunState) -> str:
             f"SQL execution error — {planned_query.query_id}: {err_msg}",
             level="error",
         )
+        rs.has_tool_receipt = True
         append_hypothesis_reasoning(
             db=db,
             hypothesis_id=hypothesis.id,
@@ -573,6 +792,7 @@ def _phase_execute(rs: _HypothesisRunState) -> str:
             phase="error",
             body=f"[internal-error] SQL execution error: {err_msg}",
             query_id=planned_query.query_id,
+            attempt_ref=rs.attempt_ref,
         )
         state.last_execution_error = {
             "query_id": planned_query.query_id,
@@ -586,15 +806,17 @@ def _phase_execute(rs: _HypothesisRunState) -> str:
                     "failed",
                     severity="error",
                     reason="sql_execution_error",
-                    refs={
-                        "hypothesis_id": hypothesis.id,
-                        "query_id": planned_query.query_id,
-                        "receipt_id": receipt.receipt_id,
-                    },
+                    refs=_attempt_refs(rs, step_id=rs.do_step_id),
                     stage="execute",
                     iteration=plan_cycle,
                     session_id=session_id,
                     summary="evidence query failed during execution",
+                    audit=_audit_summary(
+                        rs,
+                        status=receipt.status,
+                        retrieval_outcome=evaluation.outcome,
+                        error=err_msg[:500],
+                    ),
                 )
             )
         return "continue"
@@ -612,8 +834,10 @@ def _phase_execute(rs: _HypothesisRunState) -> str:
         host_executed_sql=host_executed_sql,
         truncated=sql_truncated,
         fallback_info=fallback_info,
+        receipt_id=rs.attempt_ref,
     )
     rs.attempt_ref = receipt.receipt_id
+    receipt.arguments["fallback_step_ids"] = list(rs.fallback_step_ids)
     observed_evidence_ids = _result_evidence_ids(rows)
     canonicalization_error = ""
     canonical_content_fingerprints: dict[str, str] = {}
@@ -703,7 +927,7 @@ def _phase_execute(rs: _HypothesisRunState) -> str:
     output["canonical_evidence_ids"] = canonical_evidence_ids
     output["attempt"] = attempt
     output["repeat_gate"] = rs.repeat_gate or {}
-    _save_step(
+    rs.do_step_id = _save_step(
         db=db,
         session_id=session_id,
         iteration=plan_cycle,
@@ -712,10 +936,14 @@ def _phase_execute(rs: _HypothesisRunState) -> str:
         input_json={
             "planned_query": planned_query.model_dump(),
             "query_index": query_index,
+            "plan_step_id": rs.plan_step_id,
+            "execution_step_id": rs.execution_step_id,
+            "fallback_step_ids": list(rs.fallback_step_ids),
         },
         output_json=output,
         suffix=f"{planned_query.query_id}-{query_index:02d}",
     )
+    rs.has_tool_receipt = True
     rs.planned_query = planned_query
     rs.rows = canonical_rows
     rs.canonical_evidence_ids = canonical_evidence_ids
@@ -731,18 +959,62 @@ def _phase_execute(rs: _HypothesisRunState) -> str:
                 "investigation.search",
                 "completed",
                 severity="success",
-                refs={
-                    "hypothesis_id": hypothesis.id,
-                    "query_id": planned_query.query_id,
-                    "receipt_id": receipt.receipt_id,
-                },
+                refs=_attempt_refs(rs, step_id=rs.do_step_id),
                 stage="execute",
                 iteration=plan_cycle,
                 session_id=session_id,
                 summary=f"evidence query returned {len(rows)} rows",
+                audit=_audit_summary(
+                    rs,
+                    status=receipt.status,
+                    returned_count=receipt.returned_count,
+                    truncated=receipt.truncated,
+                    retrieval_outcome=evaluation.outcome,
+                ),
             )
         )
     return "ok"
+
+
+def _record_check_failure(
+    rs: _HypothesisRunState, exc: Exception, *, status: str = "failed"
+) -> None:
+    """Retain failed checker outcomes with the query that supplied its input."""
+    error_type = str(getattr(exc, "error_code", type(exc).__name__))
+    rs.check_step_id = _save_step(
+        db=rs.db,
+        session_id=rs.session_id,
+        iteration=rs.plan_cycle,
+        phase="check",
+        hypothesis_id=rs.hypothesis.id,
+        input_json={
+            "planned_query": rs.planned_query.model_dump(mode="json"),
+            "action_id": f"{rs.attempt_ref}:check",
+            **_attempt_refs(rs),
+        },
+        output_json={
+            "status": status,
+            "attempt_ref": rs.attempt_ref,
+            "error_type": error_type,
+            "error": str(exc)[:500],
+        },
+        suffix=f"{rs.planned_query.query_id}-{rs.query_index:02d}",
+    )
+    if rs.ctx.progress_callback:
+        rs.ctx.progress_callback(
+            progress_event(
+                "hypothesis.check_failed",
+                status,
+                severity="error" if status == "failed" else "warning",
+                reason=error_type,
+                refs=_attempt_refs(rs, step_id=rs.check_step_id),
+                stage="check",
+                iteration=rs.plan_cycle,
+                session_id=rs.session_id,
+                summary="checker did not produce an admitted result",
+                audit=_audit_summary(rs, status=status, error_type=error_type),
+            )
+        )
 
 
 async def _phase_check(rs: _HypothesisRunState) -> str:
@@ -768,20 +1040,30 @@ async def _phase_check(rs: _HypothesisRunState) -> str:
                 raw_response={"origin": "verification_spec:deterministic"},
             )
         else:
-            check_result = check_query_result(
-                case=case,
-                db=db,
-                session_id=session_id,
-                planned_query=planned_query,
-                hypothesis=hypothesis,
-                finding_candidates=candidates,
-                result_summary=result_summary,
-                base_url=base_url,
-                model=model,
-                status_callback=llm_status_fn or (lambda msg: _log("LLM", msg)),
-                fallback_info=fallback_info,
-            )
-    except LLMBudgetExceededError, LLMOutageBudgetExceededError, InvestigationStopped:
+            with telemetry_scope(
+                action_id=f"{rs.attempt_ref}:check",
+                hypothesis_id=hypothesis.id,
+                iteration=plan_cycle,
+            ):
+                check_result = check_query_result(
+                    case=case,
+                    db=db,
+                    session_id=session_id,
+                    planned_query=planned_query,
+                    hypothesis=hypothesis,
+                    finding_candidates=candidates,
+                    result_summary=result_summary,
+                    base_url=base_url,
+                    model=model,
+                    status_callback=llm_status_fn or (lambda msg: _log("LLM", msg)),
+                    fallback_info=fallback_info,
+                )
+    except (
+        LLMBudgetExceededError,
+        LLMOutageBudgetExceededError,
+        InvestigationStopped,
+    ) as exc:
+        _record_check_failure(rs, exc, status="interrupted")
         raise
     except (LLMStructuredOutputError, LLMRequestTimeoutError) as exc:
         if exc.error_code not in {
@@ -793,6 +1075,7 @@ async def _phase_check(rs: _HypothesisRunState) -> str:
             f"{exc.error_code} for {hypothesis.id}/{planned_query.query_id}: {exc}"
         )
         _log("CHECK", err_msg, level="error")
+        _record_check_failure(rs, exc)
         append_hypothesis_reasoning(
             db=db,
             hypothesis_id=hypothesis.id,
@@ -801,11 +1084,13 @@ async def _phase_check(rs: _HypothesisRunState) -> str:
             phase="error",
             body=f"[provider-response] {err_msg}",
             query_id=planned_query.query_id,
+            attempt_ref=rs.attempt_ref,
         )
         return "continue"
     except Exception as exc:
         err_msg = f"LLM failed for {hypothesis.id}/{planned_query.query_id}: {exc}"
         _log("CHECK", err_msg, level="error")
+        _record_check_failure(rs, exc)
         append_hypothesis_reasoning(
             db=db,
             hypothesis_id=hypothesis.id,
@@ -814,6 +1099,7 @@ async def _phase_check(rs: _HypothesisRunState) -> str:
             phase="error",
             body=f"[internal-error] {err_msg}",
             query_id=planned_query.query_id,
+            attempt_ref=rs.attempt_ref,
         )
         return "continue"
     reasoning_entry_id = append_hypothesis_reasoning(
@@ -825,6 +1111,7 @@ async def _phase_check(rs: _HypothesisRunState) -> str:
         body=check_result.report_text,
         verdict=check_result.verdict,
         query_id=planned_query.query_id,
+        attempt_ref=rs.attempt_ref,
     )
     chk_txt = (check_result.report_text or "").strip().replace("\n", " ")
     if len(chk_txt) > 120:
@@ -834,20 +1121,6 @@ async def _phase_check(rs: _HypothesisRunState) -> str:
         f"{hypothesis.id} {planned_query.query_id} — verdict={check_result.verdict}"
         + (f": {chk_txt}" if chk_txt else ""),
     )
-    if emit_fn:
-        emit_fn(
-            "investigate/check",
-            f"[check] {hypothesis.id}: verdict={check_result.verdict} query={planned_query.query_id}",
-            iteration=plan_cycle,
-            kind="hypothesis.check_completed",
-            status="completed",
-            reason=check_result.verdict,
-            query_id=planned_query.query_id,
-            hypothesis_id=hypothesis.id,
-            reasoning_entry_id=reasoning_entry_id,
-            receipt_id=rs.attempt_ref,
-            attempt_ref=rs.attempt_ref,
-        )
     state.history.append(
         HistoryEntry(
             iteration=plan_cycle,
@@ -1003,7 +1276,7 @@ async def _phase_check(rs: _HypothesisRunState) -> str:
     check_step_output["check_summary"] = check_result.report_text or ""
     if assessment_payload is not None:
         check_step_output["assessment"] = assessment_payload
-    _save_step(
+    rs.check_step_id = _save_step(
         db=db,
         session_id=session_id,
         iteration=plan_cycle,
@@ -1014,10 +1287,33 @@ async def _phase_check(rs: _HypothesisRunState) -> str:
             "hypothesis": hypothesis.model_dump(),
             "result_summary": result_summary,
             "attempt_ref": rs.attempt_ref,
+            "action_id": f"{rs.attempt_ref}:check",
+            "plan_step_id": rs.plan_step_id,
+            "execution_step_id": rs.execution_step_id,
+            "do_step_id": rs.do_step_id,
         },
         output_json=check_step_output,
         suffix=f"{planned_query.query_id}-{query_index:02d}",
     )
+    if emit_fn:
+        emit_fn(
+            "investigate/check",
+            f"[check] {hypothesis.id}: verdict={check_result.verdict} query={planned_query.query_id}",
+            iteration=plan_cycle,
+            kind="hypothesis.check_completed",
+            status="completed",
+            reason=check_result.verdict,
+            reasoning_entry_id=reasoning_entry_id,
+            **_attempt_refs(rs, step_id=rs.check_step_id),
+            audit=_audit_summary(
+                rs,
+                origin="host"
+                if "observation" in hypothesis.verification_spec.support_conditions
+                else "checker",
+                proposed_verdict=check_result.verdict,
+                report_text=(check_result.report_text or "")[:1000],
+            ),
+        )
     for link_write in evidence_link_writes:
         create_evidence_links_for_query(db, hypothesis_id=hypothesis.id, **link_write)
     if unlinkable_reason:
@@ -1036,11 +1332,22 @@ async def _phase_check(rs: _HypothesisRunState) -> str:
                 assessment_progress["status"],
                 severity=assessment_progress["severity"],
                 reason=assessment_progress["reason"],
-                refs=assessment_progress["refs"],
+                refs={
+                    **_attempt_refs(rs, step_id=rs.check_step_id),
+                    **assessment_progress["refs"],
+                },
                 stage="assess",
                 iteration=plan_cycle,
                 session_id=session_id,
                 summary=assessment_progress["summary"],
+                audit=_audit_summary(
+                    rs,
+                    role=assessment.role if assessment is not None else None,
+                    reason=assessment.reason[:500] if assessment is not None else "",
+                    matched_conditions=list(assessment.matched_conditions)[:20]
+                    if assessment is not None
+                    else [],
+                ),
             )
         )
     return "ok"
@@ -1066,8 +1373,9 @@ def _apply_sufficiency_guard(rs: _HypothesisRunState) -> None:
         "sufficiency",
         reason,
         query_id=rs.planned_query.query_id if rs.planned_query else None,
+        attempt_ref=rs.attempt_ref,
     )
-    _save_step(
+    rs.sufficiency_step_id = _save_step(
         rs.db,
         rs.session_id,
         rs.plan_cycle,
@@ -1076,6 +1384,7 @@ def _apply_sufficiency_guard(rs: _HypothesisRunState) -> None:
         {
             "checker_proposal": original_verdict,
             "required_capabilities": required_capabilities,
+            **_attempt_refs(rs),
         },
         {
             "machine_status": suff_result.status,
@@ -1086,6 +1395,28 @@ def _apply_sufficiency_guard(rs: _HypothesisRunState) -> None:
         },
         suffix=str(rs.query_index),
     )
+    if rs.ctx.progress_callback:
+        rs.ctx.progress_callback(
+            progress_event(
+                "investigation.sufficiency",
+                "completed",
+                severity="success" if suff_result.status == "sufficient" else "warning",
+                reason=suff_result.status,
+                refs=_attempt_refs(rs, step_id=rs.sufficiency_step_id),
+                stage="sufficiency",
+                iteration=rs.plan_cycle,
+                session_id=rs.session_id,
+                summary=f"machine sufficiency is {suff_result.status}",
+                audit=_audit_summary(
+                    rs,
+                    machine_status=suff_result.status,
+                    score=suff_result.score,
+                    reasons=[str(item)[:500] for item in suff_result.reasons[:10]],
+                    missing_requirements=suff_result.missing_requirements[:10],
+                    human_review_required=suff_result.human_review_required,
+                ),
+            )
+        )
 
 
 def _build_settlement_input(rs: _HypothesisRunState) -> SettlementInput:
@@ -1141,6 +1472,17 @@ def _phase_apply_verdict(rs: _HypothesisRunState) -> None:
         si=si,
         evidence_requirements=hypothesis.verification_spec.evidence_requirements,
     )
+    settlement_ref = record_settlement_receipt(
+        db,
+        hypothesis_id=hypothesis.id,
+        decision=decision,
+        attempt_ref=rs.attempt_ref,
+        session_id=session_id,
+        iteration=plan_cycle,
+        task_contract_refs=rs.task_contract_refs,
+        causal_refs=_attempt_refs(rs),
+    )
+    rs.settlement_ref = settlement_ref
     pre_settlement_verdict = final_verdict
     _log(
         "SETTLEMENT",
@@ -1156,6 +1498,7 @@ def _phase_apply_verdict(rs: _HypothesisRunState) -> None:
         planned_query.query_id if planned_query else None,
         pre_settlement_verdict,
         decision,
+        attempt_ref=rs.attempt_ref,
     )
     if ctx.progress_callback:
         ctx.progress_callback(
@@ -1164,14 +1507,20 @@ def _phase_apply_verdict(rs: _HypothesisRunState) -> None:
                 "completed",
                 severity="success" if decision.allowed else "warning",
                 reason=str(decision.reason or ""),
-                refs={
-                    "hypothesis_id": hypothesis.id,
-                    "query_id": planned_query.query_id if planned_query else "",
-                },
+                refs=_attempt_refs(rs, step_id=settlement_ref),
                 stage="settlement",
                 iteration=plan_cycle,
                 session_id=session_id,
                 summary=f"settlement retained verdict {decision.verdict}",
+                audit=_audit_summary(
+                    rs,
+                    proposed_verdict=pre_settlement_verdict,
+                    verdict=decision.verdict,
+                    allowed=decision.allowed,
+                    reason=str(decision.reason or "")[:500],
+                    gates_passed=decision.gates_passed[:20],
+                    gates_failed=decision.gates_failed[:20],
+                ),
             )
         )
     if not decision.allowed:
@@ -1262,6 +1611,7 @@ def _phase_apply_verdict(rs: _HypothesisRunState) -> None:
             summary=decision.reason,
             session_id=session_id,
             sample_rows=rows,
+            settlement_ref=settlement_ref,
         )
         _log(
             "RESOLVE",
@@ -1286,7 +1636,7 @@ def _phase_apply_verdict(rs: _HypothesisRunState) -> None:
             origin="check_new",
             session_id=session_id,
         )
-    _save_step(
+    act_step_id = _save_step(
         db=db,
         session_id=session_id,
         iteration=plan_cycle,
@@ -1295,13 +1645,16 @@ def _phase_apply_verdict(rs: _HypothesisRunState) -> None:
         input_json={
             "hypothesis_id": hypothesis.id,
             "query_id": planned_query.query_id,
+            **_attempt_refs(rs),
         },
         output_json={
             "verdict": final_verdict,
+            "settlement_ref": settlement_ref,
+            "attempt_ref": rs.attempt_ref,
             "active_hypotheses": [h.model_dump() for h in state.active_hypotheses],
             "resolved_hypotheses": [h.model_dump() for h in state.resolved_hypotheses],
         },
-        suffix=f"{planned_query.query_id}-{query_index:02d}",
+        suffix=f"{planned_query.query_id}-{query_index:02d}-{settlement_ref}",
     )
     if emit_fn:
         emit_fn(
@@ -1311,8 +1664,13 @@ def _phase_apply_verdict(rs: _HypothesisRunState) -> None:
             kind="hypothesis.verdict_applied",
             status="completed",
             reason=final_verdict,
-            hypothesis_id=hypothesis.id,
-            query_id=planned_query.query_id if planned_query else None,
+            **_attempt_refs(rs, step_id=act_step_id),
+            audit=_audit_summary(
+                rs,
+                verdict=final_verdict,
+                allowed=decision.allowed,
+                reason=str(decision.reason or "")[:500],
+            ),
         )
 
 
@@ -1356,6 +1714,17 @@ def _phase_resolve_repeated_absence(rs: _HypothesisRunState) -> str:
     )
 
     with db.transaction():
+        settlement_ref = record_settlement_receipt(
+            db,
+            hypothesis_id=hypothesis.id,
+            decision=decision,
+            attempt_ref=rs.attempt_ref,
+            session_id=session_id,
+            iteration=rs.plan_cycle,
+            task_contract_refs=rs.task_contract_refs,
+            causal_refs=_attempt_refs(rs),
+        )
+        rs.settlement_ref = settlement_ref
         _resolve_hypothesis_in_transaction(
             db=db,
             state=state,
@@ -1363,8 +1732,9 @@ def _phase_resolve_repeated_absence(rs: _HypothesisRunState) -> str:
             verdict=decision.verdict,
             summary=decision.reason,
             session_id=session_id,
+            settlement_ref=settlement_ref,
         )
-        _save_step(
+        act_step_id = _save_step(
             db=db,
             session_id=session_id,
             iteration=rs.plan_cycle,
@@ -1373,9 +1743,12 @@ def _phase_resolve_repeated_absence(rs: _HypothesisRunState) -> str:
             input_json={
                 "hypothesis_id": hypothesis.id,
                 "query_id": rs.planned_query.query_id if rs.planned_query else None,
+                **_attempt_refs(rs),
             },
             output_json={
                 "verdict": decision.verdict,
+                "settlement_ref": settlement_ref,
+                "attempt_ref": rs.attempt_ref,
                 "active_hypotheses": [
                     item.model_dump() for item in state.active_hypotheses
                 ],
@@ -1384,9 +1757,48 @@ def _phase_resolve_repeated_absence(rs: _HypothesisRunState) -> str:
                 ],
             },
             suffix=(
-                f"{rs.planned_query.query_id}-{rs.query_index:02d}"
+                f"{rs.planned_query.query_id}-{rs.query_index:02d}-{settlement_ref}"
                 if rs.planned_query
                 else None
+            ),
+        )
+    if rs.ctx.progress_callback:
+        rs.ctx.progress_callback(
+            progress_event(
+                "investigation.settlement",
+                "completed",
+                severity="success",
+                reason=str(decision.reason or ""),
+                refs=_attempt_refs(rs, step_id=settlement_ref),
+                stage="settlement",
+                iteration=rs.plan_cycle,
+                session_id=session_id,
+                summary=f"absence settlement retained verdict {decision.verdict}",
+                audit=_audit_summary(
+                    rs,
+                    proposed_verdict=rs.check_result.verdict,
+                    verdict=decision.verdict,
+                    allowed=decision.allowed,
+                    reason=str(decision.reason or "")[:500],
+                    gates_passed=decision.gates_passed[:20],
+                    gates_failed=decision.gates_failed[:20],
+                ),
+            )
+        )
+    if rs.emit_fn:
+        rs.emit_fn(
+            "investigate/act",
+            f"[act] {hypothesis.id}: verdict={decision.verdict}",
+            iteration=rs.plan_cycle,
+            kind="hypothesis.verdict_applied",
+            status="completed",
+            reason=decision.verdict,
+            **_attempt_refs(rs, step_id=act_step_id),
+            audit=_audit_summary(
+                rs,
+                verdict=decision.verdict,
+                allowed=decision.allowed,
+                reason=str(decision.reason or "")[:500],
             ),
         )
     return "break"
@@ -1409,6 +1821,11 @@ async def _investigate_one_hypothesis(
     case_profile: CaseEvidenceProfile | None = None,
 ) -> tuple[SessionState, dict[str, str]]:
     """Investigate a single hypothesis with full emit/save lifecycle."""
+    with db.transaction():
+        ensure_hypothesis_verification_task(db, hypothesis.id, session_id=session_id)
+        contracts = prepare_hypothesis_task_contracts(
+            db, hypothesis.id, session_id=session_id
+        )
     rs = _HypothesisRunState(
         hypothesis=hypothesis,
         state=state,
@@ -1425,6 +1842,9 @@ async def _investigate_one_hypothesis(
         candidates=_matching_findings(state.findings_snapshot, hypothesis),
         tracker=HypothesisProgressTracker(),
         focus_sections=_guess_related_sections(hypothesis.description),
+        task_contract_refs={
+            record.contract.task_id: record.ref for record in contracts
+        },
     )
     limit = query_limit if query_limit is not None else max_queries_per_hypothesis
     while rs.query_index < limit:

@@ -277,6 +277,8 @@ class InvestigateWiringTests(unittest.TestCase):
                     plan_cycle=1,
                     query_index=1,
                     emit_fn=None,
+                    attempt_ref="receipt-rollback",
+                    task_contract_refs={},
                 )
                 with (
                     mock.patch.object(hypothesis_runner, "_apply_sufficiency_guard"),
@@ -319,11 +321,12 @@ class InvestigateWiringTests(unittest.TestCase):
                     ).fetchone(),
                 )
                 self.assertEqual(
-                    (0, 0),
+                    (0, 0, 0),
                     reopened.execute(
                         "SELECT "
                         "(SELECT COUNT(*) FROM trace.hypothesis_reasoning WHERE phase = 'settlement'), "
-                        "(SELECT COUNT(*) FROM trace.investigation_steps WHERE phase = 'act')"
+                        "(SELECT COUNT(*) FROM trace.investigation_steps WHERE phase = 'act'), "
+                        "(SELECT COUNT(*) FROM trace.investigation_steps WHERE phase = 'settlement')"
                     ).fetchone(),
                 )
 

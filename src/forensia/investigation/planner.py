@@ -213,6 +213,7 @@ class HypothesisPlanResult:
     #: events; this rides the existing plan step payload.
     disclosure: dict[str, Any] | None = None
     test_intent: str | None = None
+    step_id: str = ""
 
 
 def _eligible_planner_tables(
@@ -257,6 +258,8 @@ def persist_hypothesis_plan_result(
     attempt_number: int = 1,
     correction_budget: list[int] | None = None,
     emit: Callable[..., None] | None = None,
+    run_ref: str = "",
+    action_id: str = "",
 ) -> str:
     """Persist query planning without changing the admitted hypothesis."""
     from forensia.investigation.investigation_session import (
@@ -273,8 +276,14 @@ def persist_hypothesis_plan_result(
         and correction_budget[0] > 0
     )
     step_suffix = f"{hypothesis.id}-{query_index:02d}-{attempt_number:02d}"
-    step_id = f"{session_id}-{iteration:02d}-plan-hypothesis-{step_suffix}"
+    if run_ref:
+        step_suffix = f"{step_suffix}-{run_ref}"
     output = dict(plan.raw_response)
+    # Preserve the host-admitted query before any execution begins.  The raw
+    # model action may be a template or differ from the materialized SQL.
+    output["materialized_query"] = (
+        plan.query.model_dump(mode="json") if plan.query is not None else None
+    )
     output["_plan_status"] = {
         "query_materialized": plan.query is not None,
         "stop_reason": plan.stop_reason,
@@ -288,7 +297,7 @@ def persist_hypothesis_plan_result(
     }
     if plan.disclosure is not None:
         output["_disclosure"] = plan.disclosure
-    _save_step(
+    step_id = _save_step(
         db=db,
         session_id=session_id,
         iteration=iteration,
@@ -298,10 +307,12 @@ def persist_hypothesis_plan_result(
             "hypothesis": hypothesis.model_dump(),
             "query_index": query_index,
             "attempt_number": attempt_number,
+            "action_id": action_id,
         },
         output_json=output,
         suffix=step_suffix,
     )
+    plan.step_id = step_id
     if plan.query:
         return "ok"
     if not plan.stop_reason:
@@ -314,6 +325,7 @@ def persist_hypothesis_plan_result(
         iteration=iteration,
         phase="plan",
         body=f"[planner-validation] {reason}",
+        attempt_ref=action_id or None,
     )
     # This is consumed by the next query-intent call; no SQL ran here.
     state.last_planner_error = {
@@ -337,6 +349,14 @@ def persist_hypothesis_plan_result(
             else reason.split(":", 1)[0],
             hypothesis_id=hypothesis.id,
             step_id=step_id,
+            plan_step_id=step_id,
+            audit={
+                "version": "1",
+                "origin": "host",
+                "query_materialized": False,
+                "reason": reason[:500],
+                "retry_available": retry_available,
+            },
         )
     logger.warning("%s planner validation rejected the plan: %s", hypothesis.id, reason)
     return "continue" if retry_available else "break"

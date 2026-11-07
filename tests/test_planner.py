@@ -31,14 +31,16 @@ def _insert_durable_attempt(
     query_id: str,
     attempt_ref: str,
     check_summary: str,
+    purpose: str = "inspect prior evidence",
+    sql: str = "SELECT event_id FROM evtx_events LIMIT 1",
 ) -> None:
     planned_query = {
         "query_id": query_id,
         "hypothesis_id": hypothesis_id,
-        "purpose": "inspect prior evidence",
+        "purpose": purpose,
         "template_id": None,
         "params": {},
-        "sql": "SELECT event_id FROM evtx_events LIMIT 1",
+        "sql": sql,
     }
     db.execute(
         """
@@ -2184,6 +2186,82 @@ class PlannerRetryTests(unittest.TestCase):
         for call in mock_request.call_args_list:
             for message in call.kwargs["messages"]:
                 self.assertNotIn("ready_to_compose", str(message.get("content")))
+
+
+def test_query_planner_reads_other_hypotheses_without_adopting_their_verdicts(
+    tmp_path,
+) -> None:
+    from forensia.investigation.hypotheses.hypothesis_store import _upsert_hypothesis
+
+    previous = Hypothesis(
+        id="H-other-session",
+        description="Investigate logons on HOST-ALPHA",
+        required_entities=["HOST-ALPHA"],
+        confirm_when={"co_observed_event_ids": [4624]},
+    )
+    hypothesis = Hypothesis(
+        id="H-current",
+        description="Check a different explanation for logons on HOST-ALPHA",
+        required_entities=["HOST-ALPHA"],
+        confirm_when={"co_observed_event_ids": [4624]},
+    )
+    state = SessionState(session_id="current-session", iteration=1)
+    sql = (
+        "SELECT evidence_id FROM evtx_events "
+        "WHERE computer = 'HOST-ALPHA' AND event_id = 4624 LIMIT 20"
+    )
+    with CaseDB(Case.init(tmp_path)) as db:
+        _upsert_hypothesis(db, previous, "test", "old-session")
+        _upsert_hypothesis(db, hypothesis, "test", state.session_id)
+        _insert_durable_attempt(
+            db,
+            hypothesis_id=previous.id,
+            query_id="Q-reused-display-label",
+            attempt_ref="receipt-shared-host",
+            check_summary="UNVERIFIED_MODEL_ASSERTION_DO_NOT_REUSE",
+            purpose="inspect logons on HOST-ALPHA",
+            sql=sql,
+        )
+        with patch(
+            "forensia.llm.json_response.request_llm_json",
+            return_value={
+                "action": {
+                    "intent": "inspect canonical rows for the current hypothesis",
+                    "target_table": "evtx_events",
+                    "sql": sql,
+                    "template_id": None,
+                }
+            },
+        ) as request:
+            result = plan_hypothesis_query(
+                state,
+                hypothesis,
+                base_url=_llm_base_url(),
+                model="test-model",
+                db=db,
+            )
+
+        assert request.call_count == 1
+        assert result.query is not None
+        messages = request.call_args.kwargs["messages"]
+        prompt = "\n".join(message["content"] for message in messages)
+        assert "<CASE_ATTEMPT_HISTORY>" in prompt
+        assert "receipt-shared-host" in prompt
+        assert previous.id in prompt
+        assert "UNVERIFIED_MODEL_ASSERTION_DO_NOT_REUSE" not in prompt
+        assert db.execute(
+            "SELECT status, verdict FROM hypotheses WHERE hypothesis_id = ?",
+            [hypothesis.id],
+        ).fetchone() == ("active", None)
+        assert db.execute("SELECT count(*) FROM hypothesis_evidence").fetchone()[0] == 0
+        retrieval = db.execute(
+            "SELECT event_id, selected_refs, selected_chars, budget "
+            "FROM trace.retrieval_events WHERE source_kind = 'case_attempt_history'"
+        ).fetchone()
+        assert retrieval is not None
+        assert json.loads(retrieval[1]) == ["receipt-shared-host"]
+        assert retrieval[2] <= retrieval[3]
+        assert retrieval[0] in messages.retrieval_event_ids
 
 
 def test_working_state_only_deduplicates_requirements_with_rendered_rows() -> None:

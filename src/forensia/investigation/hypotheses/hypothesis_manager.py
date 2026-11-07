@@ -478,6 +478,8 @@ def resolve_hypothesis(
     summary: str,
     session_id: str,
     sample_rows: list[dict[str, Any]] | None = None,
+    *,
+    settlement_ref: str | None = None,
 ) -> None:
     """Resolve a hypothesis atomically for callers without an open transaction."""
     with db.transaction():
@@ -489,6 +491,7 @@ def resolve_hypothesis(
             summary,
             session_id,
             sample_rows=sample_rows,
+            settlement_ref=settlement_ref,
         )
 
 
@@ -500,6 +503,8 @@ def _resolve_hypothesis_in_transaction(
     summary: str,
     session_id: str,
     sample_rows: list[dict[str, Any]] | None = None,
+    *,
+    settlement_ref: str | None = None,
 ) -> None:
     """Mark a hypothesis as confirmed or refuted, generate follow-ups, and mark stale sections.
 
@@ -600,7 +605,12 @@ def _resolve_hypothesis_in_transaction(
                 resolved_session=session_id,
             )
             if verdict in {"confirmed", "refuted"}:
-                resolve_linked_work(db, hypothesis_id)
+                resolve_linked_work(
+                    db,
+                    hypothesis_id,
+                    settlement_ref=settlement_ref,
+                    session_id=session_id,
+                )
             # Sufficiency is independently assessed and persisted before
             # settlement.  Never rewrite it merely to agree with a verdict.
             # Propagate verdict through relations
